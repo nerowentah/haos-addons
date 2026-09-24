@@ -48,7 +48,6 @@ class Config:
     interval_hours: int
     retries: int
     notify_on_failure: bool
-    notification_targets: list[str]
     sessions: list[Session]
 
 
@@ -103,22 +102,7 @@ def build_sessions(raw_sessions: list[object]) -> list[Session]:
     return sessions
 
 
-def build_notification_targets(raw_targets: object) -> list[str]:
-    """Normalize mobile-app notify targets (bare entity or notify.-prefixed)."""
-
-    if not isinstance(raw_targets, list):
-        return []
-
-    targets: list[str] = []
-    for entry in raw_targets:
-        if not isinstance(entry, str):
-            continue
-        target = entry.strip()
-        if target.startswith("notify."):
-            target = target[len("notify.") :]
-        if target:
-            targets.append(target)
-    return targets
+MOBILE_TARGET_PREFIX = "mobile_app_"
 
 
 def load_config(raw_config: dict[str, object]) -> Config:
@@ -137,7 +121,6 @@ def load_config(raw_config: dict[str, object]) -> Config:
         interval_hours=interval_hours,
         retries=retries,
         notify_on_failure=bool(raw_config.get("notify_on_failure", True)),
-        notification_targets=build_notification_targets(raw_config.get("notification_targets")),
         sessions=sessions,
     )
 
@@ -237,6 +220,58 @@ def renew_with_retries(session: Session, retries: int, backoff_seconds: int = 30
     return False
 
 
+def discover_mobile_targets(supervisor_token: str) -> list[str]:
+    """Discover notify.mobile_app_* targets from existing Home Assistant entities.
+
+    Phone device names are pulled from the Companion app's ``device_tracker``
+    entities; each candidate is only kept when a matching
+    ``notify.mobile_app_<device>`` service is registered. Returns [] (falling
+    back to a persistent notification) when nothing is found or the API is
+    unreachable.
+    """
+
+    if not supervisor_token:
+        return []
+
+    def _json_get(path: str) -> object:
+        request = urllib.request.Request(  # noqa: S310 - internal supervisor API
+            f"{SUPERVISOR_CORE_API}{path}",
+            method="GET",
+            headers={"Authorization": f"Bearer {supervisor_token}"},
+        )
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:  # noqa: S310 - internal supervisor API
+            return json.loads(response.read().decode("utf-8"))
+
+    try:
+        states = _json_get("/states")
+        services = _json_get("/services")
+    except (urllib.error.URLError, OSError, ValueError):
+        _LOGGER.exception("Failed to discover mobile-app notification targets")
+        return []
+
+    notify_targets = {
+        str(name)
+        for entry in services
+        if isinstance(entry, dict) and entry.get("domain") == "notify"
+        for name in (entry.get("services") or {})
+    }
+
+    device_names = {
+        entity_id.split(".", 1)[1]
+        for entity in states
+        if isinstance(entity, dict)
+        for entity_id in [entity.get("entity_id", "")]
+        if entity_id.startswith("device_tracker.")
+    }
+
+    targets = [
+        f"{MOBILE_TARGET_PREFIX}{device}"
+        for device in device_names
+        if f"{MOBILE_TARGET_PREFIX}{device}" in notify_targets
+    ]
+    return sorted(set(targets))
+
+
 def notify_failure(session: Session, targets: list[str], supervisor_token: str) -> None:
     """Notify about a failed renewal to Home Assistant.
 
@@ -294,21 +329,27 @@ def notify_failure(session: Session, targets: list[str], supervisor_token: str) 
         _LOGGER.exception("Failed to send notification for '%s'", session.name)
 
 
-def renew_all(config: Config, supervisor_token: str) -> None:
+def renew_all(config: Config, mobile_targets: list[str], supervisor_token: str) -> None:
     """Renew every session and notify about any that could not be renewed."""
 
     failures = [session for session in config.sessions if not renew_with_retries(session, config.retries)]
     if failures and config.notify_on_failure:
         for session in failures:
-            notify_failure(session, config.notification_targets, supervisor_token)
+            notify_failure(session, mobile_targets, supervisor_token)
 
 
 def run(config: Config, supervisor_token: str) -> None:
     """Run the initial renewal and then the scheduling loop."""
 
     interval_seconds = config.interval_hours * 3600
+    mobile_targets = discover_mobile_targets(supervisor_token)
+    _LOGGER.info(
+        "Auto-discovered %d mobile notification target(s): %s",
+        len(mobile_targets),
+        ", ".join(mobile_targets) or "-",
+    )
     _LOGGER.info("Performing initial dev session renewal")
-    renew_all(config, supervisor_token)
+    renew_all(config, mobile_targets, supervisor_token)
 
     next_run = time.monotonic() + interval_seconds
     _LOGGER.info(
@@ -324,7 +365,7 @@ def run(config: Config, supervisor_token: str) -> None:
             continue
 
         _LOGGER.info("Scheduled dev session renewal started")
-        renew_all(config, supervisor_token)
+        renew_all(config, mobile_targets, supervisor_token)
         next_run = time.monotonic() + interval_seconds
         _LOGGER.info(
             "Renewal completed; next run in %s h for %s",
@@ -346,12 +387,11 @@ def main() -> None:
         raise SystemExit(1) from None
 
     _LOGGER.info(
-        "Configured %d session(s), interval=%s h, retries=%s, notify=%s, targets=%s",
+        "Configured %d session(s), interval=%s h, retries=%s, notify=%s",
         len(config.sessions),
         config.interval_hours,
         config.retries,
         config.notify_on_failure,
-        ", ".join(config.notification_targets) or "-",
     )
     for session in config.sessions:
         _LOGGER.info("Session '%s' -> %s", session.name, mask_token(session.url))

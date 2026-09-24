@@ -17,7 +17,7 @@ Inspired by:
 
 - Automatically renews one or more LG webOS Developer Mode sessions
 - Configurable renewal interval (1-168 hours) with retry + backoff
-- Optional Home Assistant notification on failure, delivered as a mobile-app push or a persistent notification
+- Optional Home Assistant notification on failure, automatically pushed to every `notify.mobile_app_*` target (Companion app phones discovered from the existing entities) or shown as a persistent notification if none exist
 - No external Python dependencies (stdlib only), no web UI, runs fully on-device
 - Tokens are never printed to the logs (URLs are shown with the token masked)
 - Modernized Configuration page: every option has a label and helper text, and the session token renders as a masked password field
@@ -52,8 +52,6 @@ Example configuration:
 interval_hours: 48
 retries: 3
 notify_on_failure: true
-notification_targets:
-  - mobile_app_pixel_8
 sessions:
   - name: "living-room-tv"
     token: "YOUR_DEV_MODE_SESSION_TOKEN"
@@ -65,8 +63,7 @@ sessions:
 | ------------------------- | ---- | ------- | ---------------------------------------------------------------------------------- |
 | `interval_hours`          | int  | `48`    | Hours between renewal attempts (1-168).                                            |
 | `retries`                 | int  | `3`     | Retries per session before marking the renewal failed (0-10).                      |
-| `notify_on_failure`       | bool | `true`  | Send a Home Assistant notification on final failure.                               |
-| `notification_targets`    | list | `[]`    | HA notify entities for failures, e.g. `mobile_app_pixel_8` (a `notify.` prefix is stripped). When non-empty, failures are pushed to these targets instead of a persistent notification; when empty, a persistent notification is used. |
+| `notify_on_failure`       | bool | `true`  | Send a push notification to every Home Assistant mobile app on final failure (fallback: persistent notification when no mobile app is registered). |
 | `sessions`                | list | -       | One or more TVs. Each session needs a `name` and either a `token` or a full `url`. |
 
 ```yaml
@@ -128,7 +125,7 @@ On start the add-on immediately attempts a renewal for every configured session,
 - **Invalid URL error**: session `url` must start with `http://` or `https://`.
 - **Repeated network errors**: confirm the HA host can reach `developer.lge.com`.
 - **Growth in failures / API "not success"**: the token itself expired; fetch a fresh key from the TV Dev Mode app and update the session.
-- **Notifications not arriving**: `notify_on_failure` must be `true` and the add-on needs the internal Home Assistant API (enabled by default here via `homeassistant_api`). With `notification_targets` set, a `notify` service (e.g. `notify.mobile_app_*` from the Companion app) must exist for every entry; otherwise the add-on falls back to a persistent notification.
+- **Notifications not arriving**: `notify_on_failure` must be `true` and the add-on needs the internal Home Assistant API (enabled by default here via `homeassistant_api`). The add-on derives targets from the existing mobile-app `device_tracker` entities, so a phone only receives pushes while its Companion device exists in Home Assistant; if no phone is detected the add-on falls back to a persistent notification (check the startup log for `Auto-discovered N mobile notification target(s)`).
 
 ## License / Attribution
 
