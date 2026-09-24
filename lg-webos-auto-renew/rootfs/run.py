@@ -89,7 +89,7 @@ def _merge_s6_environment() -> None:
             if not var.is_file() or not var.name:
                 continue
             try:
-                value = var.read_bytes().rstrip(b"\0").decode("utf-8", errors="replace")
+                value = var.read_bytes().rstrip(b"\r\n\0").decode("utf-8", errors="replace")
             except OSError:
                 continue
             if value:

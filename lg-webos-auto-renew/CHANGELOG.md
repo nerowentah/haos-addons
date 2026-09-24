@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.5
+
+- Strip the trailing newline from s6 container-environment values so the merged `SUPERVISOR_TOKEN` produces a valid Authorization header.
+
 ## 1.4.4
 
 - Fix supervisor token availability: merge the s6 container environment (`/run/s6/container_environment`) into the process environment before lookup, replicating `with-contenv` without needing an s6 shell wrapper.
