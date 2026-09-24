@@ -20,6 +20,15 @@ CONFIG_PATH = Path("/data/options.json")
 LG_DEV_ENDPOINT = "https://developer.lge.com/secure/ResetDevModeSession.dev"
 SUPERVISOR_CORE_API = "http://supervisor/core/api"
 
+SUPERVISOR_TOKEN_ENV = "SUPERVISOR_TOKEN"  # noqa: S105 - env var name, not a secret
+SUPERVISOR_TOKEN_ENV_CANDIDATES = (
+    "SUPERVISOR_TOKEN",
+    "SUPERVISOR_HASS_TOKEN",
+    "HASSIO_TOKEN",
+    "HOMEASSISTANT_TOKEN",
+    "SUPERVISOR_API_TOKEN",
+)
+
 HTTP_TIMEOUT = 30
 SUCCESS_RESULTS = {"success"}
 INFO_MSG_CODES = {"GNL", "OK"}
@@ -58,6 +67,33 @@ def setup_logging() -> None:
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
+
+
+def load_supervisor_token() -> str:
+    """Return the supervisor token from the container environment.
+
+    The Home Assistant API proxy only permits requests carrying the add-on's
+    token (``SUPERVISOR_TOKEN``). When it is unavailable, log the names of the
+    supervisor-related environment variables that are present so the reason is
+    visible in the add-on logs.
+    """
+
+    for name in SUPERVISOR_TOKEN_ENV_CANDIDATES:
+        value = os.environ.get(name, "")
+        if value:
+            if name != SUPERVISOR_TOKEN_ENV:
+                _LOGGER.debug("Using %s for the supervisor token", name)
+            return value
+
+    visible = ", ".join(
+        sorted(key for key in os.environ if key.startswith(("SUPERVISOR_", "HASS", "HOMEASSISTANT")))
+    )
+    _LOGGER.warning(
+        "No supervisor token found; scanned %s. Supervisor env vars present: %s",
+        ", ".join(SUPERVISOR_TOKEN_ENV_CANDIDATES),
+        visible or "(none)",
+    )
+    return ""
 
 
 def mask_token(url: str) -> str:
@@ -230,7 +266,6 @@ def discover_mobile_targets(supervisor_token: str) -> list[str]:
     """
 
     if not supervisor_token:
-        _LOGGER.warning("No supervisor token available; mobile-app notification targets will not be discovered")
         return []
 
     def _json_get(path: str) -> object:
@@ -385,7 +420,7 @@ def main() -> None:
     for session in config.sessions:
         _LOGGER.info("Session '%s' -> %s", session.name, mask_token(session.url))
 
-    run(config, os.environ.get("SUPERVISOR_TOKEN", ""))
+    run(config, load_supervisor_token())
 
 
 if __name__ == "__main__":
