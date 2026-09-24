@@ -221,16 +221,16 @@ def renew_with_retries(session: Session, retries: int, backoff_seconds: int = 30
 
 
 def discover_mobile_targets(supervisor_token: str) -> list[str]:
-    """Discover notify.mobile_app_* targets from existing Home Assistant entities.
+    """Discover notify.mobile_app_* targets from existing Home Assistant services.
 
-    Phone device names are pulled from the Companion app's ``device_tracker``
-    entities; each candidate is only kept when a matching
-    ``notify.mobile_app_<device>`` service is registered. Returns [] (falling
-    back to a persistent notification) when nothing is found or the API is
-    unreachable.
+    Every Companion app on the internal Home Assistant API registers a
+    ``notify.mobile_app_<device>`` service; each such service becomes a target.
+    Returns [] (falling back to a persistent notification) when nothing is
+    found or the API is unreachable.
     """
 
     if not supervisor_token:
+        _LOGGER.warning("No supervisor token available; mobile-app notification targets will not be discovered")
         return []
 
     def _json_get(path: str) -> object:
@@ -243,10 +243,13 @@ def discover_mobile_targets(supervisor_token: str) -> list[str]:
             return json.loads(response.read().decode("utf-8"))
 
     try:
-        states = _json_get("/states")
         services = _json_get("/services")
     except (urllib.error.URLError, OSError, ValueError):
         _LOGGER.exception("Failed to discover mobile-app notification targets")
+        return []
+
+    if not isinstance(services, list):
+        _LOGGER.warning("Unexpected /services response (expected a list): %s", str(services)[:200])
         return []
 
     notify_targets = {
@@ -255,21 +258,7 @@ def discover_mobile_targets(supervisor_token: str) -> list[str]:
         if isinstance(entry, dict) and entry.get("domain") == "notify"
         for name in (entry.get("services") or {})
     }
-
-    device_names = {
-        entity_id.split(".", 1)[1]
-        for entity in states
-        if isinstance(entity, dict)
-        for entity_id in [entity.get("entity_id", "")]
-        if entity_id.startswith("device_tracker.")
-    }
-
-    targets = [
-        f"{MOBILE_TARGET_PREFIX}{device}"
-        for device in device_names
-        if f"{MOBILE_TARGET_PREFIX}{device}" in notify_targets
-    ]
-    return sorted(set(targets))
+    return sorted(t for t in notify_targets if t.startswith(MOBILE_TARGET_PREFIX))
 
 
 def notify_failure(session: Session, targets: list[str], supervisor_token: str) -> None:

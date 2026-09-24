@@ -17,7 +17,7 @@ Inspired by:
 
 - Automatically renews one or more LG webOS Developer Mode sessions
 - Configurable renewal interval (1-168 hours) with retry + backoff
-- Optional Home Assistant notification on failure, automatically pushed to every `notify.mobile_app_*` target (Companion app phones discovered from the existing entities) or shown as a persistent notification if none exist
+- Optional Home Assistant notification on failure, automatically pushed to every registered Companion device (`notify.mobile_app_*` services) or shown as a persistent notification if none exist
 - No external Python dependencies (stdlib only), no web UI, runs fully on-device
 - Tokens are never printed to the logs (URLs are shown with the token masked)
 - Modernized Configuration page: every option has a label and helper text, and the session token renders as a masked password field
@@ -125,7 +125,7 @@ On start the add-on immediately attempts a renewal for every configured session,
 - **Invalid URL error**: session `url` must start with `http://` or `https://`.
 - **Repeated network errors**: confirm the HA host can reach `developer.lge.com`.
 - **Growth in failures / API "not success"**: the token itself expired; fetch a fresh key from the TV Dev Mode app and update the session.
-- **Notifications not arriving**: `notify_on_failure` must be `true` and the add-on needs the internal Home Assistant API (enabled by default here via `homeassistant_api`). The add-on derives targets from the existing mobile-app `device_tracker` entities, so a phone only receives pushes while its Companion device exists in Home Assistant; if no phone is detected the add-on falls back to a persistent notification (check the startup log for `Auto-discovered N mobile notification target(s)`).
+- **Notifications not arriving**: `notify_on_failure` must be `true` and the add-on needs the internal Home Assistant API (enabled by default here via `homeassistant_api`). Targets are derived from the registered `notify.mobile_app_*` services, so a phone only receives pushes while its Companion app device exists in Home Assistant; if no phone is detected the add-on falls back to a persistent notification (check the startup log for `Auto-discovered N mobile notification target(s)`).
 
 ## License / Attribution
 
