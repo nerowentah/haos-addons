@@ -19,8 +19,8 @@ Inspired by:
 - Configurable renewal interval (1-168 hours) with retry + backoff
 - Optional Home Assistant notification on failure, automatically pushed to every registered Companion device (`notify.mobile_app_*` services) or shown as a persistent notification if none exist
 - No external Python dependencies (stdlib only), no web UI, runs fully on-device
-- Tokens are never printed to the logs (URLs are shown with the token masked)
-- Modernized Configuration page: every option has a label and helper text, and the session token renders as a masked password field
+- Private by default: renewal URLs and session tokens are never written to the logs
+- Modernized Configuration page: every option has a label and helper text, the session token renders as a masked password field, and discovered phones appear as per-phone notification switches (all on by default)
 
 ## Installation
 
@@ -52,6 +52,11 @@ Example configuration:
 interval_hours: 48
 retries: 3
 notify_on_failure: true
+notification_overrides:
+  - name: "mobile_app_iphon"
+    notify: true
+  - name: "mobile_app_sm_s948b"
+    notify: true
 sessions:
   - name: "living-room-tv"
     token: "YOUR_DEV_MODE_SESSION_TOKEN"
@@ -63,7 +68,8 @@ sessions:
 | ------------------------- | ---- | ------- | ---------------------------------------------------------------------------------- |
 | `interval_hours`          | int  | `48`    | Hours between renewal attempts (1-168).                                            |
 | `retries`                 | int  | `3`     | Retries per session before marking the renewal failed (0-10).                      |
-| `notify_on_failure`       | bool | `true`  | Send a push notification to every Home Assistant mobile app on final failure (fallback: persistent notification when no mobile app is registered). |
+| `notify_on_failure`       | bool | `true`  | Master switch: send a push notification on final failure (needs at least one phone enabled in `notification_overrides`; falls back to a persistent notification when no mobile app is registered). |
+| `notification_overrides`  | list | `[]`    | One row per discovered Home Assistant mobile app, each on by default. Switch a phone off to stop its failure notifications. This list is maintained automatically: newly discovered phones are added with `notify: true`, and existing rows keep their saved switch value. |
 | `sessions`                | list | -       | One or more TVs. Each session needs a `name` and either a `token` or a full `url`. |
 
 ```yaml
@@ -118,14 +124,14 @@ sessions:
 
 ## Usage
 
-On start the add-on immediately attempts a renewal for every configured session, then re-runs on the schedule. Renewals and failures are visible in the add-on **Log** tab; each attempt logs the destination URL with the token masked (`sessionToken=***`).
+On start the add-on immediately attempts a renewal for every configured session, then re-runs on the schedule. Renewals and failures are visible in the add-on **Log** tab. The logs deliberately never show the renewal URL or the session token — you'll only see session names (e.g. `Renewing dev session 'living-room-tv'`).
 
 ## Troubleshooting
 
 - **Invalid URL error**: session `url` must start with `http://` or `https://`.
 - **Repeated network errors**: confirm the HA host can reach `developer.lge.com`.
 - **Growth in failures / API "not success"**: the token itself expired; fetch a fresh key from the TV Dev Mode app and update the session.
-- **Notifications not arriving**: `notify_on_failure` must be `true` and the add-on needs the internal Home Assistant API (enabled by default here via `homeassistant_api`). Targets are derived from the registered `notify.mobile_app_*` services, so a phone only receives pushes while its Companion app device exists in Home Assistant; if no phone is detected the add-on falls back to a persistent notification (check the startup log for `Auto-discovered N mobile notification target(s)`).
+- **Notifications not arriving**: `notify_on_failure` must be `true` and the add-on needs the internal Home Assistant API (enabled by default here via `homeassistant_api`). Each discovered phone must have its switch on in the **Mobile app notifications** section of the Configuration page (all are on by default). Targets are derived from the registered `notify.mobile_app_*` services, so a phone only receives pushes while its Companion app device exists in Home Assistant; if no phone is detected the add-on falls back to a persistent notification (check the startup log for `Auto-discovered N mobile notification target(s)` and `Notifications suppressed for: ...`).
 
 ## License / Attribution
 

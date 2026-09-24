@@ -1,5 +1,5 @@
 name: "LG webOS Dev Session Auto Renew"
-version: "1.4.5"
+version: "1.5.0"
 slug: "lg_webos_auto_renew"
 description: >-
   Periodically renews LG webOS Developer Mode sessions before they expire by
@@ -19,6 +19,7 @@ options:
   interval_hours: 48
   retries: 3
   notify_on_failure: true
+  notification_overrides: []
   sessions:
     - name: "living-room-tv"
       token: "YOUR_DEV_MODE_SESSION_TOKEN"
@@ -26,6 +27,9 @@ schema:
   interval_hours: int(1,168)
   retries: int(0,10)
   notify_on_failure: bool
+  notification_overrides:
+    - name: str
+      notify: bool
   sessions:
     - name: str
       token: password?

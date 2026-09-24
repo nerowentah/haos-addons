@@ -51,12 +51,25 @@ class Session:
 
 
 @dataclass(slots=True)
+class NotificationOverride:
+    """Per-mobile notification override.
+
+    When discovered, every mobile app is notified by default; entries with
+    ``notify=False`` are suppressed.
+    """
+
+    name: str
+    notify: bool = True
+
+
+@dataclass(slots=True)
 class Config:
     """Parsed add-on options."""
 
     interval_hours: int
     retries: int
     notify_on_failure: bool
+    notification_overrides: list[NotificationOverride]
     sessions: list[Session]
 
 
@@ -157,17 +170,6 @@ def load_supervisor_token() -> str:
     return ""
 
 
-def mask_token(url: str) -> str:
-    """Return the URL with the sessionToken query parameter masked."""
-
-    parts = urllib.parse.urlsplit(url)
-    query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
-    masked = [(key, "***" if key.lower() == "sessiontoken" else value) for key, value in query]
-    return urllib.parse.urlunsplit(
-        (parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(masked), parts.fragment)
-    )
-
-
 def build_sessions(raw_sessions: list[object]) -> list[Session]:
     """Validate and normalize session options."""
 
@@ -214,10 +216,23 @@ def load_config(raw_config: dict[str, object]) -> Config:
     sessions_raw = raw_config.get("sessions")
     sessions = build_sessions(sessions_raw if isinstance(sessions_raw, list) else [])
 
+    notification_overrides_raw = raw_config.get("notification_overrides", [])
+    notification_overrides: list[NotificationOverride] = []
+    if isinstance(notification_overrides_raw, list):
+        for _index, entry in enumerate(notification_overrides_raw, start=1):
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            notify = bool(entry.get("notify", True))
+            notification_overrides.append(NotificationOverride(name=name, notify=notify))
+
     return Config(
         interval_hours=interval_hours,
         retries=retries,
         notify_on_failure=bool(raw_config.get("notify_on_failure", True)),
+        notification_overrides=notification_overrides,
         sessions=sessions,
     )
 
@@ -237,7 +252,7 @@ def load_options() -> dict[str, object]:
     return raw
 
 
-def handle_response(body: str, status: int, session_name: str, masked_url: str) -> bool:
+def handle_response(body: str, status: int, session_name: str) -> bool:
     """Interpret the LG Dev API response; returns whether the renewal succeeded."""
 
     if not body.strip():
@@ -268,12 +283,11 @@ def handle_response(body: str, status: int, session_name: str, masked_url: str) 
         return True
 
     _LOGGER.error(
-        "Renewal for '%s' failed per LG API: result=%s errorCode=%s errorMsg=%s (%s)",
+        "Renewal for '%s' failed per LG API: result=%s errorCode=%s errorMsg=%s",
         session_name,
         result,
         error_code,
         error_msg,
-        masked_url,
     )
     return False
 
@@ -281,20 +295,19 @@ def handle_response(body: str, status: int, session_name: str, masked_url: str) 
 def renew_session(session: Session) -> bool:
     """Renew one dev session and return whether it succeeded."""
 
-    masked_url = mask_token(session.url)
-    _LOGGER.info("Renewing dev session '%s' (%s)", session.name, masked_url)
+    _LOGGER.info("Renewing dev session '%s'", session.name)
     try:
         with urllib.request.urlopen(session.url, timeout=HTTP_TIMEOUT) as response:  # noqa: S310 - admin-supplied LG URL
             body = response.read().decode("utf-8", errors="replace")
-            return handle_response(body, response.status, session.name, masked_url)
+            return handle_response(body, response.status, session.name)
     except urllib.error.HTTPError as err:
-        _LOGGER.exception("Renewal for '%s' failed: HTTP %s %s (%s)", session.name, err.code, err.reason, masked_url)
+        _LOGGER.exception("Renewal for '%s' failed: HTTP %s %s", session.name, err.code, err.reason)
         return False
     except urllib.error.URLError as err:
-        _LOGGER.exception("Renewal for '%s' failed: %s (%s)", session.name, err.reason, masked_url)
+        _LOGGER.exception("Renewal for '%s' failed: %s", session.name, err.reason)
         return False
     except OSError:
-        _LOGGER.exception("Renewal for '%s' failed: %s", session.name, masked_url)
+        _LOGGER.exception("Renewal for '%s' failed", session.name)
         return False
 
 
@@ -355,6 +368,71 @@ def discover_mobile_targets(supervisor_token: str) -> list[str]:
         for name in (entry.get("services") or {})
     }
     return sorted(t for t in notify_targets if t.startswith(MOBILE_TARGET_PREFIX))
+
+
+def seed_notification_overrides(
+    config: Config, discovered: list[str], supervisor_token: str
+) -> list[NotificationOverride]:
+    """Persist discovered phones in the overrides so toggles show in the UI.
+
+    Every discovered mobile app is notified by default. Existing override rows
+    keep their saved switch value (so a phone switched off in the Configuration
+    page stays off); newly discovered phones are appended with ``notify=True``.
+    The merged list is written back to the add-on options via
+    ``POST /addons/self/options`` so the toggles appear there. Persistence
+    failures are logged but do not affect this run.
+    """
+
+    merged = list(config.notification_overrides)
+    existing_names = {override.name for override in merged}
+    merged.extend(
+        NotificationOverride(name=name, notify=True)
+        for name in discovered
+        if name not in existing_names
+    )
+
+    enabled = sorted(override.name for override in merged if override.notify and override.name in discovered)
+    suppressed = sorted(override.name for override in merged if not override.notify and override.name in discovered)
+    _LOGGER.info(
+        "Notification overrides: %d enabled (%s)%s",
+        len(enabled),
+        ", ".join(enabled) or "-",
+        f"; suppressed: {', '.join(suppressed)}" if suppressed else "",
+    )
+
+    if not supervisor_token:
+        return merged
+
+    try:
+        options = load_options()
+        options["notification_overrides"] = [
+            {"name": override.name, "notify": override.notify} for override in merged
+        ]
+        request = urllib.request.Request(
+            "http://supervisor/addons/self/options",
+            data=json.dumps(options).encode("utf-8"),
+            method="POST",
+            headers={"Authorization": f"Bearer {supervisor_token}", "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT):  # noqa: S310 - internal supervisor API
+            _LOGGER.info("Wrote %d notification override(s) to add-on options", len(merged))
+    except (urllib.error.URLError, OSError, ValueError, ConfigError):
+        _LOGGER.warning(
+            "Could not persist notification overrides to the add-on options; "
+            "toggles still apply for this run",
+            exc_info=True,
+        )
+
+    return merged
+
+
+def effective_mobile_targets(
+    discovered: list[str], overrides: list[NotificationOverride]
+) -> list[str]:
+    """Return discovered targets that are not switched off in the overrides."""
+
+    off = {override.name for override in overrides if not override.notify}
+    return [target for target in discovered if target not in off]
 
 
 def notify_failure(session: Session, targets: list[str], supervisor_token: str) -> None:
@@ -433,8 +511,13 @@ def run(config: Config, supervisor_token: str) -> None:
         len(mobile_targets),
         ", ".join(mobile_targets) or "-",
     )
+    overrides = seed_notification_overrides(config, mobile_targets, supervisor_token)
+    effective_targets = effective_mobile_targets(mobile_targets, overrides)
+    if len(effective_targets) < len(mobile_targets):
+        suppressed = sorted(set(mobile_targets) - set(effective_targets))
+        _LOGGER.info("Notifications suppressed for: %s", ", ".join(suppressed))
     _LOGGER.info("Performing initial dev session renewal")
-    renew_all(config, mobile_targets, supervisor_token)
+    renew_all(config, effective_targets, supervisor_token)
 
     next_run = time.monotonic() + interval_seconds
     _LOGGER.info(
@@ -450,7 +533,7 @@ def run(config: Config, supervisor_token: str) -> None:
             continue
 
         _LOGGER.info("Scheduled dev session renewal started")
-        renew_all(config, mobile_targets, supervisor_token)
+        renew_all(config, effective_targets, supervisor_token)
         next_run = time.monotonic() + interval_seconds
         _LOGGER.info(
             "Renewal completed; next run in %s h for %s",
@@ -479,7 +562,7 @@ def main() -> None:
         config.notify_on_failure,
     )
     for session in config.sessions:
-        _LOGGER.info("Session '%s' -> %s", session.name, mask_token(session.url))
+        _LOGGER.info("Session '%s'", session.name)
 
     run(config, load_supervisor_token())
 
