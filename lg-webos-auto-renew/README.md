@@ -81,11 +81,42 @@ sessions:
 
 ### Getting your session token
 
-1. Enable **Developer Mode** on your LG webOS TV (usually in `Settings -> General -> About this TV`, double-tap the OS version, then turn on Developer Mode in the LG Developer app).
-2. Register the TV, then read the dev-mode enable key from the host:
-   `ssh prisoner@<tv-ip> -p 9922 "cat /var/luna/preferences/devmode_enabled"`
-   (the key is also shown in the LG Developer Mode app on the TV).
-3. Paste that value into the `token` field for the TV.
+1. Install the **Developer Mode** app on the TV and enable Developer Mode
+   (`Settings -> General -> About this TV`, double-tap the OS version, launch the
+   Developer Mode app, sign in with an LG account, toggle it on).
+2. In the Developer Mode app, enable the **Key Server**.
+
+3. Save the TV's SSH private key on your computer:
+   - **Option A (no LG tooling)** — download it from the TV's key server (port 9991):
+     - Linux/macOS: `curl -o ~/.ssh/tv15_webos http://<tv-ip>:9991/webos_rsa && chmod 600 ~/.ssh/tv15_webos`
+     - Windows PowerShell: `Invoke-WebRequest -Uri "http://<tv-ip>:9991/webos_rsa" -OutFile "$env:USERPROFILE\.ssh\tv15_webos"`
+   - **Option B (webOS SDK)** — `ares-novacom --device <name> --getkey`
+   - The key is passphrase-protected with the passcode shown at the bottom-left of
+     the Developer Mode app screen (6 characters, case-sensitive). To remove the
+     passphrase for scripted access: `ssh-keygen -p -f <path-to-ssh-key>`.
+
+4. Read the dev-mode session token from the TV (SSH port `9922`, user `prisoner`).
+   webOS serves only the legacy `ssh-rsa` host key; OpenSSH 8.8+ refuses it by
+   default (`no matching host key type found. Their offer: ssh-rsa`), so re-enable
+   it explicitly:
+
+   ```text
+   ssh -p 9922 -i <path-to-ssh-key> `
+     -oHostKeyAlgorithms=+ssh-rsa `
+     -oPubkeyAcceptedAlgorithms=+ssh-rsa `
+     -oStrictHostKeyChecking=accept-new `
+     prisoner@<tv-ip> cat /var/luna/preferences/devmode_enabled
+   ```
+
+   - `<tv-ip>` and `<path-to-ssh-key>` (e.g. `C:\Users\cwt\.ssh\tv15_webos`) are placeholders.
+   - `-oStrictHostKeyChecking=accept-new` skips the interactive host-key prompt on first connect.
+   - If you get `PTY allocation request failed`, add `-T` (the `prisoner` user on a non-rooted TV cannot allocate a pseudo-terminal).
+   - PowerShell: backticks (`` ` ``) continue the line; or paste the whole thing as a single line.
+   - The key is also shown in the Developer Mode app on the TV.
+
+5. The command prints the session token as a long hex/base64 string — paste the
+   **entire** value into the session's `token` field. (A truncated or stale value
+   makes LG return `errorCode ERR_005, Check user session`.)
 
 ## Usage
 
