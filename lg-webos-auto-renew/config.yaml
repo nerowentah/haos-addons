@@ -22,8 +22,8 @@ options:
     - name: "living-room-tv"
       token: "YOUR_DEV_MODE_SESSION_TOKEN"
 schema:
-  interval_hours: int(1, 168)
-  retries: int(0, 10)
+  interval_hours: int(1,168)
+  retries: int(0,10)
   notify_on_failure: bool
   sessions:
     - name: str
