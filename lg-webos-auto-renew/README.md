@@ -20,6 +20,7 @@ Inspired by:
 - Optional Home Assistant notification on failure, delivered as a mobile-app push or a persistent notification
 - No external Python dependencies (stdlib only), no web UI, runs fully on-device
 - Tokens are never printed to the logs (URLs are shown with the token masked)
+- Modernized Configuration page: every option has a label and helper text, and the session token renders as a masked password field
 
 ## Installation
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.0
+
+- Modernize the add-on Configuration page: add `translations/en.yaml` with a friendly label and description for every option (including the per-session fields), and update the schema so the dev-mode session `token` renders as a masked password input and the session `url` is validated as a URL.
+
 ## 1.2.0
 
 - Failure notifications can now be pushed to Home Assistant mobile apps via `notification_targets` (list of `notify` entities such as `mobile_app_pixel_8`; a `notify.` prefix is stripped). When targets are configured they replace the persistent notification; with no targets the persistent notification behavior is unchanged.
