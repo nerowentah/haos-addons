@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.3
+
+- Diagnose missing container environment: when `SUPERVISOR_TOKEN` is unavailable, the add-on logs the full set of environment variable names and the contents of `/run` and `/run/supervisor` so the supervisor token mechanism can be identified.
+
 ## 1.4.2
 
 - Grant `hassio_api` access and add supervisor-token diagnostics: when `SUPERVISOR_TOKEN` is missing from the container environment, the startup log now names the supervisor-related env vars that are present, making missing-API failures visible instead of silent.

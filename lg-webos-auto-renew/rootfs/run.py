@@ -69,6 +69,36 @@ def setup_logging() -> None:
     )
 
 
+MAX_PROBE_FILE_SIZE = 2048
+
+
+def _log_container_env_probe() -> None:
+    """Log what the container environment actually contains (diagnostic)."""
+
+    env_keys = sorted(os.environ)
+    _LOGGER.info("Container env var names (%d): %s", len(env_keys), ", ".join(env_keys[:80]))
+
+    def _list_dir(path: str) -> None:
+        if not os.path.isdir(path):
+            return
+        entries = sorted(os.listdir(path))
+        _LOGGER.info("%s entries (%d): %s", path, len(entries), ", ".join(entries[:60]))
+        for name in entries:
+            entry = os.path.join(path, name)
+            if os.path.isfile(entry) and os.path.getsize(entry) <= MAX_PROBE_FILE_SIZE:
+                try:
+                    content = Path(entry).read_text(encoding="utf-8", errors="replace").strip()
+                    _LOGGER.info("  %s = %s", name, content[:400])
+                except OSError:
+                    pass
+
+    try:
+        _list_dir("/run")
+        _list_dir("/run/supervisor")
+    except OSError:
+        _LOGGER.debug("Container probe failed", exc_info=True)
+
+
 def load_supervisor_token() -> str:
     """Return the supervisor token from the container environment.
 
@@ -93,6 +123,7 @@ def load_supervisor_token() -> str:
         ", ".join(SUPERVISOR_TOKEN_ENV_CANDIDATES),
         visible or "(none)",
     )
+    _log_container_env_probe()
     return ""
 
 
