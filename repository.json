@@ -1,0 +1,6 @@
+{
+  "name": "HAOS Add-ons",
+  "url": "https://github.com/nerowentah/haos-addons",
+  "maintainer": "CWT <cwt@clgx.org>",
+  "description": "Home Assistant OS add-ons, including LG webOS Developer Mode session auto-renewal."
+}

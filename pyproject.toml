@@ -1,0 +1,29 @@
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+extend-select = [
+  "E",
+  "F",
+  "W",    # pycodestyle + pyflakes
+  "I",    # isort (import ordering)
+  "UP",   # pyupgrade
+  "B",    # flake8-bugbear
+  "S",    # flake8-security
+  "SIM",  # flake8-simplify
+  "PERF", # Perflint
+  "PL",   # Pylint
+  "RUF",  # Ruff-specific
+  "ARG",  # flake8-unused-arguments
+  "C4",   # flake8-comprehensions
+  "RET",  # flake8-return
+  "T20",  # flake8-print
+  "TRY",  # tryceratops
+]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"lg-webos-auto-renew/**/*.py" = [
+  "TRY003",
+]

@@ -1,0 +1,31 @@
+name: "LG webOS Dev Session Auto Renew"
+version: "1.1.0"
+slug: "lg_webos_auto_renew"
+description: >-
+  Periodically renews LG webOS Developer Mode sessions before they expire by
+  calling the LG Developer API, keeping Home Assistant integrations
+  (LG ThinQ, webostv, etc.) connected without manual re-login.
+url: "https://github.com/nerowentah/haos-addons/tree/main/lg-webos-auto-renew"
+image: "ghcr.io/nerowentah/lg-webos-auto-renew"
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+homeassistant_api: true
+options:
+  interval_hours: 48
+  retries: 3
+  notify_on_failure: true
+  sessions:
+    - name: "living-room-tv"
+      token: "YOUR_DEV_MODE_SESSION_TOKEN"
+schema:
+  interval_hours: int(1, 168)
+  retries: int(0, 10)
+  notify_on_failure: bool
+  sessions:
+    - name: str
+      token: str?
+      url: str?
