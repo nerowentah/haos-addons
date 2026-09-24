@@ -1,5 +1,5 @@
 name: "LG webOS Dev Session Auto Renew"
-version: "1.4.1"
+version: "1.4.2"
 slug: "lg_webos_auto_renew"
 description: >-
   Periodically renews LG webOS Developer Mode sessions before they expire by
@@ -14,6 +14,7 @@ startup: application
 boot: auto
 init: false
 homeassistant_api: true
+hassio_api: true
 options:
   interval_hours: 48
   retries: 3
