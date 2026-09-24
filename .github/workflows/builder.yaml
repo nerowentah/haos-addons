@@ -40,8 +40,11 @@ jobs:
           CHANGED_FILES: ${{ steps.changed_files.outputs.all_changed_files }}
         run: |
           changed_apps=()
+          if [[ -z "${CHANGED_FILES}" ]]; then
+            # Initial commit: no previous ref, nothing to diff against.
+            changed_apps=(${APPS})
           # If the workflow file itself changed, rebuild all apps
-          if [[ "${CHANGED_FILES}" =~ .github/workflows/(builder|build-app)\.yaml ]]; then
+          elif [[ "${CHANGED_FILES}" =~ .github/workflows/(builder|build-app)\.yaml ]]; then
             changed_apps=(${APPS})
           else
             for app in ${APPS}; do
