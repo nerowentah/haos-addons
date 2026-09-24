@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.1
+
+- Fix persisting the per-phone toggles: `POST /addons/self/options` now sends the payload as `{"options": {...}}`, so the merged `notification_overrides` actually reach the Configuration page instead of failing with HTTP 400 (they already applied in-memory for the current run).
+
 ## 1.5.0
 
 - Add per-phone notification toggles: every discovered mobile app appears as a `notification_overrides` row with its own `notify` switch in the Configuration page, all on by default. Newly discovered phones are added with `notify: true` and existing rows keep their saved value (via `POST /addons/self/options`), so switching a phone off persists across restarts. Effective targets = discovered phones minus any rows with `notify: false`.
