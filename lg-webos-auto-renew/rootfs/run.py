@@ -18,7 +18,7 @@ _LOGGER = logging.getLogger(__name__)
 
 CONFIG_PATH = Path("/data/options.json")
 LG_DEV_ENDPOINT = "https://developer.lge.com/secure/ResetDevModeSession.dev"
-SUPERVISOR_API = "http://supervisor/core/api/services/persistent_notification/create"
+SUPERVISOR_CORE_API = "http://supervisor/core/api"
 
 HTTP_TIMEOUT = 30
 SUCCESS_RESULTS = {"success"}
@@ -48,6 +48,7 @@ class Config:
     interval_hours: int
     retries: int
     notify_on_failure: bool
+    notification_targets: list[str]
     sessions: list[Session]
 
 
@@ -102,6 +103,24 @@ def build_sessions(raw_sessions: list[object]) -> list[Session]:
     return sessions
 
 
+def build_notification_targets(raw_targets: object) -> list[str]:
+    """Normalize mobile-app notify targets (bare entity or notify.-prefixed)."""
+
+    if not isinstance(raw_targets, list):
+        return []
+
+    targets: list[str] = []
+    for entry in raw_targets:
+        if not isinstance(entry, str):
+            continue
+        target = entry.strip()
+        if target.startswith("notify."):
+            target = target[len("notify.") :]
+        if target:
+            targets.append(target)
+    return targets
+
+
 def load_config(raw_config: dict[str, object]) -> Config:
     """Validate raw options and produce a Config."""
 
@@ -118,6 +137,7 @@ def load_config(raw_config: dict[str, object]) -> Config:
         interval_hours=interval_hours,
         retries=retries,
         notify_on_failure=bool(raw_config.get("notify_on_failure", True)),
+        notification_targets=build_notification_targets(raw_config.get("notification_targets")),
         sessions=sessions,
     )
 
@@ -217,24 +237,50 @@ def renew_with_retries(session: Session, retries: int, backoff_seconds: int = 30
     return False
 
 
-def notify_failure(session: Session, supervisor_token: str) -> None:
-    """Send a persistent notification to Home Assistant about a failed renewal."""
+def notify_failure(session: Session, targets: list[str], supervisor_token: str) -> None:
+    """Notify about a failed renewal to Home Assistant.
+
+    Routes to the HA notify service (e.g. the mobile app) when notification
+    targets are configured; otherwise falls back to a persistent notification.
+    """
 
     if not supervisor_token:
         _LOGGER.warning("Cannot notify for '%s': no supervisor token available", session.name)
         return
 
-    payload = {
-        "notification_id": session.notification_id,
-        "title": "LG webOS Dev Session Renewal Failed",
-        "message": (
-            f"The LG webOS Developer Mode session '{session.name}' could not be renewed "
-            "after exhausting all retries. Renew it manually or the dev session may expire."
-        ),
-    }
+    title = "LG webOS Dev Session Renewal Failed"
+    message = (
+        f"The LG webOS Developer Mode session '{session.name}' could not be renewed "
+        "after exhausting all retries. Renew it manually or the dev session may expire."
+    )
+
+    if targets:
+        for target in targets:
+            request = urllib.request.Request(  # noqa: S310 - internal supervisor API
+                f"{SUPERVISOR_CORE_API}/services/notify/{target}",
+                data=json.dumps({"title": title, "message": message}).encode("utf-8"),
+                method="POST",
+                headers={
+                    "Authorization": f"Bearer {supervisor_token}",
+                    "Content-Type": "application/json",
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT):  # noqa: S310 - internal supervisor API
+                    _LOGGER.info("Failure notification sent to '%s' for '%s'", target, session.name)
+            except (urllib.error.URLError, OSError):
+                _LOGGER.exception("Failed to send notification to '%s' for '%s'", target, session.name)
+        return
+
     request = urllib.request.Request(  # noqa: S310 - internal supervisor API
-        SUPERVISOR_API,
-        data=json.dumps(payload).encode("utf-8"),
+        f"{SUPERVISOR_CORE_API}/services/persistent_notification/create",
+        data=json.dumps(
+            {
+                "notification_id": session.notification_id,
+                "title": title,
+                "message": message,
+            }
+        ).encode("utf-8"),
         method="POST",
         headers={
             "Authorization": f"Bearer {supervisor_token}",
@@ -254,7 +300,7 @@ def renew_all(config: Config, supervisor_token: str) -> None:
     failures = [session for session in config.sessions if not renew_with_retries(session, config.retries)]
     if failures and config.notify_on_failure:
         for session in failures:
-            notify_failure(session, supervisor_token)
+            notify_failure(session, config.notification_targets, supervisor_token)
 
 
 def run(config: Config, supervisor_token: str) -> None:
@@ -300,11 +346,12 @@ def main() -> None:
         raise SystemExit(1) from None
 
     _LOGGER.info(
-        "Configured %d session(s), interval=%s h, retries=%s, notify=%s",
+        "Configured %d session(s), interval=%s h, retries=%s, notify=%s, targets=%s",
         len(config.sessions),
         config.interval_hours,
         config.retries,
         config.notify_on_failure,
+        ", ".join(config.notification_targets) or "-",
     )
     for session in config.sessions:
         _LOGGER.info("Session '%s' -> %s", session.name, mask_token(session.url))

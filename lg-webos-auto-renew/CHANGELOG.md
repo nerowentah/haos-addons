@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.0
+
+- Failure notifications can now be pushed to Home Assistant mobile apps via `notification_targets` (list of `notify` entities such as `mobile_app_pixel_8`; a `notify.` prefix is stripped). When targets are configured they replace the persistent notification; with no targets the persistent notification behavior is unchanged.
+
 ## 1.1.0
 
 - Move to the standalone public repository `nerowentah/haos-addons`; the add-on now lives at the repository root (`lg-webos-auto-renew/`) and is distributed as a prebuilt multi-arch image (`ghcr.io/nerowentah/lg-webos-auto-renew`) instead of being built on-device.
