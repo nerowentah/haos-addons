@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.4
+
+- Fix supervisor token availability: merge the s6 container environment (`/run/s6/container_environment`) into the process environment before lookup, replicating `with-contenv` without needing an s6 shell wrapper.
+
 ## 1.4.3
 
 - Diagnose missing container environment: when `SUPERVISOR_TOKEN` is unavailable, the add-on logs the full set of environment variable names and the contents of `/run` and `/run/supervisor` so the supervisor token mechanism can be identified.

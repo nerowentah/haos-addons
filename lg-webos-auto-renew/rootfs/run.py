@@ -70,6 +70,30 @@ def setup_logging() -> None:
 
 
 MAX_PROBE_FILE_SIZE = 2048
+_CONTAINER_ENV_DIRS = (Path("/run/s6/container_environment"), Path("/run/s6-container-env"))
+
+
+def _merge_s6_environment() -> None:
+    """Import s6 container environment vars into ``os.environ``.
+
+    Supervisor injects its variables (``SUPERVISOR_TOKEN``, ``TZ``, ...) into
+    the docker environment; s6-overlay captures them in
+    ``/run/s6/container_environment`` but only passes them to services started
+    with ``with-contenv``. Merge them here so they are visible to this process.
+    """
+
+    for directory in _CONTAINER_ENV_DIRS:
+        if not directory.is_dir():
+            continue
+        for var in directory.iterdir():
+            if not var.is_file() or not var.name:
+                continue
+            try:
+                value = var.read_bytes().rstrip(b"\0").decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            if value:
+                os.environ.setdefault(var.name, value)
 
 
 def _log_container_env_probe() -> None:
@@ -95,6 +119,10 @@ def _log_container_env_probe() -> None:
     try:
         _list_dir("/run")
         _list_dir("/run/supervisor")
+        for directory in _CONTAINER_ENV_DIRS:
+            if directory.is_dir():
+                names = ", ".join(sorted(p.name for p in directory.iterdir()))
+                _LOGGER.info("%s env var files: %s", directory, names or "(empty)")
     except OSError:
         _LOGGER.debug("Container probe failed", exc_info=True)
 
@@ -107,6 +135,8 @@ def load_supervisor_token() -> str:
     supervisor-related environment variables that are present so the reason is
     visible in the add-on logs.
     """
+
+    _merge_s6_environment()
 
     for name in SUPERVISOR_TOKEN_ENV_CANDIDATES:
         value = os.environ.get(name, "")
