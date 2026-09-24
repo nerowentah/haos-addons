@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.0
+
+- Add per-phone notification toggles: every discovered mobile app appears as a `notification_overrides` row with its own `notify` switch in the Configuration page, all on by default. Newly discovered phones are added with `notify: true` and existing rows keep their saved value (via `POST /addons/self/options`), so switching a phone off persists across restarts. Effective targets = discovered phones minus any rows with `notify: false`.
+- Privacy: renewal URLs and the session token (masked or not) are no longer written to the logs. Startup and renewal lines now log only the session name; the `mask_token` helper was removed.
+
 ## 1.4.5
 
 - Strip the trailing newline from s6 container-environment values so the merged `SUPERVISOR_TOKEN` produces a valid Authorization header.
