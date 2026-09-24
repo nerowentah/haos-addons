@@ -7,10 +7,7 @@ configuration:
     description: Times to re-attempt a failed renewal before reporting a failure.
   notify_on_failure:
     name: Notify on failure
-    description: Send a Home Assistant notification when a renewal fails.
-  notification_targets:
-    name: Notification targets
-    description: Mobile app notify targets (e.g. mobile_app_your_phone) for failure notifications. Leave empty to fall back to a persistent notification.
+    description: Send a push notification to every Home Assistant mobile app when a renewal fails.
   sessions:
     name: Sessions
     description: One entry per LG TV whose Developer Mode session should be renewed.

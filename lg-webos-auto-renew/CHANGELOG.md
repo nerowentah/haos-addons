@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.0
+
+- Replace the manual `notification_targets` list with automatic discovery of mobile apps: the add-on pulls the phone device names from the existing Home Assistant `device_tracker` entities and notifies every `notify.mobile_app_*` target that is registered (falling back to a persistent notification when none exist). Removes the `notification_targets` option from the Configuration page.
+
 ## 1.3.0
 
 - Modernize the add-on Configuration page: add `translations/en.yaml` with a friendly label and description for every option (including the per-session fields), and update the schema so the dev-mode session `token` renders as a masked password input and the session `url` is validated as a URL.
