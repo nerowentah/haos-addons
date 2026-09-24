@@ -410,7 +410,7 @@ def seed_notification_overrides(
         ]
         request = urllib.request.Request(
             "http://supervisor/addons/self/options",
-            data=json.dumps(options).encode("utf-8"),
+            data=json.dumps({"options": options}).encode("utf-8"),
             method="POST",
             headers={"Authorization": f"Bearer {supervisor_token}", "Content-Type": "application/json"},
         )
