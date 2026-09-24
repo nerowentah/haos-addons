@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.1
+
+- Make mobile-app target discovery resilient: targets are now drawn straight from the registered Home Assistant `notify` services (`notify.mobile_app_*`), so it keeps working even when the add-on token cannot list `device_tracker` entities.
+
 ## 1.4.0
 
 - Replace the manual `notification_targets` list with automatic discovery of mobile apps: the add-on pulls the phone device names from the existing Home Assistant `device_tracker` entities and notifies every `notify.mobile_app_*` target that is registered (falling back to a persistent notification when none exist). Removes the `notification_targets` option from the Configuration page.
