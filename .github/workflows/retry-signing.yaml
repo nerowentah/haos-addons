@@ -1,0 +1,54 @@
+name: Retry signing after a Sigstore outage
+
+# When a Builder run on main fails only because Sigstore (Fulcio/Rekor) is
+# unavailable, wait for Sigstore to recover and re-run the failed jobs.
+# Real build errors are never retried, and images are never published unsigned.
+
+on:
+  workflow_run:
+    workflows: [Builder]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  retry:
+    name: Retry after Sigstore recovers
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt < 3
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - name: Check the failure was caused by Sigstore
+        id: cause
+        run: |
+          if gh run view "${RUN_ID}" -R "${REPO}" --log-failed \
+              | grep -Eq 'rekor\.sigstore\.dev|fulcio\.sigstore\.dev|Failed to sign|signing bundle'; then
+            echo "sigstore=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "The failure is not a Sigstore outage; not retrying."
+            echo "sigstore=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Wait for Sigstore to recover (up to 60 minutes)
+        if: steps.cause.outputs.sigstore == 'true'
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS -o /dev/null --max-time 20 https://rekor.sigstore.dev/api/v1/log; then
+              echo "Sigstore is reachable (check ${attempt})"
+              exit 0
+            fi
+            sleep 120
+          done
+          echo "::error::Sigstore is still unavailable after 60 minutes"
+          exit 1
+
+      - name: Re-run the failed jobs
+        if: steps.cause.outputs.sigstore == 'true'
+        run: gh run rerun "${RUN_ID}" -R "${REPO}" --failed
