@@ -21,14 +21,6 @@ class ConfigError(ValueError):
 
 
 @dataclass(slots=True)
-class NotificationOverride:
-    """Per-phone notification switch (every discovered phone defaults to on)."""
-
-    name: str
-    notify: bool = True
-
-
-@dataclass(slots=True)
 class Account:
     """One TNB account: a myTNB portal login and/or a local energy sensor."""
 
@@ -81,8 +73,8 @@ class Config:
     calendarific_api_key: str
     extra_holidays: list[date]
     notify_on_failure: bool
-    notification_overrides: list[NotificationOverride]
     accounts: list[Account]
+    mqtt: bool = True
 
 
 def slugify(value: str) -> str:
@@ -193,12 +185,6 @@ def load_config(raw: dict[str, object]) -> Config:
         except ValueError as err:
             raise ConfigError(f"extra_holidays: '{value}' is not a YYYY-MM-DD date") from err
 
-    overrides = [
-        NotificationOverride(name=_str(entry, "name"), notify=bool(entry.get("notify", True)))
-        for entry in raw.get("notification_overrides") or []  # type: ignore[union-attr]
-        if isinstance(entry, dict) and _str(entry, "name")
-    ]
-
     return Config(
         portal_interval_hours=_int(raw, "portal_interval_hours", 6, 1, 24),
         meter_poll_seconds=_int(raw, "meter_poll_seconds", 60, 10, 600),
@@ -206,6 +192,6 @@ def load_config(raw: dict[str, object]) -> Config:
         calendarific_api_key=_str(raw, "calendarific_api_key"),
         extra_holidays=extra_holidays,
         notify_on_failure=bool(raw.get("notify_on_failure", True)),
-        notification_overrides=overrides,
         accounts=accounts,
+        mqtt=_bool(raw, "mqtt"),
     )
