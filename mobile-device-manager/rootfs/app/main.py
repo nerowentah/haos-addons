@@ -32,7 +32,8 @@ from webui import PanelError, PanelServer, action, badge, link, notice, stat, to
 _LOGGER = logging.getLogger("mobile_device_manager")
 
 VERSION = os.environ.get("MDM_VERSION", "dev")
-LOOP_SECONDS = 10
+LOOP_SECONDS = 60  # longest idle sleep; the loop wakes earlier for due work or panel actions
+MIN_SLEEP_SECONDS = 1
 OPTIONS_CHECK_SECONDS = 30
 PHONE_CHECK_SECONDS = 300
 STORE_SAVE_SECONDS = 60
@@ -75,6 +76,8 @@ class App:
         self.failure_notified = False
         self.next_scan = 0.0
         self.discovered: list[str] = []
+        # entity_id -> (last_changed, stored config): a config is re-read only after it was edited/reloaded
+        self.config_cache: dict[str, tuple[str, object]] = {}
         self.next_phone_check = 0.0
         self.next_options_check = time.monotonic() + OPTIONS_CHECK_SECONDS
         self.stopping = threading.Event()
@@ -174,9 +177,14 @@ class App:
 
     # -- Scanning ------------------------------------------------------------------------
     def _configs(self, states: dict[str, dict[str, object]]) -> dict[str, object]:
-        """Stored automation/script configs (UI-managed ones), keyed by entity id."""
+        """Stored automation/script configs (UI-managed ones), keyed by entity id.
+
+        Saving or reloading an automation/script recreates its state, which changes ``last_changed``;
+        only those are fetched again, the rest come from the cache.
+        """
 
         configs: dict[str, object] = {}
+        cache: dict[str, tuple[str, object]] = {}
         for entity_id, state in states.items():
             domain, _, object_id = entity_id.partition(".")
             attrs = state.get("attributes") or {}
@@ -186,10 +194,18 @@ class App:
                 path = f"/config/script/config/{object_id}"
             else:
                 continue
-            try:
-                configs[entity_id] = self.supervisor.core_get(path)
-            except SupervisorError:
-                continue  # YAML-only automation/script: not readable through the config API
+            stamp = str(state.get("last_changed") or "")
+            cached = self.config_cache.get(entity_id)
+            if cached is not None and stamp and cached[0] == stamp:
+                cache[entity_id] = cached
+            else:
+                try:
+                    cache[entity_id] = (stamp, self.supervisor.core_get(path))
+                except SupervisorError:
+                    cache[entity_id] = (stamp, None)  # YAML-only: not readable through the config API
+            if cache[entity_id][1] is not None:
+                configs[entity_id] = cache[entity_id][1]
+        self.config_cache = cache  # drops deleted automations/scripts
         return configs
 
     def _inventory(self, only: str | None = None) -> list[Device]:
@@ -204,11 +220,16 @@ class App:
             devices = inventory.build_devices(entries, devices_raw, entities_raw, states_raw, services_raw)
             if only is not None:
                 devices = [d for d in devices if d.device_id == only]
-            states = {
+            wanted = {e for d in devices for e in d.entity_ids}
+            states = {  # keep only what links need: automations, scripts, scenes and the devices' entities
                 str(s["entity_id"]): s
                 for s in (states_raw if isinstance(states_raw, list) else [])
                 if isinstance(s, dict)
+                and (
+                    str(s.get("entity_id", "")).split(".", 1)[0] in inventory.LINK_KINDS or s.get("entity_id") in wanted
+                )
             }
+            del devices_raw, entities_raw, states_raw, services_raw  # release the full lists early
             configs = self._configs(states) if devices else {}
             for device in devices:
                 related = ws.call("search/related", item_type="device", item_id=device.device_id)
@@ -545,7 +566,8 @@ class App:
                 if time.monotonic() - last_save >= STORE_SAVE_SECONDS:
                     self.store.save()
                     last_save = time.monotonic()
-                self.wake.wait(LOOP_SECONDS)
+                deadline = min(self.next_scan, self.next_options_check, self.next_phone_check)
+                self.wake.wait(min(max(deadline - time.monotonic(), MIN_SLEEP_SECONDS), LOOP_SECONDS))
         finally:
             server.stop()
             self.store.save()

@@ -12,10 +12,12 @@ import json
 import logging
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
-import websocket
 from mytnb import EnergyPoint
+
+if TYPE_CHECKING:
+    import websocket
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -60,6 +62,8 @@ class StatsClient:
         self._next_id = 1
 
     def __enter__(self) -> Self:
+        import websocket  # noqa: PLC0415 - loaded only when statistics are imported
+
         self._ws = websocket.create_connection(WS_URL, timeout=WS_TIMEOUT)
         hello = json.loads(self._ws.recv())
         if hello.get("type") != "auth_required":

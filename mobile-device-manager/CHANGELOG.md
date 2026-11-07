@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.2
+
+- Lighter scans:
+  - Automation and script configs are cached and only re-read after they are edited or reloaded.
+  - A scan keeps only the states it needs.
+  - The loop sleeps until the next job instead of waking every 10 s.
+- The panel stops polling while it is hidden (another tab, or the sidebar panel closed).
+- Python bytecode is precompiled in the image, for a faster start with nothing written at runtime.
+
 ## 0.1.1
 
 - **Runs as a proper s6-overlay service.** No `legacy-*` or `s6-rc.d is empty` log noise, and the app stops cleanly.
