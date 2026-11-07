@@ -26,16 +26,16 @@ class AccountResolutionTest(unittest.TestCase):
             {
                 **LOGIN,
                 "accounts": [
-                    account("Home", account_number="2200 1234 5678"),
-                    account("Shop", account_number="220087654321", import_entity="sensor.shop"),
+                    account("Home", account_number="1234 5678 9012"),
+                    account("Shop", account_number="123456789013", import_entity="sensor.shop"),
                 ],
             }
         )
         home, shop = cfg.accounts
-        self.assertEqual((home.ca_no, shop.ca_no), ("220012345678", "220087654321"))
+        self.assertEqual((home.ca_no, shop.ca_no), ("123456789012", "123456789013"))
         self.assertEqual({home.mytnb_username, shop.mytnb_username}, {"you@example.com"})
         self.assertTrue(home.has_portal and shop.has_portal and shop.has_meter)
-        self.assertEqual(home.smartmeter_path, "/AccountManagement/SmartMeter/Index/TRIL?caNo=220012345678")
+        self.assertEqual(home.smartmeter_path, "/AccountManagement/SmartMeter/Index/TRIL?caNo=123456789012")
 
     def test_per_account_login_overrides_shared(self) -> None:
         cfg = config.load_config(
@@ -44,7 +44,7 @@ class AccountResolutionTest(unittest.TestCase):
                 "accounts": [
                     account(
                         "Parents",
-                        account_number="220011112222",
+                        account_number="123456789014",
                         mytnb_username="parents@example.com",
                         mytnb_password="pw",
                     )
@@ -54,30 +54,30 @@ class AccountResolutionTest(unittest.TestCase):
         self.assertEqual(cfg.accounts[0].mytnb_username, "parents@example.com")
 
     def test_legacy_smartmeter_url_still_works(self) -> None:
-        url = "https://myaccount.mytnb.com.my/AccountManagement/SmartMeter/Index/TRIL?caNo=220099998888"
+        url = "https://myaccount.mytnb.com.my/AccountManagement/SmartMeter/Index/TRIL?caNo=123456789015"
         cfg = config.load_config({**LOGIN, "accounts": [account("Old", smartmeter_url=url)]})
-        self.assertEqual(cfg.accounts[0].ca_no, "220099998888")
+        self.assertEqual(cfg.accounts[0].ca_no, "123456789015")
 
     def test_login_without_account_number_explains_fix(self) -> None:
-        # The user's HHGV case: a login on the account but no smart-meter link/number.
+        # A login without an account number: a login on the account but no smart-meter link/number.
         with self.assertRaises(config.ConfigError) as ctx:
-            config.load_config({"accounts": [account("HHGV", **LOGIN)]})
+            config.load_config({"accounts": [account("Home", **LOGIN)]})
         self.assertIn("account_number", str(ctx.exception))
         self.assertIn("bill", str(ctx.exception))
 
     def test_account_number_without_login(self) -> None:
         with self.assertRaises(config.ConfigError) as ctx:
-            config.load_config({"accounts": [account("Home", account_number="220012345678")]})
+            config.load_config({"accounts": [account("Home", account_number="123456789012")]})
         self.assertIn("mytnb_username", str(ctx.exception))
 
     def test_bad_inputs(self) -> None:
         cases = [
             {"accounts": [account("Home", account_number="12345")]},  # too short
-            {"mytnb_username": "you@example.com", "accounts": [account("Home", account_number="220012345678")]},
+            {"mytnb_username": "you@example.com", "accounts": [account("Home", account_number="123456789012")]},
             {
                 "mytnb_username": "not-an-email",
                 "mytnb_password": "x",
-                "accounts": [account("A", account_number="220012345678")],
+                "accounts": [account("A", account_number="123456789012")],
             },
             {"accounts": [account("Home", account_number="")]},  # empty default: nothing configured yet
             {"accounts": []},
@@ -87,14 +87,14 @@ class AccountResolutionTest(unittest.TestCase):
                 config.load_config(raw)
 
     def test_session_built_from_account_number(self) -> None:
-        session = mytnb.MyTnbSession("you@example.com", "pw", "220012345678")
-        self.assertEqual(session.ca_no, "220012345678")
-        self.assertTrue(session._smartmeter_path.endswith("caNo=220012345678"))
+        session = mytnb.MyTnbSession("you@example.com", "pw", "123456789012")
+        self.assertEqual(session.ca_no, "123456789012")
+        self.assertTrue(session._smartmeter_path.endswith("caNo=123456789012"))
 
 
 class MaskTest(unittest.TestCase):
     def test_masks(self) -> None:
-        self.assertEqual(config.mask_number("220012345678"), "2200••••5678")
+        self.assertEqual(config.mask_number("123456789012"), "1234••••9012")
         self.assertEqual(config.mask_email("you@example.com"), "y••@example.com")
         self.assertEqual(config.mask_email(""), "••")
 
@@ -103,8 +103,8 @@ class SetupModeTest(unittest.TestCase):
     def test_waits_until_options_are_valid(self) -> None:
         answers = iter(
             [
-                {"accounts": [account("HHGV", **LOGIN)]},
-                {**LOGIN, "accounts": [account("HHGV", account_number="220012345678")]},
+                {"accounts": [account("Home", **LOGIN)]},
+                {**LOGIN, "accounts": [account("Home", account_number="123456789012")]},
             ]
         )
         view = webui.SetupView("TNB", "first error", "fix it")

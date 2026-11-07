@@ -774,11 +774,11 @@ SETUP_EXAMPLE = """mytnb_username: you@example.com
 mytnb_password: your-myTNB-password
 accounts:
   - name: Home
-    account_number: "220012345678"
+    account_number: "123456789012"
     tariff: general
     billing_start_day: 1
   - name: Shop
-    account_number: "220087654321"
+    account_number: "123456789013"
     tariff: tou
     billing_start_day: 15"""
 

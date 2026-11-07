@@ -62,8 +62,8 @@ Changes made in the Configuration tab are picked up within about 30 seconds. You
 2. **Turn on the Key Server** in the Developer Mode app.
 3. **Save the TV's SSH private key** on your computer.
    - **Option A (no LG tooling):** download the key from the TV's key server on port 9991.
-     - Linux/macOS: `curl -o ~/.ssh/tv15_webos http://<tv-ip>:9991/webos_rsa && chmod 600 ~/.ssh/tv15_webos`
-     - Windows PowerShell: `Invoke-WebRequest -Uri "http://<tv-ip>:9991/webos_rsa" -OutFile "$env:USERPROFILE\.ssh\tv15_webos"`
+     - Linux/macOS: `curl -o ~/.ssh/lg_tv_webos http://<tv-ip>:9991/webos_rsa && chmod 600 ~/.ssh/lg_tv_webos`
+     - Windows PowerShell: `Invoke-WebRequest -Uri "http://<tv-ip>:9991/webos_rsa" -OutFile "$env:USERPROFILE\.ssh\lg_tv_webos"`
    - **Option B (webOS SDK):** `ares-novacom --device <name> --getkey`
    - The key's passphrase is the 6-character, case-sensitive code shown at the bottom-left of the Developer Mode app screen. Run `ssh-keygen -p -f <key>` to remove it.
 4. **Read the token** over SSH (port `9922`, user `prisoner`). webOS only offers the legacy `ssh-rsa` host key, which OpenSSH 8.8+ refuses by default, so enable it explicitly:
