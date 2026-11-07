@@ -24,13 +24,22 @@ extend-select = [
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-"lg-webos-auto-renew/**/*.py" = [
+"lg-webos-devmode-mgmt/**/*.py" = [
   "TRY003",
 ]
-"utilities-malaysia-power-tnb/**/*.py" = [
+"tnb-usage-checker/**/*.py" = [
   "TRY003",
 ]
-"utilities-malaysia-power-tnb/tests/*.py" = [
+"tnb-usage-checker/tests/*.py" = [
+  "TRY003",
+  "S101",
+  "PLR2004",
+  "PT009",
+]
+"mobile-device-manager/**/*.py" = [
+  "TRY003",
+]
+"mobile-device-manager/tests/*.py" = [
   "TRY003",
   "S101",
   "PLR2004",

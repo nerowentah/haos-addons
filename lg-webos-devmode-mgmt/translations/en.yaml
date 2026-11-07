@@ -1,0 +1,26 @@
+configuration:
+  interval_hours:
+    name: Renewal interval (hours)
+    description: How often to renew the TV dev-mode sessions. LG dev-mode sessions last about 50 hours, so keep this well below that.
+  retries:
+    name: Retries
+    description: Times to re-attempt a failed renewal before reporting a failure.
+  notify_on_failure:
+    name: Notify on failure
+    description: Send a push notification when a renewal fails. Phones are found automatically; switch individual phones on or off in the LG DevMode panel.
+  sessions:
+    name: Sessions
+    description: One entry per LG TV whose Developer Mode session should be renewed.
+    fields:
+      name:
+        name: TV name
+        description: Friendly name identifying this TV.
+      token:
+        name: Dev-mode session token
+        description: Session token from the TV's Developer Mode app (or read over SSH). Masked in the UI.
+      url:
+        name: API URL (optional)
+        description: Override the LG renewal endpoint; defaults to the built-in URL.
+      enabled:
+        name: Auto renew
+        description: Switch off to pause scheduled renewals for this TV without deleting its token. Also switchable from the LG DevMode panel; applies without a restart.

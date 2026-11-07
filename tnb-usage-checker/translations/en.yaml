@@ -1,0 +1,62 @@
+configuration:
+  portal_interval_hours:
+    name: myTNB sync interval (hours)
+    description: How often to log in to myTNB and import smart meter data. TNB publishes data about two days late, so every few hours is plenty.
+  meter_poll_seconds:
+    name: Energy sensor poll interval (seconds)
+    description: How often to read each account's local energy sensor for the live bill estimate.
+  afa_rate:
+    name: AFA rate (RM/kWh)
+    description: Current Automatic Fuel Adjustment announced monthly by TNB/ST, e.g. -0.0047 for a 0.47 sen rebate. Applies only to usage above 600 kWh.
+  calendarific_api_key:
+    name: Calendarific API key (optional)
+    description: Free key from calendarific.com to load lunar public holidays (Hari Raya, CNY, Deepavali...) as ToU off-peak days. Fixed-date holidays are built in.
+  extra_holidays:
+    name: Extra off-peak holidays
+    description: Additional YYYY-MM-DD dates treated as ToU off-peak all day.
+  notify_on_failure:
+    name: Notify on sync failure
+    description: Push a notification when a myTNB sync fails (and again when it recovers). Phones are found automatically; switch individual phones on or off in the TNB Usage panel.
+  mqtt:
+    name: Use MQTT when available
+    description: Publish one MQTT device per account when a broker (e.g. the Mosquitto broker app) is found; it is detected automatically while the app runs. Off, or without a broker, entities are created through the Home Assistant states API instead.
+  accounts:
+    name: TNB accounts
+    description: One entry per electricity account. Each needs myTNB credentials, a local energy sensor, or both.
+    fields:
+      name:
+        name: Account name
+        description: Friendly name; also used for the device and entity ids (e.g. "Home" gives sensor.tnb_home_bill_estimate).
+      tariff:
+        name: Tariff
+        description: general (flat rate) or tou (Time-of-Use, peak weekdays 14:00-22:00).
+      billing_start_day:
+        name: Billing cycle start day
+        description: Day of the month your TNB bill cycle starts (see your bill's reading date).
+      mytnb_username:
+        name: myTNB email (optional)
+        description: Email used to log in to myTNB. Requires a smart meter (AMI).
+      mytnb_password:
+        name: myTNB password (optional)
+        description: myTNB password. Masked in the UI and never logged.
+      smartmeter_url:
+        name: myTNB smart meter URL (optional)
+        description: In myTNB open the account and click "View Energy Usage"; paste the full URL containing /AccountManagement/SmartMeter/Index/TRIL?caNo=...
+      import_entity:
+        name: Grid import energy sensor (optional)
+        description: Cumulative kWh/Wh sensor of energy drawn from TNB (e.g. a Shelly EM channel) for the live bill estimate.
+      export_entity:
+        name: Grid export energy sensor (optional)
+        description: Cumulative kWh/Wh sensor of solar energy exported to TNB, credited NEM-style.
+      enabled:
+        name: Account enabled
+        description: Switch off to pause everything for this account (entities show as unavailable). Also switchable from the TNB Usage panel; applies without a restart.
+      portal_enabled:
+        name: myTNB sync
+        description: Log in to myTNB and fetch smart meter data. Off keeps the credentials but stops syncing.
+      meter_enabled:
+        name: Live bill estimate
+        description: Read the energy sensors for the live bill estimate.
+      statistics_enabled:
+        name: Energy dashboard import
+        description: Import myTNB hourly usage and cost as long-term statistics.
