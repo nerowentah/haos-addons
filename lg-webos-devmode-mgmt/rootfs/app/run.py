@@ -19,7 +19,17 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from webui import PanelError, PanelServer, action, badge, stat, toggle
+from webui import (
+    PanelError,
+    PanelRouter,
+    PanelServer,
+    SetupView,
+    action,
+    badge,
+    stat,
+    toggle,
+    wait_for_valid_config,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -714,17 +724,12 @@ class App:
             _LOGGER.info("Next renewal at %s", time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(self.next_run)))
 
     def run(self) -> None:
-        """Serve the panel and run the scheduling loop until stopped."""
+        """Run the scheduling loop until stopped (the panel server is owned by ``main``)."""
 
-        server = PanelServer(WEB_DIR, self.panel_state, self.panel_toggle, self.panel_action)
-        server.start()
-        try:
-            while not self.stopping.is_set():
-                self.wake.clear()
-                self._tick()
-                self.wake.wait(LOOP_SECONDS)
-        finally:
-            server.stop()
+        while not self.stopping.is_set():
+            self.wake.clear()
+            self._tick()
+            self.wake.wait(LOOP_SECONDS)
 
     # -- panel (HTTP thread) --------------------------------------------------
     def panel_toggle(self, toggle_id: str, value: bool) -> None:
@@ -767,6 +772,7 @@ class App:
             chip = badge("Renewed", "ok") if status.last_ok else badge("Failed", "error")
         return {
             "title": session.name,
+            "icon": "mdi:television",
             "subtitle": "Custom renewal URL" if session.custom_url else "Developer Mode session token",
             "badge": chip,
             "off": not session.enabled,
@@ -781,10 +787,17 @@ class App:
                     "Auto renew",
                     session.enabled,
                     "Renew this TV's Developer Mode session on the schedule",
+                    icon="mdi:autorenew",
                 )
             ],
             "actions": [
-                action("renew", "Renew now", {"session": session.notification_id}, disabled=status.running),
+                action(
+                    "renew",
+                    "Renew now",
+                    {"session": session.notification_id},
+                    disabled=status.running,
+                    icon="mdi:refresh",
+                ),
             ],
         }
 
@@ -798,12 +811,18 @@ class App:
             "title": "LG webOS DevMode Mgmt",
             "subtitle": f"Version {VERSION} · {enabled} of {len(config.sessions)} TV(s) on auto renew",
             "sections": [
-                {"title": "TVs", "cards": [self._session_card(s) for s in config.sessions]},
+                {
+                    "title": "TVs",
+                    "icon": "mdi:television-play",
+                    "cards": [self._session_card(s) for s in config.sessions],
+                },
                 {
                     "title": "Settings",
+                    "icon": "mdi:cog",
                     "cards": [
                         {
                             "title": "Schedule",
+                            "icon": "mdi:calendar-clock",
                             "subtitle": "Change the interval, retries, tokens and TVs in the Configuration tab",
                             "stats": [
                                 stat("Renew every", config.interval_hours, "h"),
@@ -816,12 +835,14 @@ class App:
                                     "Failure notifications",
                                     config.notify_on_failure,
                                     "Notify the phones below when a renewal fails after all retries",
+                                    icon="mdi:bell",
                                 )
                             ],
-                            "actions": [action("renew_all", "Renew all now")],
+                            "actions": [action("renew_all", "Renew all now", icon="mdi:refresh")],
                         },
                         {
                             "title": "Phones",
+                            "icon": "mdi:cellphone-message",
                             "subtitle": "Companion apps linked to this Home Assistant (found automatically)",
                             "toggles": [
                                 toggle(
@@ -830,6 +851,7 @@ class App:
                                     self.phones.get(name, True),
                                     name,
                                     disabled=not config.notify_on_failure,
+                                    icon="mdi:cellphone",
                                 )
                                 for name in phones
                             ],
@@ -841,46 +863,78 @@ class App:
         }
 
 
+SETUP_HELP = (
+    "Open Settings → Apps → LG webOS DevMode Mgmt → Configuration, fix the option named above and save. "
+    "This page picks up the change within 15 seconds; no restart needed."
+)
+SETUP_EXAMPLE = """interval_hours: 48
+retries: 3
+notify_on_failure: true
+sessions:
+  - name: living-room-tv
+    token: YOUR_DEV_MODE_SESSION_TOKEN"""
+
+
 def main() -> None:
     """Entry point."""
 
     _merge_s6_environment()  # TZ first, so every log line uses local time
     setup_logging()
     _LOGGER.info("Starting LG webOS DevMode Mgmt %s", VERSION)
-
-    try:
-        raw_options = load_options()
-        config = load_config(raw_options)
-    except ConfigError:
-        _LOGGER.exception("Invalid configuration")
-        raise SystemExit(1) from None
-
-    _LOGGER.info(
-        "Configured %d session(s), interval=%s h, retries=%s, notify=%s",
-        len(config.sessions),
-        config.interval_hours,
-        config.retries,
-        config.notify_on_failure,
-    )
-    for session in config.sessions:
-        _LOGGER.info("Session '%s'%s", session.name, "" if session.enabled else " (paused)")
-
     token = load_supervisor_token()
-    app = App(config, raw_options, token)
-    app.migrate_overrides()
-    app.refresh_phones()
-    app.next_phone_check = time.monotonic() + PHONE_CHECK_SECONDS
-    targets = effective_mobile_targets(app.discovered, app.phones)
-    _LOGGER.info("Notifications go to %d phone(s): %s", len(targets), ", ".join(targets) or "-")
+
+    stop = threading.Event()
+    router = PanelRouter()
 
     def _stop(signum: int, _frame: object) -> None:
         _LOGGER.info("Received signal %d; shutting down", signum)
-        app.stopping.set()
-        app.wake.set()
+        stop.set()
+        if isinstance(router.target, App):
+            router.target.stopping.set()
+            router.target.wake.set()
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-    app.run()
+
+    server = PanelServer(WEB_DIR, router.get_state, router.on_toggle, router.on_action)
+    server.start()
+    try:
+        try:
+            raw_options = load_options()
+            config = load_config(raw_options)
+        except ConfigError as err:
+            _LOGGER.error("Configuration problem: %s", err)  # noqa: TRY400 - no traceback needed
+            _LOGGER.info("Waiting for a valid configuration; open the LG DevMode panel for details")
+            view = SetupView("LG webOS DevMode Mgmt", str(err), SETUP_HELP, SETUP_EXAMPLE)
+            router.target = view
+            result = wait_for_valid_config(lambda: fetch_options(token), load_config, view, stop)
+            if result is None:
+                return
+            raw_options, config = result  # type: ignore[assignment]
+            _LOGGER.info("Configuration is valid now; starting")
+
+        _LOGGER.info(
+            "Configured %d session(s), interval=%s h, retries=%s, notify=%s",
+            len(config.sessions),
+            config.interval_hours,
+            config.retries,
+            config.notify_on_failure,
+        )
+        for session in config.sessions:
+            _LOGGER.info("Session '%s'%s", session.name, "" if session.enabled else " (paused)")
+
+        app = App(config, raw_options, token)
+        router.target = app
+        if stop.is_set():
+            return
+        app.migrate_overrides()
+        app.refresh_phones()
+        app.next_phone_check = time.monotonic() + PHONE_CHECK_SECONDS
+        targets = effective_mobile_targets(app.discovered, app.phones)
+        _LOGGER.info("Notifications go to %d phone(s): %s", len(targets), ", ".join(targets) or "-")
+        app.run()
+    finally:
+        server.stop()
 
 
 if __name__ == "__main__":

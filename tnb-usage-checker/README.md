@@ -7,7 +7,7 @@ Track Malaysian **TNB** electricity for one or more accounts. TNB Usage Checker 
 
 ## Features
 
-- **Multiple accounts.** Each account uses a myTNB login, a local energy sensor, or both.
+- **Multiple accounts, one login.** Enter your myTNB login once and list your account numbers from the bill. Each account can also use a local energy sensor, or a different login.
 - **Energy dashboard statistics.** Hourly kWh and RM from myTNB. Each sync re-imports 30 days, so late TNB data is filled in.
 - **Live bill estimate** covering General and Time-of-Use, AFA, EEI, KWTBB, SST and NEM. It includes a full breakdown and a prediction for the end of the cycle.
 - **Sidebar panel.** Account cards, switches that apply immediately, and a **Sync myTNB now** button. It follows your HA theme.
@@ -21,7 +21,7 @@ Track Malaysian **TNB** electricity for one or more accounts. TNB Usage Checker 
 
 1. Add the repository above.
 2. Install **TNB Usage Checker**.
-3. Add your accounts in the Configuration tab and start the app.
+3. In the Configuration tab, enter your myTNB login and each account's number, then start the app. If anything is missing, the panel tells you what to fix.
 
 Full documentation is in the app's **Documentation** tab, or [DOCS.md](DOCS.md). See the [changelog](CHANGELOG.md) for release history.
 

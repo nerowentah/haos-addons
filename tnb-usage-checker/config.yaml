@@ -1,5 +1,5 @@
 name: "TNB Usage Checker"
-version: "0.2.1"
+version: "0.3.0"
 slug: "power_tnb"
 description: >-
   Tracks Malaysian TNB electricity for multiple accounts: imports hourly
@@ -18,6 +18,7 @@ ingress: true
 ingress_port: 8099
 panel_icon: mdi:lightning-bolt
 panel_title: TNB Usage
+panel_admin: true
 homeassistant_api: true
 hassio_api: true
 services:
@@ -30,13 +31,13 @@ options:
   extra_holidays: []
   notify_on_failure: true
   mqtt: true
+  mytnb_username: ""
+  mytnb_password: ""
   accounts:
     - name: "Home"
+      account_number: ""
       tariff: "general"
       billing_start_day: 1
-      import_entity: "sensor.grid_energy"
-      enabled: true
-      meter_enabled: true
 schema:
   portal_interval_hours: int(1,24)
   meter_poll_seconds: int(10,600)
@@ -46,8 +47,11 @@ schema:
     - match(^\d{4}-\d{2}-\d{2}$)
   notify_on_failure: bool
   mqtt: bool
+  mytnb_username: str?
+  mytnb_password: password?
   accounts:
     - name: str
+      account_number: match(^(\d{10,14})?$)?
       tariff: list(general|tou)
       billing_start_day: int(1,31)
       mytnb_username: email?

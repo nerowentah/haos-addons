@@ -11,7 +11,9 @@ from pathlib import Path
 import tariff
 
 CONFIG_PATH = Path("/data/options.json")
-SMARTMETER_PATH_RE = re.compile(r"/AccountManagement/SmartMeter/Index/TRIL\?caNo=[^\"\s]+")
+SMARTMETER_PATH_RE = re.compile(r"/AccountManagement/SmartMeter/Index/TRIL\?caNo=(\d+)")
+ACCOUNT_NUMBER_RE = re.compile(r"^\d{10,14}$")
+SMARTMETER_PATH = "/AccountManagement/SmartMeter/Index/TRIL?caNo={ca_no}"
 ENTITY_ID_RE = re.compile(r"^sensor\.[a-z0-9_]+$")
 TARIFFS = {tariff.TARIFF_GENERAL, tariff.TARIFF_TOU}
 
@@ -30,7 +32,7 @@ class Account:
     billing_start_day: int
     mytnb_username: str = ""
     mytnb_password: str = ""
-    smartmeter_url: str = ""
+    ca_no: str = ""
     import_entity: str = ""
     export_entity: str = ""
     enabled: bool = True
@@ -54,7 +56,13 @@ class Account:
     def has_portal(self) -> bool:
         """Whether myTNB portal credentials are configured."""
 
-        return bool(self.mytnb_username and self.mytnb_password and self.smartmeter_url)
+        return bool(self.mytnb_username and self.mytnb_password and self.ca_no)
+
+    @property
+    def smartmeter_path(self) -> str:
+        """The myTNB smart meter page of this account."""
+
+        return SMARTMETER_PATH.format(ca_no=self.ca_no)
 
     @property
     def has_meter(self) -> bool:
@@ -113,8 +121,30 @@ def _int(raw: dict[str, object], key: str, default: int, low: int, high: int) ->
     return min(max(value, low), high)
 
 
-def build_account(index: int, entry: object) -> Account:
-    """Validate one ``accounts`` row."""
+def _account_number(name: str, entry: dict[str, object]) -> str:
+    """The TNB account number (caNo), from ``account_number`` or the legacy ``smartmeter_url``."""
+
+    number = re.sub(r"[\s-]", "", _str(entry, "account_number"))
+    if number:
+        if not ACCOUNT_NUMBER_RE.match(number):
+            raise ConfigError(
+                f"Account '{name}': account_number must be the 10-14 digit number printed on your TNB bill"
+            )
+        return number
+    url = _str(entry, "smartmeter_url")
+    if url:
+        match = SMARTMETER_PATH_RE.search(url)
+        if not match:
+            raise ConfigError(
+                f"Account '{name}': smartmeter_url must contain /AccountManagement/SmartMeter/Index/TRIL?caNo=...; "
+                "easier: remove it and set account_number to the number on your bill"
+            )
+        return match.group(1)
+    return ""
+
+
+def build_account(index: int, entry: object, default_login: tuple[str, str] = ("", "")) -> Account:
+    """Validate one ``accounts`` row (``default_login`` is the shared top-level myTNB login)."""
 
     if not isinstance(entry, dict):
         raise ConfigError(f"Account #{index} must be a mapping of options")
@@ -132,9 +162,9 @@ def build_account(index: int, entry: object) -> Account:
         account_id=account_id,
         tariff=tariff_name,
         billing_start_day=_int(entry, "billing_start_day", 1, 1, 31),
-        mytnb_username=_str(entry, "mytnb_username"),
-        mytnb_password=_str(entry, "mytnb_password"),
-        smartmeter_url=_str(entry, "smartmeter_url"),
+        mytnb_username=_str(entry, "mytnb_username") or default_login[0],
+        mytnb_password=_str(entry, "mytnb_password") or default_login[1],
+        ca_no=_account_number(name, entry),
         import_entity=_str(entry, "import_entity").lower(),
         export_entity=_str(entry, "export_entity").lower(),
         enabled=_bool(entry, "enabled"),
@@ -143,13 +173,19 @@ def build_account(index: int, entry: object) -> Account:
         statistics_enabled=_bool(entry, "statistics_enabled"),
     )
 
-    portal_fields = [account.mytnb_username, account.mytnb_password, account.smartmeter_url]
-    if any(portal_fields) and not all(portal_fields):
-        raise ConfigError(f"Account '{name}': myTNB needs all of mytnb_username, mytnb_password and smartmeter_url")
-    if account.smartmeter_url and not SMARTMETER_PATH_RE.search(account.smartmeter_url):
+    own_login = bool(_str(entry, "mytnb_username") or _str(entry, "mytnb_password"))
+    has_login = bool(account.mytnb_username and account.mytnb_password)
+    if own_login and not has_login:
+        raise ConfigError(f"Account '{name}': set both mytnb_username and mytnb_password (or neither)")
+    if account.ca_no and not has_login:
         raise ConfigError(
-            f"Account '{name}': smartmeter_url must be the myTNB 'View Energy Usage' link "
-            "containing /AccountManagement/SmartMeter/Index/TRIL?caNo=..."
+            f"Account '{name}': set mytnb_username and mytnb_password, either at the top "
+            "(shared by all accounts) or on this account"
+        )
+    if own_login and not account.ca_no:
+        raise ConfigError(
+            f"Account '{name}': add account_number, the 12-digit number printed on your TNB bill "
+            "(also shown in the myTNB app under the account)"
         )
     for key in ("import_entity", "export_entity"):
         value = getattr(account, key)
@@ -158,7 +194,7 @@ def build_account(index: int, entry: object) -> Account:
     if account.export_entity and not account.import_entity:
         raise ConfigError(f"Account '{name}': export_entity requires import_entity")
     if not (account.has_portal or account.has_meter):
-        raise ConfigError(f"Account '{name}' needs myTNB credentials, an import_entity, or both")
+        raise ConfigError(f"Account '{name}' needs an account_number (with a myTNB login), an import_entity, or both")
     return account
 
 
@@ -167,8 +203,16 @@ def load_config(raw: dict[str, object]) -> Config:
 
     accounts_raw = raw.get("accounts")
     if not isinstance(accounts_raw, list) or not accounts_raw:
-        raise ConfigError("No accounts configured; add at least one account")
-    accounts = [build_account(index, entry) for index, entry in enumerate(accounts_raw, start=1)]
+        raise ConfigError(
+            "No accounts configured; add at least one account with a name, tariff, billing_start_day "
+            "and an account_number and/or import_entity"
+        )
+    username, password = _str(raw, "mytnb_username"), _str(raw, "mytnb_password")
+    if bool(username) != bool(password):
+        raise ConfigError("Set both mytnb_username and mytnb_password at the top (or neither)")
+    if username and "@" not in username:
+        raise ConfigError("mytnb_username must be the email address you use to log in to myTNB")
+    accounts = [build_account(index, entry, (username, password)) for index, entry in enumerate(accounts_raw, start=1)]
     seen: set[str] = set()
     for account in accounts:
         if account.account_id in seen:
@@ -195,3 +239,16 @@ def load_config(raw: dict[str, object]) -> Config:
         accounts=accounts,
         mqtt=_bool(raw, "mqtt"),
     )
+
+
+def mask_number(number: str) -> str:
+    """Show only the first and last 4 digits of an account number."""
+
+    return number if len(number) <= 8 else f"{number[:4]}••••{number[-4:]}"  # noqa: PLR2004 - 4+4 digits
+
+
+def mask_email(email: str) -> str:
+    """Show only the first letter of the mailbox, e.g. y••@example.com."""
+
+    user, _, domain = email.partition("@")
+    return f"{user[:1]}••@{domain}" if domain else "••"

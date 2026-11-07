@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- **One login, many accounts.** Set `mytnb_username` and `mytnb_password` once at the top, then give each account its `account_number` (the 12-digit number on the bill). The smart-meter link is built automatically, so there's no more pasting `smartmeter_url`. An account can still use its own login, and `smartmeter_url` keeps working as a legacy option.
+- **No more crash loop on a bad configuration.** The app stays up and the panel shows exactly what to fix, with an example. It starts by itself within 15 seconds once the options are valid.
+- **The panel** shows each account's masked number and which login it uses (masked).
+- **Runs as a proper s6-overlay service.** The `legacy-cont-init` / `legacy-services` / `s6-rc.d is empty` log noise is gone, and a crash now stops the app cleanly so the Supervisor watchdog can restart it.
+- **Icons** on sections, cards, switches and buttons in the panel. The store icon is now 128×128 and the logo 250×100, with the new name.
+
 ## 0.2.1
 
 - Renamed from **Power TNB** to **TNB Usage Checker** (sidebar: **TNB Usage**). The repository folder is now `tnb-usage-checker/`. The slug, image, entity ids and Energy-dashboard statistics are unchanged, so there is nothing to reconfigure.

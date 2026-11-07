@@ -20,13 +20,22 @@ configuration:
   mqtt:
     name: Use MQTT when available
     description: Publish one MQTT device per account when a broker (e.g. the Mosquitto broker app) is found; it is detected automatically while the app runs. Off, or without a broker, entities are created through the Home Assistant states API instead.
+  mytnb_username:
+    name: myTNB email (shared)
+    description: The email you log in to myTNB with. Used by every account below that has an account number, so one login covers all your TNB accounts. Needs a smart meter (AMI).
+  mytnb_password:
+    name: myTNB password (shared)
+    description: Your myTNB password. Masked in the UI and never logged.
   accounts:
     name: TNB accounts
-    description: One entry per electricity account. Each needs myTNB credentials, a local energy sensor, or both.
+    description: One entry per electricity account. Each needs an account number (with the myTNB login above), a local energy sensor, or both.
     fields:
       name:
         name: Account name
         description: Friendly name; also used for the device and entity ids (e.g. "Home" gives sensor.tnb_home_bill_estimate).
+      account_number:
+        name: TNB account number
+        description: The 12-digit account number printed on your TNB bill (also in the myTNB app under the account). Enables myTNB smart meter sync with the shared login.
       tariff:
         name: Tariff
         description: general (flat rate) or tou (Time-of-Use, peak weekdays 14:00-22:00).
@@ -34,14 +43,14 @@ configuration:
         name: Billing cycle start day
         description: Day of the month your TNB bill cycle starts (see your bill's reading date).
       mytnb_username:
-        name: myTNB email (optional)
-        description: Email used to log in to myTNB. Requires a smart meter (AMI).
+        name: Different myTNB email (optional)
+        description: Only for an account that belongs to another myTNB login; otherwise leave empty and the shared login above is used.
       mytnb_password:
-        name: myTNB password (optional)
-        description: myTNB password. Masked in the UI and never logged.
+        name: Different myTNB password (optional)
+        description: Password for the different login above. Masked in the UI and never logged.
       smartmeter_url:
-        name: myTNB smart meter URL (optional)
-        description: In myTNB open the account and click "View Energy Usage"; paste the full URL containing /AccountManagement/SmartMeter/Index/TRIL?caNo=...
+        name: Smart meter URL (legacy, optional)
+        description: Older way to identify the account. Prefer account_number; if set, the caNo in this link is used.
       import_entity:
         name: Grid import energy sensor (optional)
         description: Cumulative kWh/Wh sensor of energy drawn from TNB (e.g. a Shelly EM channel) for the live bill estimate.

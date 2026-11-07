@@ -39,6 +39,7 @@ STORE_SAVE_SECONDS = 60
 FAILURES_BEFORE_NOTIFY = 3
 WEB_DIR = Path(__file__).resolve().parent / "web"
 NOTIFICATION_ID = "mobile_device_manager"
+KIND_ICON = {"automation": "mdi:robot", "script": "mdi:script-text", "scene": "mdi:palette"}
 KIND_DASHBOARD = {
     "automation": "/config/automation/dashboard",
     "script": "/config/script/dashboard",
@@ -364,6 +365,7 @@ class App:
                     item.path or KIND_DASHBOARD[item.kind],
                     description,
                     button="Edit" if item.path else "Open list",
+                    icon=KIND_ICON[item.kind],
                 )
             )
         return rows
@@ -395,6 +397,7 @@ class App:
         )
         card: dict[str, object] = {
             "title": device.name,
+            "icon": "mdi:cellphone",
             "subtitle": subtitle or "Companion app",
             "badge": chip,
             "stats": [
@@ -405,9 +408,17 @@ class App:
             ],
             "links": links,
             "actions": [
-                link("Open device", f"/config/devices/device/{device.device_id}", button="Open device"),
+                link(
+                    "Open device",
+                    f"/config/devices/device/{device.device_id}",
+                    button="Open device",
+                    icon="mdi:open-in-new",
+                ),
                 action(
-                    "ignore", "Unignore" if ignored else "Ignore", {"device": device.device_id, "value": not ignored}
+                    "ignore",
+                    "Unignore" if ignored else "Ignore",
+                    {"device": device.device_id, "value": not ignored},
+                    icon="mdi:eye" if ignored else "mdi:eye-off",
                 ),
                 action(
                     "remove",
@@ -420,6 +431,7 @@ class App:
                         "and all of its entities. The phone can be added again from the Companion app."
                     ),
                     reason="Still used by automations or scripts; edit them first",
+                    icon="mdi:delete",
                 ),
             ],
         }
@@ -440,6 +452,7 @@ class App:
         next_in = max(0, int(self.next_scan - time.monotonic())) // 60 if self.last_scan else None
         overview: dict[str, object] = {
             "title": "Overview",
+            "icon": "mdi:view-dashboard",
             "subtitle": "Phones and tablets registered through the Home Assistant Companion app",
             "badge": badge("Scan failing", "error") if self.scan_error else badge(f"{len(devices)} device(s)", "ok"),
             "stats": [
@@ -451,13 +464,14 @@ class App:
                 stat("Last scan", _ago(self.last_scan, now) or "scanning..."),
                 stat("Next scan", f"in {next_in} min" if next_in is not None else None),
             ],
-            "actions": [action("rescan", "Rescan now")],
+            "actions": [action("rescan", "Rescan now", icon="mdi:refresh")],
         }
         if self.scan_error:
             overview["notice"] = notice(f"Last scan failed: {self.scan_error}", "error")
 
         settings = {
             "title": "Settings",
+            "icon": "mdi:cog",
             "subtitle": "Edit the scan interval, stale threshold and ignored devices in the Configuration tab",
             "stats": [stat("Stale after", config.stale_days, "days"), stat("Scan every", config.scan_minutes, "min")],
             "toggles": [
@@ -466,11 +480,13 @@ class App:
                     "Attention notifications",
                     config.notify_on_attention,
                     "Notify the phones below when a device turns stale or scanning keeps failing",
+                    icon="mdi:bell",
                 )
             ],
         }
         phones = {
             "title": "Phones",
+            "icon": "mdi:cellphone-message",
             "subtitle": "Companion apps linked to this Home Assistant (found automatically)",
             "toggles": [
                 toggle(
@@ -479,6 +495,7 @@ class App:
                     self.phones.get(name, True) is not False,
                     name,
                     disabled=not config.notify_on_attention,
+                    icon="mdi:cellphone",
                 )
                 for name in sorted(self.discovered)
             ],
@@ -488,9 +505,13 @@ class App:
             "title": "Mobile Device Manager",
             "subtitle": f"Version {self.version} · {len(devices)} device(s)",
             "sections": [
-                {"title": "Summary", "cards": [overview]},
-                {"title": "Devices", "cards": [self._device_card(d, config, now) for d in devices]},
-                {"title": "Settings", "cards": [settings, phones]},
+                {"title": "Summary", "icon": "mdi:view-dashboard", "cards": [overview]},
+                {
+                    "title": "Devices",
+                    "icon": "mdi:cellphone-cog",
+                    "cards": [self._device_card(d, config, now) for d in devices],
+                },
+                {"title": "Settings", "icon": "mdi:cog", "cards": [settings, phones]},
             ],
         }
 
