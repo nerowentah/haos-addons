@@ -27,3 +27,12 @@ ignore = ["E501"]
 "lg-webos-auto-renew/**/*.py" = [
   "TRY003",
 ]
+"utilities-malaysia-power-tnb/**/*.py" = [
+  "TRY003",
+]
+"utilities-malaysia-power-tnb/tests/*.py" = [
+  "TRY003",
+  "S101",
+  "PLR2004",
+  "PT009",
+]
