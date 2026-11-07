@@ -1,5 +1,5 @@
 name: "LG webOS Dev Session Auto Renew"
-version: "1.5.1"
+version: "1.6.0"
 slug: "lg_webos_auto_renew"
 description: >-
   Periodically renews LG webOS Developer Mode sessions before they expire by
@@ -13,6 +13,10 @@ arch:
 startup: application
 boot: auto
 init: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:television-play
+panel_title: LG Dev Renew
 homeassistant_api: true
 hassio_api: true
 options:
@@ -23,6 +27,7 @@ options:
   sessions:
     - name: "living-room-tv"
       token: "YOUR_DEV_MODE_SESSION_TOKEN"
+      enabled: true
 schema:
   interval_hours: int(1,168)
   retries: int(0,10)
@@ -34,3 +39,4 @@ schema:
     - name: str
       token: password?
       url: url?
+      enabled: bool?
