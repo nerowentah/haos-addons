@@ -5,6 +5,9 @@ ARG BUILD_ARCH
 # S6-Overlay, bashio and ca-certificates are already provided.
 FROM ghcr.io/home-assistant/base:3.24
 
+ARG BUILD_VERSION
+ARG BUILD_ARCH
+
 # The base image ships Bash but not always Python; python3 only needs the
 # stdlib for this add-on, so no pip packages are required.
 RUN apk add --no-cache \
@@ -12,9 +15,13 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-COPY rootfs/run.py /app/run.py
+# run.py + the shared ingress panel (webui.py, web/).
+COPY rootfs/ /app/
 
 RUN chmod a+x /app/run.py
+
+ENV LG_RENEW_VERSION=${BUILD_VERSION} \
+    PYTHONUNBUFFERED=1
 
 LABEL \
     io.hass.name="LG webOS Dev Session Auto Renew" \

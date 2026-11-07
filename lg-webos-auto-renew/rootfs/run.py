@@ -3,22 +3,31 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
 import re
+import signal
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from webui import PanelError, PanelServer, action, badge, stat, toggle
 
 _LOGGER = logging.getLogger(__name__)
 
 CONFIG_PATH = Path("/data/options.json")
+WEB_DIR = Path(__file__).resolve().parent / "web"
 LG_DEV_ENDPOINT = "https://developer.lge.com/secure/ResetDevModeSession.dev"
-SUPERVISOR_CORE_API = "http://supervisor/core/api"
+SUPERVISOR_API = "http://supervisor"
+SUPERVISOR_CORE_API = f"{SUPERVISOR_API}/core/api"
+VERSION = os.environ.get("LG_RENEW_VERSION", "dev")
 
 SUPERVISOR_TOKEN_ENV = "SUPERVISOR_TOKEN"  # noqa: S105 - env var name, not a secret
 SUPERVISOR_TOKEN_ENV_CANDIDATES = (
@@ -32,10 +41,18 @@ SUPERVISOR_TOKEN_ENV_CANDIDATES = (
 HTTP_TIMEOUT = 30
 SUCCESS_RESULTS = {"success"}
 INFO_MSG_CODES = {"GNL", "OK"}
+LOOP_SECONDS = 30
+OPTIONS_CHECK_SECONDS = 30
 
 
 class ConfigError(ValueError):
     """Raised when the add-on configuration is invalid."""
+
+
+def slugify(value: str) -> str:
+    """Lower-case id used for notifications and panel toggles."""
+
+    return re.sub(r"[^a-z0-9_-]+", "-", value.lower()).strip("-")
 
 
 @dataclass(slots=True)
@@ -44,10 +61,12 @@ class Session:
 
     name: str
     url: str
+    enabled: bool = True
+    custom_url: bool = False
     notification_id: str = field(init=False)
 
     def __post_init__(self) -> None:
-        self.notification_id = re.sub(r"[^a-z0-9_-]+", "-", self.name.lower()).strip("-")
+        self.notification_id = slugify(self.name)
 
 
 @dataclass(slots=True)
@@ -107,6 +126,8 @@ def _merge_s6_environment() -> None:
                 continue
             if value:
                 os.environ.setdefault(var.name, value)
+    if hasattr(time, "tzset"):
+        time.tzset()  # pick up the merged TZ so panel times are local
 
 
 def _log_container_env_probe() -> None:
@@ -158,9 +179,7 @@ def load_supervisor_token() -> str:
                 _LOGGER.debug("Using %s for the supervisor token", name)
             return value
 
-    visible = ", ".join(
-        sorted(key for key in os.environ if key.startswith(("SUPERVISOR_", "HASS", "HOMEASSISTANT")))
-    )
+    visible = ", ".join(sorted(key for key in os.environ if key.startswith(("SUPERVISOR_", "HASS", "HOMEASSISTANT"))))
     _LOGGER.warning(
         "No supervisor token found; scanned %s. Supervisor env vars present: %s",
         ", ".join(SUPERVISOR_TOKEN_ENV_CANDIDATES),
@@ -196,7 +215,15 @@ def build_sessions(raw_sessions: list[object]) -> list[Session]:
         else:
             raise ConfigError(f"Session '{name}' requires either a token or a full url")
 
-        sessions.append(Session(name=name, url=url))
+        enabled = entry.get("enabled")
+        sessions.append(
+            Session(
+                name=name,
+                url=url,
+                enabled=enabled if isinstance(enabled, bool) else True,
+                custom_url=bool(entry.get("url")),
+            )
+        )
 
     return sessions
 
@@ -219,7 +246,7 @@ def load_config(raw_config: dict[str, object]) -> Config:
     notification_overrides_raw = raw_config.get("notification_overrides", [])
     notification_overrides: list[NotificationOverride] = []
     if isinstance(notification_overrides_raw, list):
-        for _index, entry in enumerate(notification_overrides_raw, start=1):
+        for entry in notification_overrides_raw:
             if not isinstance(entry, dict):
                 continue
             name = str(entry.get("name") or "").strip()
@@ -250,6 +277,37 @@ def load_options() -> dict[str, object]:
         raise ConfigError(f"Configuration root in {CONFIG_PATH} must be a mapping")
 
     return raw
+
+
+def _supervisor_request(supervisor_token: str, path: str, body: object | None = None) -> object:
+    """JSON request to the Supervisor API (``path`` starts with '/')."""
+
+    request = urllib.request.Request(  # noqa: S310 - internal supervisor API
+        f"{SUPERVISOR_API}{path}",
+        data=None if body is None else json.dumps(body).encode("utf-8"),
+        method="GET" if body is None else "POST",
+        headers={"Authorization": f"Bearer {supervisor_token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:  # noqa: S310 - internal supervisor API
+        raw = response.read().decode("utf-8")
+    return json.loads(raw) if raw else None
+
+
+def fetch_options(supervisor_token: str) -> dict[str, object]:
+    """Current saved options (including edits made in the Configuration tab)."""
+
+    reply = _supervisor_request(supervisor_token, "/addons/self/info")
+    data = reply.get("data") if isinstance(reply, dict) else None
+    options = data.get("options") if isinstance(data, dict) else None
+    if not isinstance(options, dict):
+        raise ConfigError("Supervisor returned no add-on options")
+    return options
+
+
+def write_options(supervisor_token: str, options: dict[str, object]) -> None:
+    """Replace the saved options; the payload must be wrapped as {"options": ...}."""
+
+    _supervisor_request(supervisor_token, "/addons/self/options", {"options": options})
 
 
 def handle_response(body: str, status: int, session_name: str) -> bool:
@@ -311,7 +369,12 @@ def renew_session(session: Session) -> bool:
         return False
 
 
-def renew_with_retries(session: Session, retries: int, backoff_seconds: int = 30) -> bool:
+def renew_with_retries(
+    session: Session,
+    retries: int,
+    backoff_seconds: int = 30,
+    sleep: Callable[[float], object] = time.sleep,
+) -> bool:
     """Renew a session, retrying with exponential backoff on failure."""
 
     for attempt in range(retries + 1):
@@ -326,7 +389,7 @@ def renew_with_retries(session: Session, retries: int, backoff_seconds: int = 30
                 attempt + 1,
                 retries,
             )
-            time.sleep(wait)
+            sleep(wait)
     return False
 
 
@@ -342,17 +405,8 @@ def discover_mobile_targets(supervisor_token: str) -> list[str]:
     if not supervisor_token:
         return []
 
-    def _json_get(path: str) -> object:
-        request = urllib.request.Request(  # noqa: S310 - internal supervisor API
-            f"{SUPERVISOR_CORE_API}{path}",
-            method="GET",
-            headers={"Authorization": f"Bearer {supervisor_token}"},
-        )
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:  # noqa: S310 - internal supervisor API
-            return json.loads(response.read().decode("utf-8"))
-
     try:
-        services = _json_get("/services")
+        services = _supervisor_request(supervisor_token, "/core/api/services")
     except (urllib.error.URLError, OSError, ValueError):
         _LOGGER.exception("Failed to discover mobile-app notification targets")
         return []
@@ -376,20 +430,15 @@ def seed_notification_overrides(
     """Persist discovered phones in the overrides so toggles show in the UI.
 
     Every discovered mobile app is notified by default. Existing override rows
-    keep their saved switch value (so a phone switched off in the Configuration
-    page stays off); newly discovered phones are appended with ``notify=True``.
-    The merged list is written back to the add-on options via
-    ``POST /addons/self/options`` so the toggles appear there. Persistence
-    failures are logged but do not affect this run.
+    keep their saved switch value (so a phone switched off stays off); newly
+    discovered phones are appended with ``notify=True``. The merged list is
+    written back via ``POST /addons/self/options`` only when it changed.
     """
 
     merged = list(config.notification_overrides)
     existing_names = {override.name for override in merged}
-    merged.extend(
-        NotificationOverride(name=name, notify=True)
-        for name in discovered
-        if name not in existing_names
-    )
+    added = [NotificationOverride(name=name, notify=True) for name in discovered if name not in existing_names]
+    merged.extend(added)
 
     enabled = sorted(override.name for override in merged if override.notify and override.name in discovered)
     suppressed = sorted(override.name for override in merged if not override.notify and override.name in discovered)
@@ -400,35 +449,27 @@ def seed_notification_overrides(
         f"; suppressed: {', '.join(suppressed)}" if suppressed else "",
     )
 
-    if not supervisor_token:
+    if not supervisor_token or not added:
         return merged
 
     try:
-        options = load_options()
-        options["notification_overrides"] = [
-            {"name": override.name, "notify": override.notify} for override in merged
-        ]
-        request = urllib.request.Request(
-            "http://supervisor/addons/self/options",
-            data=json.dumps({"options": options}).encode("utf-8"),
-            method="POST",
-            headers={"Authorization": f"Bearer {supervisor_token}", "Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT):  # noqa: S310 - internal supervisor API
-            _LOGGER.info("Wrote %d notification override(s) to add-on options", len(merged))
+        try:
+            options = fetch_options(supervisor_token)
+        except (urllib.error.URLError, OSError, ValueError, ConfigError):
+            options = load_options()
+        options["notification_overrides"] = [{"name": override.name, "notify": override.notify} for override in merged]
+        write_options(supervisor_token, options)
+        _LOGGER.info("Wrote %d notification override(s) to add-on options", len(merged))
     except (urllib.error.URLError, OSError, ValueError, ConfigError):
         _LOGGER.warning(
-            "Could not persist notification overrides to the add-on options; "
-            "toggles still apply for this run",
+            "Could not persist notification overrides to the add-on options; toggles still apply for this run",
             exc_info=True,
         )
 
     return merged
 
 
-def effective_mobile_targets(
-    discovered: list[str], overrides: list[NotificationOverride]
-) -> list[str]:
+def effective_mobile_targets(discovered: list[str], overrides: list[NotificationOverride]) -> list[str]:
     """Return discovered targets that are not switched off in the overrides."""
 
     off = {override.name for override in overrides if not override.notify}
@@ -454,102 +495,333 @@ def notify_failure(session: Session, targets: list[str], supervisor_token: str) 
 
     if targets:
         for target in targets:
-            request = urllib.request.Request(  # noqa: S310 - internal supervisor API
-                f"{SUPERVISOR_CORE_API}/services/notify/{target}",
-                data=json.dumps({"title": title, "message": message}).encode("utf-8"),
-                method="POST",
-                headers={
-                    "Authorization": f"Bearer {supervisor_token}",
-                    "Content-Type": "application/json",
-                },
-            )
             try:
-                with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT):  # noqa: S310 - internal supervisor API
-                    _LOGGER.info("Failure notification sent to '%s' for '%s'", target, session.name)
-            except (urllib.error.URLError, OSError):
+                _supervisor_request(
+                    supervisor_token, f"/core/api/services/notify/{target}", {"title": title, "message": message}
+                )
+                _LOGGER.info("Failure notification sent to '%s' for '%s'", target, session.name)
+            except (urllib.error.URLError, OSError, ValueError):
                 _LOGGER.exception("Failed to send notification to '%s' for '%s'", target, session.name)
         return
 
-    request = urllib.request.Request(  # noqa: S310 - internal supervisor API
-        f"{SUPERVISOR_CORE_API}/services/persistent_notification/create",
-        data=json.dumps(
-            {
-                "notification_id": session.notification_id,
-                "title": title,
-                "message": message,
-            }
-        ).encode("utf-8"),
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {supervisor_token}",
-            "Content-Type": "application/json",
-        },
-    )
     try:
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT):  # noqa: S310 - internal supervisor API
-            _LOGGER.info("Failure notification sent for '%s'", session.name)
-    except (urllib.error.URLError, OSError):
+        _supervisor_request(
+            supervisor_token,
+            "/core/api/services/persistent_notification/create",
+            {"notification_id": session.notification_id, "title": title, "message": message},
+        )
+        _LOGGER.info("Failure notification sent for '%s'", session.name)
+    except (urllib.error.URLError, OSError, ValueError):
         _LOGGER.exception("Failed to send notification for '%s'", session.name)
 
 
-def renew_all(config: Config, mobile_targets: list[str], supervisor_token: str) -> None:
-    """Renew every session and notify about any that could not be renewed."""
+# -- App: scheduler, panel and live options ---------------------------------------
+@dataclass(slots=True)
+class SessionStatus:
+    """Last known renewal outcome of one TV (wall-clock epoch seconds)."""
 
-    failures = [session for session in config.sessions if not renew_with_retries(session, config.retries)]
-    if failures and config.notify_on_failure:
-        for session in failures:
-            notify_failure(session, mobile_targets, supervisor_token)
+    last_attempt: float | None = None
+    last_success: float | None = None
+    last_ok: bool | None = None
+    running: bool = False
 
 
-def run(config: Config, supervisor_token: str) -> None:
-    """Run the initial renewal and then the scheduling loop."""
+def _clock(epoch: float | None) -> str | None:
+    return None if epoch is None else time.strftime("%d %b %H:%M", time.localtime(epoch))
 
-    interval_seconds = config.interval_hours * 3600
-    mobile_targets = discover_mobile_targets(supervisor_token)
-    _LOGGER.info(
-        "Auto-discovered %d mobile notification target(s): %s",
-        len(mobile_targets),
-        ", ".join(mobile_targets) or "-",
-    )
-    overrides = seed_notification_overrides(config, mobile_targets, supervisor_token)
-    effective_targets = effective_mobile_targets(mobile_targets, overrides)
-    if len(effective_targets) < len(mobile_targets):
-        suppressed = sorted(set(mobile_targets) - set(effective_targets))
-        _LOGGER.info("Notifications suppressed for: %s", ", ".join(suppressed))
-    _LOGGER.info("Performing initial dev session renewal")
-    renew_all(config, effective_targets, supervisor_token)
 
-    next_run = time.monotonic() + interval_seconds
-    _LOGGER.info(
-        "Next renewal scheduled in %s h for %s",
-        config.interval_hours,
-        time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(time.time() + interval_seconds)),
-    )
+def apply_toggle(options: dict[str, object], toggle_id: str, value: bool) -> None:
+    """Write one panel switch into a raw options dict (mutates ``options``)."""
 
-    while True:
-        remaining = next_run - time.monotonic()
-        if remaining > 0:
-            time.sleep(min(60.0, remaining))
-            continue
+    kind, _, rest = toggle_id.partition(":")
+    if kind == "notify_on_failure" and not rest:
+        options["notify_on_failure"] = value
+        return
+    if kind == "phone" and rest:
+        rows = options.get("notification_overrides")
+        rows = rows if isinstance(rows, list) else []
+        for row in rows:
+            if isinstance(row, dict) and row.get("name") == rest:
+                row["notify"] = value
+                break
+        else:
+            rows.append({"name": rest, "notify": value})
+        options["notification_overrides"] = rows
+        return
+    if kind == "session":
+        key, _, field_name = rest.rpartition(":")
+        matched = False
+        if field_name == "enabled":
+            for row in options.get("sessions") or []:  # type: ignore[union-attr]
+                if isinstance(row, dict) and slugify(str(row.get("name") or "")) == key:
+                    row["enabled"] = value
+                    matched = True
+        if matched:
+            return
+        raise PanelError("That TV no longer exists; reload the page")
+    raise PanelError("Unknown setting")
 
-        _LOGGER.info("Scheduled dev session renewal started")
-        renew_all(config, effective_targets, supervisor_token)
-        next_run = time.monotonic() + interval_seconds
+
+class App:
+    """Renews on a schedule, serves the ingress panel and applies option changes live."""
+
+    def __init__(self, config: Config, raw_options: dict[str, object], supervisor_token: str) -> None:
+        self.config = config
+        self.raw_options = raw_options
+        self.token = supervisor_token
+        self.discovered: list[str] = []
+        self.status: dict[str, SessionStatus] = {}
+        self.stopping = threading.Event()
+        self.wake = threading.Event()
+        self.options_lock = threading.Lock()
+        self.pending: tuple[dict[str, object], Config] | None = None
+        self.queue: list[str | None] = []  # session keys to renew now (None = all)
+        self.next_run = time.time()  # first renewal right away
+        self.last_scheduled: float | None = None
+        self.next_options_check = time.monotonic() + OPTIONS_CHECK_SECONDS
+
+    # -- options ------------------------------------------------------------
+    def view_config(self) -> Config:
+        """Config the panel should show (a saved-but-not-yet-applied change wins)."""
+
+        pending = self.pending
+        return pending[1] if pending else self.config
+
+    def apply_config(self, raw: dict[str, object], config: Config) -> None:
+        """Switch to new options in place (main thread)."""
+
+        if config.interval_hours != self.config.interval_hours and self.last_scheduled is not None:
+            self.next_run = self.last_scheduled + config.interval_hours * 3600
+        newly_enabled = [
+            s.name
+            for s in config.sessions
+            if s.enabled and not any(o.notification_id == s.notification_id and o.enabled for o in self.config.sessions)
+        ]
+        self.config = config
+        self.raw_options = raw
         _LOGGER.info(
-            "Renewal completed; next run in %s h for %s",
+            "Applied updated options: %d of %d TV(s) enabled, interval %s h",
+            sum(s.enabled for s in config.sessions),
+            len(config.sessions),
             config.interval_hours,
-            time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(time.time() + interval_seconds)),
         )
+        if newly_enabled:
+            _LOGGER.info("Auto renew switched on for: %s", ", ".join(newly_enabled))
+
+    def update_options(self, mutate: Callable[[dict[str, object]], None]) -> None:
+        """Change the saved options from the panel; applied on the next loop pass."""
+
+        with self.options_lock:
+            try:
+                base = fetch_options(self.token)
+            except (urllib.error.URLError, OSError, ValueError, ConfigError):
+                base = self.raw_options
+            raw = copy.deepcopy(base)
+            mutate(raw)
+            try:
+                config = load_config(raw)
+            except ConfigError as err:
+                raise PanelError(str(err)) from err
+            try:
+                write_options(self.token, raw)
+            except (urllib.error.URLError, OSError, ValueError) as err:
+                raise PanelError("Home Assistant rejected the change; see the app log") from err
+            self.pending = (raw, config)
+        self.wake.set()
+
+    def check_options(self) -> None:
+        """Pick up edits made in the Configuration tab."""
+
+        try:
+            raw = fetch_options(self.token)
+        except (urllib.error.URLError, OSError, ValueError, ConfigError):
+            return
+        if raw == self.raw_options:
+            return
+        try:
+            config = load_config(raw)
+        except ConfigError as err:
+            _LOGGER.error("Ignoring updated options until they are fixed: %s", err)  # noqa: TRY400 - no traceback needed
+            self.raw_options = raw
+            return
+        self.apply_config(raw, config)
+
+    # -- renewals -----------------------------------------------------------
+    def renew(self, sessions: list[Session]) -> None:
+        """Renew the given sessions, recording status and notifying on failure."""
+
+        for session in sessions:
+            if self.stopping.is_set():
+                return
+            status = self.status.setdefault(session.notification_id, SessionStatus())
+            status.running = True
+            status.last_attempt = time.time()
+            ok = renew_with_retries(session, self.config.retries, sleep=self.stopping.wait)
+            status.running = False
+            status.last_ok = ok
+            if ok:
+                status.last_success = time.time()
+            elif self.config.notify_on_failure:
+                targets = effective_mobile_targets(self.discovered, self.config.notification_overrides)
+                notify_failure(session, targets, self.token)
+
+    def _tick(self) -> None:
+        with self.options_lock:
+            pending, self.pending = self.pending, None
+        if pending is not None:
+            self.apply_config(*pending)
+        if time.monotonic() >= self.next_options_check:
+            self.next_options_check = time.monotonic() + OPTIONS_CHECK_SECONDS
+            self.check_options()
+
+        with self.options_lock:
+            queued, self.queue = self.queue, []
+        if queued:
+            wanted = None if None in queued else set(queued)
+            self.renew([s for s in self.config.sessions if wanted is None or s.notification_id in wanted])
+
+        if time.time() >= self.next_run:
+            enabled = [s for s in self.config.sessions if s.enabled]
+            _LOGGER.info("Scheduled renewal of %d TV(s)", len(enabled))
+            self.renew(enabled)
+            self.last_scheduled = time.time()
+            self.next_run = self.last_scheduled + self.config.interval_hours * 3600
+            _LOGGER.info("Next renewal at %s", time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(self.next_run)))
+
+    def run(self) -> None:
+        """Serve the panel and run the scheduling loop until stopped."""
+
+        server = PanelServer(WEB_DIR, self.panel_state, self.panel_toggle, self.panel_action)
+        server.start()
+        try:
+            while not self.stopping.is_set():
+                self.wake.clear()
+                self._tick()
+                self.wake.wait(LOOP_SECONDS)
+        finally:
+            server.stop()
+
+    # -- panel (HTTP thread) --------------------------------------------------
+    def panel_toggle(self, toggle_id: str, value: bool) -> None:
+        """Persist and apply one panel switch."""
+
+        self.update_options(lambda raw: apply_toggle(raw, toggle_id, value))
+
+    def panel_action(self, action_id: str, args: dict[str, object]) -> str | None:
+        """Queue a renewal from a panel button."""
+
+        if action_id == "renew_all":
+            target: str | None = None
+            label = "all TVs"
+        elif action_id == "renew":
+            target = str(args.get("session") or "")
+            match = next((s for s in self.config.sessions if s.notification_id == target), None)
+            if match is None:
+                raise PanelError("That TV no longer exists; reload the page")
+            label = match.name
+        else:
+            raise PanelError("Unknown action")
+        with self.options_lock:
+            self.queue.append(target)
+        self.wake.set()
+        return f"Renewing {label}..."
+
+    def _session_card(self, session: Session) -> dict[str, object]:
+        status = self.status.get(session.notification_id, SessionStatus())
+        if not session.enabled:
+            chip = badge("Paused", "off")
+        elif status.running:
+            chip = badge("Renewing...", "warn")
+        elif status.last_ok is None:
+            chip = badge("Not run yet")
+        else:
+            chip = badge("Renewed", "ok") if status.last_ok else badge("Failed", "error")
+        return {
+            "title": session.name,
+            "subtitle": "Custom renewal URL" if session.custom_url else "Developer Mode session token",
+            "badge": chip,
+            "off": not session.enabled,
+            "stats": [
+                stat("Last attempt", _clock(status.last_attempt)),
+                stat("Last success", _clock(status.last_success)),
+                stat("Next renewal", _clock(self.next_run) if session.enabled else "Paused"),
+            ],
+            "toggles": [
+                toggle(
+                    f"session:{session.notification_id}:enabled",
+                    "Auto renew",
+                    session.enabled,
+                    "Renew this TV's Developer Mode session on the schedule",
+                )
+            ],
+            "actions": [
+                action("renew", "Renew now", {"session": session.notification_id}, disabled=status.running),
+            ],
+        }
+
+    def panel_state(self) -> dict[str, object]:
+        """The panel view model."""
+
+        config = self.view_config()
+        overrides = {o.name: o.notify for o in config.notification_overrides}
+        phones = sorted(set(self.discovered) | set(overrides))
+        enabled = sum(s.enabled for s in config.sessions)
+        return {
+            "title": "LG webOS Dev Session Auto Renew",
+            "subtitle": f"Version {VERSION} · {enabled} of {len(config.sessions)} TV(s) on auto renew",
+            "sections": [
+                {"title": "TVs", "cards": [self._session_card(s) for s in config.sessions]},
+                {
+                    "title": "Settings",
+                    "cards": [
+                        {
+                            "title": "Schedule",
+                            "subtitle": "Change the interval, retries, tokens and TVs in the Configuration tab",
+                            "stats": [
+                                stat("Renew every", config.interval_hours, "h"),
+                                stat("Retries", config.retries),
+                                stat("Next renewal", _clock(self.next_run)),
+                            ],
+                            "toggles": [
+                                toggle(
+                                    "notify_on_failure",
+                                    "Failure notifications",
+                                    config.notify_on_failure,
+                                    "Notify the phones below when a renewal fails after all retries",
+                                )
+                            ],
+                            "actions": [action("renew_all", "Renew all now")],
+                        },
+                        {
+                            "title": "Phones",
+                            "subtitle": "Home Assistant companion apps that receive notifications",
+                            "toggles": [
+                                toggle(
+                                    f"phone:{name}",
+                                    name.removeprefix(MOBILE_TARGET_PREFIX).replace("_", " "),
+                                    overrides.get(name, True),
+                                    name if name in self.discovered else f"{name} (not currently registered)",
+                                    disabled=not config.notify_on_failure,
+                                )
+                                for name in phones
+                            ],
+                            "empty": "No mobile apps found. Without phones a persistent notification is used.",
+                        },
+                    ],
+                },
+            ],
+        }
 
 
 def main() -> None:
     """Entry point."""
 
     setup_logging()
-    _LOGGER.info("Starting LG webOS Dev Session Auto Renew")
+    _LOGGER.info("Starting LG webOS Dev Session Auto Renew %s", VERSION)
 
     try:
-        config = load_config(load_options())
+        raw_options = load_options()
+        config = load_config(raw_options)
     except ConfigError:
         _LOGGER.exception("Invalid configuration")
         raise SystemExit(1) from None
@@ -562,9 +834,26 @@ def main() -> None:
         config.notify_on_failure,
     )
     for session in config.sessions:
-        _LOGGER.info("Session '%s'", session.name)
+        _LOGGER.info("Session '%s'%s", session.name, "" if session.enabled else " (paused)")
 
-    run(config, load_supervisor_token())
+    token = load_supervisor_token()
+    app = App(config, raw_options, token)
+    app.discovered = discover_mobile_targets(token)
+    _LOGGER.info(
+        "Auto-discovered %d mobile notification target(s): %s",
+        len(app.discovered),
+        ", ".join(app.discovered) or "-",
+    )
+    seed_notification_overrides(config, app.discovered, token)
+
+    def _stop(signum: int, _frame: object) -> None:
+        _LOGGER.info("Received signal %d; shutting down", signum)
+        app.stopping.set()
+        app.wake.set()
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+    app.run()
 
 
 if __name__ == "__main__":
