@@ -35,7 +35,7 @@ from supervisor import (
     notification_id,
     overrides_from_options,
 )
-from webui import PanelError, PanelServer
+from webui import PanelError, PanelRouter, PanelServer, SetupView, wait_for_valid_config
 
 _LOGGER = logging.getLogger("power_tnb")
 
@@ -136,10 +136,8 @@ class App:
             else:
                 runtime.meter = None
 
-            creds = (account.mytnb_username, account.mytnb_password, account.smartmeter_url)
-            old_creds = (
-                (previous.mytnb_username, previous.mytnb_password, previous.smartmeter_url) if previous else None
-            )
+            creds = (account.mytnb_username, account.mytnb_password, account.ca_no)
+            old_creds = (previous.mytnb_username, previous.mytnb_password, previous.ca_no) if previous else None
             if not account.has_portal:
                 runtime.portal = None
             elif runtime.portal is None or creds != old_creds:
@@ -744,11 +742,14 @@ class App:
                         time.monotonic() + random.uniform(5, PORTAL_STAGGER_SECONDS),  # noqa: S311 - jitter only
                     )
 
-    def run(self) -> None:
-        """Main scheduling loop."""
+    def panel_state(self) -> dict[str, object]:
+        """The panel view model."""
 
-        server = PanelServer(WEB_DIR, lambda: panel.build_state(self), self.panel_toggle, self.panel_action)
-        server.start()
+        return panel.build_state(self)
+
+    def run(self) -> None:
+        """Main scheduling loop (the panel server is owned by ``main``)."""
+
         last_save = time.monotonic()
         try:
             while not self.stopping.is_set():
@@ -759,26 +760,30 @@ class App:
                     last_save = time.monotonic()
                 self.wake.wait(LOOP_SECONDS)
         finally:
-            server.stop()
             self.store.save()
             if self.publisher is not None:
                 self.publisher.stop()
             _LOGGER.info("Stopped")
 
 
-def main() -> None:
-    """Entry point."""
+SETUP_HELP = (
+    "Open Settings → Apps → TNB Usage Checker → Configuration, fix the option named above and save. "
+    "This page picks up the change within 15 seconds; no restart needed."
+)
+SETUP_EXAMPLE = """mytnb_username: you@example.com
+mytnb_password: your-myTNB-password
+accounts:
+  - name: Home
+    account_number: "123456789012"
+    tariff: general
+    billing_start_day: 1
+  - name: Shop
+    account_number: "123456789013"
+    tariff: tou
+    billing_start_day: 15"""
 
-    merge_s6_environment()  # TZ first, so every log line uses local time
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-    _LOGGER.info("Starting TNB Usage Checker %s", VERSION)
-    try:
-        raw_options = load_options()
-        config = load_config(raw_options)
-    except ConfigError:
-        _LOGGER.exception("Invalid configuration")
-        raise SystemExit(1) from None
 
+def _log_accounts(config: Config) -> None:
     for account in config.accounts:
         sources = [
             name for name, on in (("myTNB portal", account.has_portal), ("energy sensor", account.has_meter)) if on
@@ -791,25 +796,71 @@ def main() -> None:
             " + ".join(sources),
         )
 
+
+def _initial_options(supervisor: Supervisor) -> dict[str, object]:
+    try:
+        return load_options()
+    except ConfigError:
+        try:
+            return supervisor.fetch_options()
+        except SupervisorError:
+            return {}
+
+
+def main() -> None:
+    """Entry point."""
+
+    merge_s6_environment()  # TZ first, so every log line uses local time
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    _LOGGER.info("Starting TNB Usage Checker %s", VERSION)
+
     token = load_supervisor_token()
     if not token:
         _LOGGER.error("No supervisor token; cannot reach Home Assistant")
         raise SystemExit(1)
+    supervisor = Supervisor(token)
 
-    store = Store()
-    store.load()
-    app = App(config, Supervisor(token), store, raw_options)
+    stop = threading.Event()
+    router = PanelRouter()
 
     def _stop(signum: int, _frame: FrameType | None) -> None:
         _LOGGER.info("Received signal %d; shutting down", signum)
-        app.stopping.set()
-        app.wake.set()
+        stop.set()
+        if isinstance(router.target, App):
+            router.target.stopping.set()
+            router.target.wake.set()
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    app.migrate_overrides()
-    app.run()
+    server = PanelServer(WEB_DIR, router.get_state, router.on_toggle, router.on_action)
+    server.start()
+    try:
+        raw_options = _initial_options(supervisor)
+        try:
+            config = load_config(raw_options)
+        except ConfigError as err:
+            _LOGGER.error("Configuration problem: %s", err)  # noqa: TRY400 - no traceback needed
+            _LOGGER.info("Waiting for a valid configuration; open the TNB Usage panel for details")
+            view = SetupView("TNB Usage Checker", str(err), SETUP_HELP, SETUP_EXAMPLE)
+            router.target = view
+            result = wait_for_valid_config(supervisor.fetch_options, load_config, view, stop)
+            if result is None:
+                return
+            raw_options, config = result  # type: ignore[assignment]
+            _LOGGER.info("Configuration is valid now; starting")
+
+        _log_accounts(config)
+        store = Store()
+        store.load()
+        app = App(config, supervisor, store, raw_options)
+        router.target = app
+        if stop.is_set():
+            return
+        app.migrate_overrides()
+        app.run()
+    finally:
+        server.stop()
 
 
 if __name__ == "__main__":

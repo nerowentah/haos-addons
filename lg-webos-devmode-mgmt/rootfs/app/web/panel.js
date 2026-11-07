@@ -64,6 +64,23 @@ function h(tag, attrs, ...children) {
   return el;
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function mdi(name, cls) {
+  // Inline Material Design Icon from icons.js; unknown names render nothing.
+  const key = typeof name === "string" ? name.replace(/^mdi:/, "") : "";
+  const path = typeof MDI_PATHS === "object" ? MDI_PATHS[key] : undefined;
+  if (!path) return null;
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("class", `icon ${cls || ""}`.trim());
+  svg.setAttribute("aria-hidden", "true");
+  const shape = document.createElementNS(SVG_NS, "path");
+  shape.setAttribute("d", path);
+  svg.append(shape);
+  return svg;
+}
+
 function toast(message, isError) {
   const el = document.getElementById("toast");
   el.textContent = message;
@@ -137,17 +154,20 @@ function navigate(path) {
   window.top.location.href = path;
 }
 
-function renderLinkButton(item) {
-  const button = h("button", { class: "btn", type: "button", title: item.path }, item.button || item.label);
+function renderLinkButton(item, iconName) {
+  const label = item.button || item.label;
+  const glyph = iconName || (label === "Edit" ? "mdi:pencil" : "mdi:open-in-new");
+  const button = h("button", { class: "btn", type: "button", title: item.path }, mdi(glyph, "btn-icon"), label);
   button.addEventListener("click", () => navigate(item.path));
   return button;
 }
 
 function renderAction(item) {
-  if (item.path) return renderLinkButton({ ...item, button: item.label });
+  if (item.path) return renderLinkButton({ ...item, button: item.label }, item.icon);
   const button = h(
     "button",
     { class: `btn${item.danger ? " danger" : ""}`, type: "button", disabled: item.disabled, title: item.disabled ? item.reason : null },
+    mdi(item.icon, "btn-icon"),
     item.label,
   );
   button.addEventListener("click", async () => {
@@ -179,7 +199,12 @@ function renderCard(card) {
     h(
       "div",
       { class: "card-head" },
-      h("div", {}, h("h3", { class: "card-title" }, card.title), card.subtitle && h("p", { class: "card-sub" }, card.subtitle)),
+      h(
+        "div",
+        { class: "card-head-main" },
+        mdi(card.icon, "card-icon"),
+        h("div", {}, h("h3", { class: "card-title" }, card.title), card.subtitle && h("p", { class: "card-sub" }, card.subtitle)),
+      ),
       card.badge && h("span", { class: `badge ${card.badge.tone || ""}` }, card.badge.text),
     ),
     h(
@@ -202,6 +227,7 @@ function renderCard(card) {
           h(
             "div",
             { class: "row" },
+            mdi(t.icon, "row-icon"),
             h("div", { class: "row-text" }, h("div", { class: "row-label" }, t.label), t.description && h("div", { class: "row-desc" }, t.description)),
             renderSwitch(t),
           ),
@@ -215,13 +241,20 @@ function renderCard(card) {
           h(
             "div",
             { class: "row" },
+            mdi(l.icon, "row-icon"),
             h("div", { class: "row-text" }, h("div", { class: "row-label" }, l.label), l.description && h("div", { class: "row-desc" }, l.description)),
             renderLinkButton(l),
           ),
         ),
       ),
-    card.notice && h("div", { class: `notice ${card.notice.tone || ""}` }, card.notice.text),
-    card.empty && stats.length === 0 && toggles.length === 0 && links.length === 0 && h("div", { class: "empty" }, card.empty),
+    card.notice &&
+      h(
+        "div",
+        { class: `notice ${card.notice.tone || ""}` },
+        mdi(card.notice.tone === "ok" || card.notice.tone === "neutral" ? "mdi:information" : "mdi:alert", "notice-icon"),
+        h("span", {}, card.notice.text),
+      ),
+    card.empty && stats.length === 0 && toggles.length === 0 && links.length === 0 && h("div", { class: `empty${card.mono ? " mono" : ""}` }, card.empty),
     actions.length > 0 && h("div", { class: "actions" }, actions.map(renderAction)),
   );
 }
@@ -233,7 +266,7 @@ function render(state) {
   const container = document.getElementById("sections");
   container.replaceChildren(
     ...(state.sections || []).map((section) =>
-      h("div", {}, section.title && h("h2", { class: "section-title" }, section.title), h("div", { class: "grid" }, (section.cards || []).map(renderCard))),
+      h("div", {}, section.title && h("h2", { class: "section-title" }, mdi(section.icon, "section-icon"), section.title), h("div", { class: "grid" }, (section.cards || []).map(renderCard))),
     ),
   );
 }

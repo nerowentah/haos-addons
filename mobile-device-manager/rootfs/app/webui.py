@@ -8,6 +8,9 @@ posts changes back:
 * ``POST api/toggle``  {id, value} -> ``on_toggle(id, value)``
 * ``POST api/action``  {id, args}  -> ``on_action(id, args)``
 
+Cards, sections, toggles, links and actions accept an optional ``icon`` (an
+``mdi:`` name); ``web/icons.js`` holds the SVG paths of the names in use.
+
 Only the Supervisor ingress proxy (172.30.32.2) may connect; Home Assistant has
 already authenticated the user (and ``panel_admin`` limits it to admins).
 """
@@ -38,6 +41,100 @@ ActionHandler = Callable[[str, dict[str, object]], str | None]
 
 class PanelError(ValueError):
     """A user-facing error returned to the panel as HTTP 400."""
+
+
+class PanelRouter:
+    """Routes panel calls to whatever is active: a SetupView while options are invalid, then the app.
+
+    Each app object provides ``panel_state()``, ``panel_toggle(id, value)`` and ``panel_action(id, args)``.
+    """
+
+    def __init__(self, target: object | None = None) -> None:
+        self.target = target
+
+    def get_state(self) -> dict[str, object]:
+        """Current view model."""
+
+        if self.target is None:
+            return {"title": "Starting", "subtitle": "Starting up...", "sections": []}
+        return self.target.panel_state()  # type: ignore[attr-defined]
+
+    def on_toggle(self, toggle_id: str, value: bool) -> None:
+        """Forward a switch."""
+
+        if self.target is None:
+            raise PanelError("Still starting; try again in a moment")
+        self.target.panel_toggle(toggle_id, value)  # type: ignore[attr-defined]
+
+    def on_action(self, action_id: str, args: dict[str, object]) -> str | None:
+        """Forward a button."""
+
+        if self.target is None:
+            raise PanelError("Still starting; try again in a moment")
+        return self.target.panel_action(action_id, args)  # type: ignore[attr-defined]
+
+
+class SetupView:
+    """Panel shown while the app options are invalid: the app waits instead of crash-looping."""
+
+    def __init__(self, title: str, error: str, how_to_fix: str, example: str = "") -> None:
+        self.title = title
+        self.error = error
+        self.how_to_fix = how_to_fix
+        self.example = example
+
+    def panel_state(self) -> dict[str, object]:
+        """View model: the problem, how to fix it and an example."""
+
+        cards: list[dict[str, object]] = [
+            {
+                "title": "Configuration needs attention",
+                "icon": "mdi:alert-circle",
+                "badge": badge("Waiting", "warn"),
+                "notice": notice(self.error, "error"),
+                "empty": self.how_to_fix,
+            }
+        ]
+        if self.example:
+            cards.append({"title": "Example", "icon": "mdi:file-document-edit", "empty": self.example, "mono": True})
+        return {
+            "title": self.title,
+            "subtitle": "Waiting for a valid configuration",
+            "sections": [{"title": "Setup", "icon": "mdi:cog", "cards": cards}],
+        }
+
+    def panel_toggle(self, _toggle_id: str, _value: bool) -> None:
+        """Nothing to switch yet."""
+
+        raise PanelError("Fix the configuration first")
+
+    def panel_action(self, _action_id: str, _args: dict[str, object]) -> str | None:
+        """Nothing to run yet."""
+
+        raise PanelError("Fix the configuration first")
+
+
+def wait_for_valid_config(
+    fetch: Callable[[], dict[str, object]],
+    validate: Callable[[dict[str, object]], object],
+    view: SetupView,
+    stop: threading.Event,
+    interval: float = 15.0,
+) -> tuple[dict[str, object], object] | None:
+    """Poll the saved options until ``validate`` accepts them; None when stopped first."""
+
+    while not stop.wait(interval):
+        try:
+            raw = fetch()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        try:
+            return raw, validate(raw)
+        except ValueError as err:
+            if str(err) != view.error:
+                view.error = str(err)
+                _LOGGER.error("Configuration still invalid: %s", err)  # noqa: TRY400 - no traceback needed
+    return None
 
 
 class PanelServer:
@@ -170,12 +267,19 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 # -- View-model helpers (shared by the apps) -----------------------------------
-def toggle(
-    toggle_id: str, label: str, value: bool, description: str = "", *, disabled: bool = False
+def toggle(  # noqa: PLR0913 - view-model fields
+    toggle_id: str, label: str, value: bool, description: str = "", *, disabled: bool = False, icon: str = ""
 ) -> dict[str, object]:
-    """A switch row."""
+    """A switch row (``icon`` is an ``mdi:`` name known to web/icons.js)."""
 
-    return {"id": toggle_id, "label": label, "value": value, "description": description, "disabled": disabled}
+    return {
+        "id": toggle_id,
+        "label": label,
+        "value": value,
+        "description": description,
+        "disabled": disabled,
+        "icon": icon,
+    }
 
 
 def stat(label: str, value: object, unit: str = "") -> dict[str, object]:
@@ -196,6 +300,7 @@ def action(  # noqa: PLR0913 - view-model fields
     confirm: str = "",
     danger: bool = False,
     reason: str = "",
+    icon: str = "",
 ) -> dict[str, object]:
     """A button; ``confirm`` asks first, ``reason`` explains why it is disabled."""
 
@@ -207,15 +312,16 @@ def action(  # noqa: PLR0913 - view-model fields
         "confirm": confirm,
         "danger": danger,
         "reason": reason,
+        "icon": icon,
     }
 
 
-def link(label: str, path: str, description: str = "", *, button: str = "Edit") -> dict[str, object]:
+def link(label: str, path: str, description: str = "", *, button: str = "Edit", icon: str = "") -> dict[str, object]:
     """A row (in ``links``) or button (in ``actions``) that opens a Home Assistant page, e.g. an automation."""
 
     if not path.startswith(HA_PATH_PREFIX):
         raise ValueError(f"panel links must point into {HA_PATH_PREFIX}")
-    return {"label": label, "path": path, "description": description, "button": button}
+    return {"label": label, "path": path, "description": description, "button": button, "icon": icon}
 
 
 def notice(text: str, tone: str = "warn") -> dict[str, str]:

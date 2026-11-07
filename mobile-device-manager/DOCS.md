@@ -105,6 +105,7 @@ The phone itself is not affected. To use it again, sign in again from the Compan
 
 ## Troubleshooting
 
+- **What do the `s6-rc` lines in the log mean?** The app runs as an s6-overlay service, the process supervisor built into Home Assistant app images. Only s6 warnings and errors are logged. Older versions printed `legacy-cont-init`, `legacy-services` and `s6-rc.d is empty` on every start. Those were harmless, and came from running without a proper service definition.
 - **No devices listed:** check that the Companion app integration (**Settings → Devices & services → Mobile App**) has entries.
 - **"Scan failing":** the panel shows the error. The app needs the Home Assistant API, which is enabled by default.
 - **Remove refused:** open each linked item with **Edit** and remove the device, its sensors or its notify service from it. Then press **Rescan now**.

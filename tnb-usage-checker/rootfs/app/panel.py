@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from config import Account, slugify
+from config import Account, mask_email, mask_number, slugify
 from meter import MYT
 from webui import PanelError, action, badge, stat, toggle
 
@@ -66,6 +66,7 @@ def _account_card(runtime: AccountRuntime, account: Account) -> dict[str, object
         stats.append(stat("Days left in cycle", values.get("days_remaining")))
     if account.has_portal:
         stats += [
+            stat("Account no.", mask_number(account.ca_no)),
             stat("myTNB usage (cycle)", _kwh(values.get("portal_usage_cycle")), "kWh"),
             stat("myTNB cost (cycle)", _money(values.get("portal_cost_cycle"))),
             stat("myTNB data up to", _when(values.get("portal_data_as_of"))),
@@ -78,6 +79,7 @@ def _account_card(runtime: AccountRuntime, account: Account) -> dict[str, object
             "Account",
             account.enabled,
             "Switch off to pause everything for this account",
+            icon="mdi:power",
         )
     ]
     if account.has_portal:
@@ -86,8 +88,9 @@ def _account_card(runtime: AccountRuntime, account: Account) -> dict[str, object
                 f"account:{account.account_id}:portal_enabled",
                 "myTNB sync",
                 account.portal_enabled,
-                "Log in to myTNB and fetch smart meter data",
+                f"Log in as {mask_email(account.mytnb_username)} and fetch smart meter data",
                 disabled=not account.enabled,
+                icon="mdi:cloud-sync",
             )
         )
         toggles.append(
@@ -97,6 +100,7 @@ def _account_card(runtime: AccountRuntime, account: Account) -> dict[str, object
                 account.statistics_enabled,
                 "Import hourly usage and cost as long-term statistics",
                 disabled=not (account.enabled and account.portal_enabled),
+                icon="mdi:chart-bar",
             )
         )
     if account.has_meter:
@@ -107,6 +111,7 @@ def _account_card(runtime: AccountRuntime, account: Account) -> dict[str, object
                 account.meter_enabled,
                 f"Read {account.import_entity}" + (f" and {account.export_entity}" if account.export_entity else ""),
                 disabled=not account.enabled,
+                icon="mdi:gauge",
             )
         )
 
@@ -122,13 +127,20 @@ def _account_card(runtime: AccountRuntime, account: Account) -> dict[str, object
     )
     return {
         "title": account.name,
+        "icon": "mdi:home-lightning-bolt",
         "subtitle": f"{'Time-of-Use' if account.tariff == 'tou' else 'General'} tariff · cycle from day {account.billing_start_day} · {sources}",
         "badge": status,
         "off": not account.enabled,
         "stats": stats,
         "toggles": toggles,
         "actions": [
-            action("sync", "Sync myTNB now", {"account": account.account_id}, disabled=not account.portal_active)
+            action(
+                "sync",
+                "Sync myTNB now",
+                {"account": account.account_id},
+                disabled=not account.portal_active,
+                icon="mdi:sync",
+            )
         ]
         if account.has_portal
         else [],
@@ -146,6 +158,7 @@ def build_state(app: App) -> dict[str, object]:
     afa_sen = config.afa_rate * 100
     settings = {
         "title": "Settings",
+        "icon": "mdi:cog",
         "subtitle": "Edit the remaining options in the app's Configuration tab",
         "stats": [
             stat("AFA", f"{afa_sen:+.2f}", "sen/kWh"),
@@ -153,6 +166,10 @@ def build_state(app: App) -> dict[str, object]:
             stat("myTNB sync every", config.portal_interval_hours, "h"),
             stat("Sensor poll every", config.meter_poll_seconds, "s"),
             stat("Entities via", app.mqtt_status()),
+            stat(
+                "myTNB logins",
+                ", ".join(sorted({mask_email(a.mytnb_username) for a in config.accounts if a.has_portal})) or None,
+            ),
         ],
         "toggles": [
             toggle(
@@ -161,12 +178,14 @@ def build_state(app: App) -> dict[str, object]:
                 config.mqtt,
                 "Publish devices via MQTT discovery when a broker (e.g. Mosquitto) is found; "
                 "otherwise entities are created through the Home Assistant states API",
+                icon="mdi:lan-connect",
             ),
             toggle(
                 "notify_on_failure",
                 "Sync failure notifications",
                 config.notify_on_failure,
                 "Notify the phones below when myTNB sync fails or recovers",
+                icon="mdi:bell",
             ),
         ],
     }
@@ -174,6 +193,7 @@ def build_state(app: App) -> dict[str, object]:
     phones = app.phones
     phones_card = {
         "title": "Phones",
+        "icon": "mdi:cellphone-message",
         "subtitle": "Companion apps linked to this Home Assistant (found automatically)",
         "toggles": [
             toggle(
@@ -182,6 +202,7 @@ def build_state(app: App) -> dict[str, object]:
                 phones.get(name, True) is not False,
                 name,
                 disabled=not config.notify_on_failure,
+                icon="mdi:cellphone",
             )
             for name in sorted(app.discovered)
         ],
@@ -192,8 +213,8 @@ def build_state(app: App) -> dict[str, object]:
         "title": "TNB Usage Checker",
         "subtitle": f"Version {app.version} · {len(config.accounts)} account(s)",
         "sections": [
-            {"title": "Accounts", "cards": cards},
-            {"title": "Settings", "cards": [settings, phones_card]},
+            {"title": "Accounts", "icon": "mdi:lightning-bolt", "cards": cards},
+            {"title": "Settings", "icon": "mdi:cog", "cards": [settings, phones_card]},
         ],
     }
 

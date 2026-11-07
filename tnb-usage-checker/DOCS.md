@@ -35,22 +35,34 @@ extra_holidays:
   - "2026-03-21"            # e.g. Hari Raya Aidilfitri
 notify_on_failure: true
 mqtt: true
+mytnb_username: "you@example.com"   # one myTNB login for every account below
+mytnb_password: "********"
 accounts:
   - name: "Home"
+    account_number: "123456789012"   # the 12-digit number on the bill
     tariff: "tou"
     billing_start_day: 12
-    mytnb_username: "you@example.com"
-    mytnb_password: "********"
-    smartmeter_url: "https://myaccount.mytnb.com.my/AccountManagement/SmartMeter/Index/TRIL?caNo=1234..."
     import_entity: "sensor.shelly_em_channel_1_energy"
     export_entity: "sensor.solar_export_energy"
-  - name: "Parents"
+  - name: "Shop"
+    account_number: "123456789013"
     tariff: "general"
     billing_start_day: 1
+  - name: "Parents"                  # belongs to a different myTNB login
+    account_number: "123456789014"
+    tariff: "general"
+    billing_start_day: 5
     mytnb_username: "parents@example.com"
     mytnb_password: "********"
-    smartmeter_url: "https://myaccount.mytnb.com.my/AccountManagement/SmartMeter/Index/TRIL?caNo=2201..."
 ```
+
+### Several accounts, one login
+
+1. Put your myTNB email and password **once** at the top (`mytnb_username`, `mytnb_password`).
+2. Add one entry under `accounts` per electricity account, with its **`account_number`**. That is the 12-digit number printed on your TNB bill, also shown in the myTNB app under each account. Spaces and dashes are ignored.
+3. For an account that belongs to someone else's myTNB login, also set `mytnb_username` and `mytnb_password` on that account only.
+
+You no longer need to copy the long smart-meter link. The app builds it from the account number. Each account still gets its own portal session, and accounts sync one after another, never in parallel.
 
 ### Global options
 
@@ -63,6 +75,7 @@ accounts:
 | `extra_holidays` | `[]` | Extra `YYYY-MM-DD` dates treated as off-peak all day. |
 | `notify_on_failure` | `true` | Master switch for sync failure and recovery notifications. |
 | `mqtt` | `true` | Use MQTT discovery when a broker is found. See [MQTT or not](#mqtt-or-not). |
+| `mytnb_username`, `mytnb_password` | empty | The shared myTNB login, used by every account that has an `account_number` and no login of its own. |
 
 ### Account options
 
@@ -71,14 +84,20 @@ accounts:
 | `name` | yes | Friendly name. It also sets the ids: `Home` gives the device `TNB Home` and entities `sensor.tnb_home_*`. Names must be unique. |
 | `tariff` | yes | `general` or `tou`. |
 | `billing_start_day` | yes | Day of the month your billing cycle starts (1-31). Short months use their last day. |
-| `mytnb_username`, `mytnb_password`, `smartmeter_url` | together | myTNB login. To get the URL, open the account in myTNB, click **View Energy Usage** and copy the address. It must contain `/AccountManagement/SmartMeter/Index/TRIL?caNo=`. |
+| `account_number` | for myTNB | The 12-digit TNB account number from your bill. Enables myTNB sync with the shared login. |
+| `mytnb_username`, `mytnb_password` | optional | Only for an account under a different myTNB login. Set both together. |
+| `smartmeter_url` | legacy | Older way to identify the account. If set, the `caNo` in the link is used. Prefer `account_number`. |
 | `import_entity` | optional | Cumulative grid-import energy sensor (kWh, Wh or MWh). Enables the live estimate. |
 | `export_entity` | optional | Cumulative grid-export energy sensor, for NEM. Needs `import_entity`. |
 | `enabled`, `portal_enabled`, `meter_enabled`, `statistics_enabled` | optional | On/off switches, all on by default. These are the panel switches. |
 
-Every account needs the myTNB login, an `import_entity`, or both.
+Every account needs an `account_number` (with a myTNB login), an `import_entity`, or both.
 
 Changes made in the Configuration tab are picked up within about 30 seconds. You don't need to restart the app.
+
+### If the configuration has a problem
+
+The app no longer stops and restarts in a loop. It keeps running, and the panel shows **Configuration needs attention**. That page gives the exact problem (for example *"Account 'Home': add account_number, the 12-digit number printed on your TNB bill"*) and an example. Fix the option in the Configuration tab and save. The app starts within 15 seconds, with no restart.
 
 ## Panel
 
@@ -185,6 +204,9 @@ TNB domestic tariff for Peninsular Malaysia, valid 1 July 2025 to 31 December 20
 When a myTNB sync fails and when it recovers, the app notifies every phone that is switched on in the **Phones** card. It sends one notification per change, not one per retry. With no linked phones, it creates a persistent notification instead.
 
 ## Troubleshooting
+
+- **What do the `s6-rc` lines in the log mean?** The app runs as an s6-overlay service, the process supervisor built into Home Assistant app images. Only s6 warnings and errors are logged. Older versions printed `legacy-cont-init`, `legacy-services` and `s6-rc.d is empty` on every start. Those came from running without a proper service definition and were harmless.
+- **Icons missing in the app store:** open **⋮ → Check for updates** in the app store. Home Assistant caches app icons per repository refresh.
 
 - **`auth_error` status:**
   - Check the email and password by logging in to myTNB in a browser.

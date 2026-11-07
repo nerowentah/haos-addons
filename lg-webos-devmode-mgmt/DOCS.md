@@ -108,6 +108,8 @@ When a renewal fails after all retries, the app notifies every phone that is swi
 
 ## Troubleshooting
 
+- **Configuration needs attention:** if the options are invalid (for example no TV yet), the app keeps running and the panel shows exactly what to fix. It starts within 15 seconds of saving valid options.
+- **What do the `s6-rc` lines in the log mean?** The app runs as an s6-overlay service, the process supervisor built into Home Assistant app images. Only s6 warnings and errors are logged. Older versions printed `legacy-cont-init`, `legacy-services` and `s6-rc.d is empty` on every start. Those were harmless, and came from running without a proper service definition.
 - **Invalid URL:** a session's `url` must start with `http://` or `https://`.
 - **Network errors:** make sure the Home Assistant host can reach `developer.lge.com`.
 - **LG answers "not success" / `ERR_005`:** the token is stale. Read a fresh one from the TV and update the session.

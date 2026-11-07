@@ -15,10 +15,16 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-COPY rootfs/app/ /app/
+# /app: the app and the shared ingress panel (webui.py, web/).
+# /etc/s6-overlay: the app runs as an s6-overlay service (no legacy CMD).
+COPY rootfs/ /
+RUN chmod a+x /etc/s6-overlay/s6-rc.d/mobile-device-manager/run /etc/s6-overlay/s6-rc.d/mobile-device-manager/finish
 
 ENV MDM_VERSION=${BUILD_VERSION} \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    S6_VERBOSITY=1 \
+    S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
+    S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0
 
 LABEL \
     io.hass.name="Mobile Device Manager" \
@@ -27,5 +33,3 @@ LABEL \
     io.hass.type="app" \
     io.hass.version=${BUILD_VERSION} \
     maintainer="CWT <cwt@clgx.org>"
-
-CMD ["python3", "/app/main.py"]
