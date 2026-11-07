@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.0
+
+- Phones are no longer typed into the Configuration tab. The app lists the Companion apps linked to this Home Assistant automatically (at start and every 5 minutes): new phones are notified by default and unlinked phones disappear.
+- Per-phone switches live only in the panel's **Phones** card and are kept in `/data/phones.json`. Existing `notification_overrides` choices are migrated once and the option is removed.
+- Log lines use local time from the first line (the container `TZ` is loaded before logging starts).
+
 ## 1.6.0
 
 - New sidebar panel (ingress) styled like Home Assistant. It uses the live HA theme, including dark mode, and works on phones.
