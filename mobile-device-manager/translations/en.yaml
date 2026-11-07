@@ -1,0 +1,13 @@
+configuration:
+  scan_minutes:
+    name: Scan interval (minutes)
+    description: How often to rescan the Companion app devices and the automations, scripts and notify calls that use them (5-1440). The panel also has a Rescan now button.
+  stale_days:
+    name: Stale after (days)
+    description: A device that has not reported anything for this many days is flagged Stale (1-365).
+  notify_on_attention:
+    name: Attention notifications
+    description: Notify when devices turn stale or scanning keeps failing. Phones are found automatically; switch individual phones on or off in the Mobile Devices panel.
+  ignored_devices:
+    name: Ignored devices
+    description: Device ids that are never flagged stale (for example a tablet that is rarely used). Easier to set with the Ignore button in the panel.
