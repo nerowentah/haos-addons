@@ -7,9 +7,12 @@ import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-import paho.mqtt.client as mqtt
 from config import Account
+
+if TYPE_CHECKING:
+    import paho.mqtt.client as mqtt
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -231,7 +234,11 @@ class Publisher:
     """Wraps the paho client: LWT availability, retained discovery and states."""
 
     def __init__(self, broker: dict[str, object], on_ha_online: Callable[[], None]) -> None:
+        # paho (and ssl) are only loaded once a broker exists, keeping MQTT-less installs lighter.
+        import paho.mqtt.client as mqtt  # noqa: PLC0415 - lazy import
+
         self._on_ha_online = on_ha_online
+        self._sent: dict[str, str] = {}  # last retained payload per topic, to skip unchanged publishes
         self._connected = threading.Event()
         try:
             self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="power_tnb")
@@ -283,6 +290,7 @@ class Publisher:
         client.subscribe(HA_STATUS_TOPIC)
         client.publish(AVAILABILITY_TOPIC, "online", qos=1, retain=True)
         self._connected.set()
+        self.forget_sent()
         self._on_ha_online()
 
     def _handle_disconnect(self, *_args: object) -> None:
@@ -293,15 +301,25 @@ class Publisher:
     def _handle_message(self, _client: mqtt.Client, _userdata: object, message: mqtt.MQTTMessage) -> None:
         if message.topic == HA_STATUS_TOPIC and message.payload == b"online":
             _LOGGER.info("Home Assistant came online; republishing discovery")
+            self.forget_sent()
             self._on_ha_online()
 
-    def publish_json(self, topic: str, payload: object, *, retain: bool = True) -> None:
+    def publish_json(self, topic: str, payload: object, *, retain: bool = True, force: bool = False) -> None:
         """Publish a JSON payload (``None`` publishes an empty retained message to clear the topic)."""
 
         body = "" if payload is None else json.dumps(payload, separators=(",", ":"))
-        self._client.publish(topic, body, qos=1, retain=retain)
+        self.publish_raw(topic, body, retain=retain, force=force)
 
-    def publish_raw(self, topic: str, payload: str, *, retain: bool = True) -> None:
-        """Publish a plain string."""
+    def publish_raw(self, topic: str, payload: str, *, retain: bool = True, force: bool = False) -> None:
+        """Publish a plain string; an unchanged retained payload is skipped unless ``force``."""
 
+        if retain and not force and self._sent.get(topic) == payload:
+            return
         self._client.publish(topic, payload, qos=1, retain=retain)
+        if retain:
+            self._sent[topic] = payload
+
+    def forget_sent(self) -> None:
+        """Republish everything next time (after a reconnect or a Home Assistant restart)."""
+
+        self._sent.clear()

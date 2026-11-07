@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.3
+
+- The panel stops polling while it is hidden (another tab, or the sidebar panel closed).
+- Python bytecode is precompiled in the image, for a faster start with nothing written at runtime.
+
 ## 1.7.2
 
 - **No more crash loop on a bad configuration** (for example no TVs yet). The app stays up, and the panel shows what to fix with an example. It starts by itself once the options are valid.

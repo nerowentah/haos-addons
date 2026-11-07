@@ -286,7 +286,15 @@ async function refresh(force) {
   }
 }
 
+// Poll only while the panel is visible: a hidden tab or a closed sidebar panel
+// costs neither the browser nor the app anything.
 syncTheme();
-setInterval(syncTheme, THEME_SYNC_MS);
+setInterval(() => document.hidden || syncTheme(), THEME_SYNC_MS);
 refresh(true);
-setInterval(() => refresh(false), POLL_MS);
+setInterval(() => document.hidden || refresh(false), POLL_MS);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    syncTheme();
+    refresh(true);
+  }
+});

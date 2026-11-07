@@ -18,10 +18,12 @@ WORKDIR /app
 # /app: the app and the shared ingress panel (webui.py, web/).
 # /etc/s6-overlay: the app runs as an s6-overlay service (no legacy CMD).
 COPY rootfs/ /
-RUN chmod a+x /etc/s6-overlay/s6-rc.d/lg-webos-devmode-mgmt/run /etc/s6-overlay/s6-rc.d/lg-webos-devmode-mgmt/finish
+RUN chmod a+x /etc/s6-overlay/s6-rc.d/lg-webos-devmode-mgmt/run /etc/s6-overlay/s6-rc.d/lg-webos-devmode-mgmt/finish \
+    && python3 -m compileall -q /app
 
 ENV LG_RENEW_VERSION=${BUILD_VERSION} \
     PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
     S6_VERBOSITY=1 \
     S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
     S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0

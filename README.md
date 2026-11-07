@@ -19,9 +19,9 @@ https://github.com/nerowentah/haos-addons
 
 | | App | Version | Arch | What it does |
 | --- | --- | --- | --- | --- |
-| <img src="tnb-usage-checker/icon.png" width="32" alt=""> | [TNB Usage Checker](tnb-usage-checker/) | 0.3.1 | aarch64, amd64 | Imports myTNB usage and cost into the Energy dashboard and estimates your TNB bill live, for multiple accounts under one myTNB login. |
-| <img src="lg-webos-devmode-mgmt/icon.png" width="32" alt=""> | [LG webOS DevMode Mgmt](lg-webos-devmode-mgmt/) | 1.7.2 | aarch64, amd64 | Renews LG webOS Developer Mode sessions on a schedule so they never expire. |
-| <img src="mobile-device-manager/icon.png" width="32" alt=""> | [Mobile Device Manager](mobile-device-manager/) | 0.1.1 | aarch64, amd64 | Lists your Companion app devices with last seen, battery and every automation, script and notify call that uses them. Flags stale and duplicate devices and removes them safely. |
+| <img src="tnb-usage-checker/icon.png" width="32" alt=""> | [TNB Usage Checker](tnb-usage-checker/) | 0.3.2 | aarch64, amd64 | Imports myTNB usage and cost into the Energy dashboard and estimates your TNB bill live, for multiple accounts under one myTNB login. |
+| <img src="lg-webos-devmode-mgmt/icon.png" width="32" alt=""> | [LG webOS DevMode Mgmt](lg-webos-devmode-mgmt/) | 1.7.3 | aarch64, amd64 | Renews LG webOS Developer Mode sessions on a schedule so they never expire. |
+| <img src="mobile-device-manager/icon.png" width="32" alt=""> | [Mobile Device Manager](mobile-device-manager/) | 0.1.2 | aarch64, amd64 | Lists your Companion app devices with last seen, battery and every automation, script and notify call that uses them. Flags stale and duplicate devices and removes them safely. |
 
 **Planned:** TM Unifi Bill Checker (`tm-unifi-bill-checker/`) and Ranhill SAJ Bill Checker (`ranhill-saj-bill-checker/`).
 
@@ -80,7 +80,7 @@ python -m unittest discover -s mobile-device-manager/tests
 **Checking an image signature yourself:**
 
 ```bash
-cosign verify ghcr.io/nerowentah/power-tnb:0.3.1 \
+cosign verify ghcr.io/nerowentah/power-tnb:0.3.2 \
   --certificate-identity-regexp '^https://github.com/nerowentah/haos-addons/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

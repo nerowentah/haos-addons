@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.2
+
+- Lighter and quieter:
+  - Without an MQTT broker, entity states are only sent to Home Assistant when they change. They were re-sent on every meter poll before, and in testing 10 unchanged polls went from 150 HTTP calls to 0. A full refresh still runs every 5 minutes.
+  - With MQTT, unchanged retained payloads are skipped. Everything is re-sent after a reconnect or a Home Assistant restart.
+  - The MQTT client and websocket libraries are only loaded when needed. Start-up loads about 15% less Python memory and about 25% faster.
+  - The main loop sleeps until the next job (up to 60 s) instead of waking every 10 s.
+- The panel stops polling while it is hidden (another tab, or the sidebar panel closed).
+- Python bytecode is precompiled in the image, for a faster start with nothing written at runtime.
+
 ## 0.3.1
 
 - Examples in the setup page and docs use obvious placeholder account numbers and names.

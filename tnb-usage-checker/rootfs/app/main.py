@@ -40,7 +40,8 @@ from webui import PanelError, PanelRouter, PanelServer, SetupView, wait_for_vali
 _LOGGER = logging.getLogger("power_tnb")
 
 VERSION = os.environ.get("POWER_TNB_VERSION", "dev")
-LOOP_SECONDS = 10
+LOOP_SECONDS = 60  # longest idle sleep; the loop wakes earlier for due work or panel actions
+MIN_SLEEP_SECONDS = 1
 STORE_SAVE_SECONDS = 60
 PORTAL_WINDOW_DAYS = 30
 PORTAL_RETRY_SECONDS = 30 * 60
@@ -101,6 +102,7 @@ class App:
         self.next_states_refresh = 0.0
         self.next_phone_check = 0.0
         self.states_warned = False
+        self.posted: dict[str, dict[str, object]] = {}  # last body posted per entity (states-API sink)
         self.republish = threading.Event()
         self.stopping = threading.Event()
         self.wake = threading.Event()
@@ -355,9 +357,15 @@ class App:
             _LOGGER.info("MQTT broker found; switching entities to MQTT discovery")
             self._delete_rest_entities()
         self.broker_key = key
-        self.publisher = mqtt_pub.Publisher(broker, self.republish.set)
+        self.publisher = mqtt_pub.Publisher(broker, self._request_republish)
         self.publisher.start()
         self.republish.set()
+
+    def _request_republish(self) -> None:
+        """Called from the MQTT thread (connect / Home Assistant online): republish on the main loop now."""
+
+        self.republish.set()
+        self.wake.set()
 
     def _retire_mqtt(self) -> None:
         """Remove retained discovery configs and disconnect."""
@@ -380,14 +388,18 @@ class App:
         return [str(v) for v in value] if isinstance(value, list) else []
 
     def _post_state(self, entity_id: str, state: str, attributes: dict[str, object]) -> bool:
+        body = {"state": state, "attributes": attributes}
+        if self.posted.get(entity_id) == body:
+            return True  # unchanged: skip the HTTP round trip
         try:
-            self.supervisor.core_post(f"/states/{entity_id}", {"state": state, "attributes": attributes})
+            self.supervisor.core_post(f"/states/{entity_id}", body)
         except SupervisorError as err:
             if not self.states_warned:
                 self.states_warned = True
                 _LOGGER.warning("Could not update entities through the states API: %s", err)
             return False
         self.states_warned = False
+        self.posted[entity_id] = copy.deepcopy(body)
         return True
 
     def _post_states(self, runtime: AccountRuntime) -> None:
@@ -425,8 +437,10 @@ class App:
                 self.supervisor.core_delete(f"/states/{stale}")
             except SupervisorError:
                 continue
-        self.store.data["rest_entities"] = current
-        self.store.dirty = True
+        if self.store.data.get("rest_entities") != current:
+            self.store.data["rest_entities"] = current
+            self.store.dirty = True
+        self.posted.clear()  # full re-post: states set through the API vanish when Home Assistant restarts
         for runtime in self.runtimes:
             self._post_states(runtime)
         self._post_holiday()
@@ -441,6 +455,7 @@ class App:
             except SupervisorError as err:
                 _LOGGER.warning("Could not remove %s: %s", entity_id, err)
         self.store.data["rest_entities"] = []
+        self.posted.clear()
         self.store.dirty = True
 
     # -- MQTT -------------------------------------------------------------------
@@ -742,6 +757,20 @@ class App:
                         time.monotonic() + random.uniform(5, PORTAL_STAGGER_SECONDS),  # noqa: S311 - jitter only
                     )
 
+    def _idle_seconds(self) -> float:
+        """Sleep until the next scheduled job (meter poll, portal sync, checks), at most LOOP_SECONDS."""
+
+        deadlines = [self.next_options_check, self.next_mqtt_check, self.next_phone_check]
+        if self.next_states_refresh:
+            deadlines.append(self.next_states_refresh)
+        for runtime in self.runtimes:
+            if runtime.meter is not None and runtime.account.meter_active:
+                deadlines.append(runtime.next_meter)
+            if runtime.portal is not None and runtime.account.portal_active:
+                deadlines.append(runtime.next_portal)
+        wait = min(deadlines, default=time.monotonic() + LOOP_SECONDS) - time.monotonic()
+        return min(max(wait, MIN_SLEEP_SECONDS), LOOP_SECONDS)
+
     def panel_state(self) -> dict[str, object]:
         """The panel view model."""
 
@@ -758,7 +787,7 @@ class App:
                 if time.monotonic() - last_save >= STORE_SAVE_SECONDS:
                     self.store.save()
                     last_save = time.monotonic()
-                self.wake.wait(LOOP_SECONDS)
+                self.wake.wait(self._idle_seconds())
         finally:
             self.store.save()
             if self.publisher is not None:
