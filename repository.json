@@ -2,5 +2,5 @@
   "name": "HAOS Add-ons",
   "url": "https://github.com/nerowentah/haos-addons",
   "maintainer": "CWT <cwt@clgx.org>",
-  "description": "Home Assistant OS apps: LG webOS Developer Mode session auto-renewal and Malaysian utilities (TNB electricity)."
+  "description": "Home Assistant OS apps: TNB Usage Checker, LG webOS DevMode Mgmt and Mobile Device Manager (TM Unifi and Ranhill SAJ bill checkers planned)."
 }
