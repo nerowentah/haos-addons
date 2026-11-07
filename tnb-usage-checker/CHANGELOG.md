@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Examples in the setup page and docs use obvious placeholder account numbers and names.
+
 ## 0.3.0
 
 - **One login, many accounts.** Set `mytnb_username` and `mytnb_password` once at the top, then give each account its `account_number` (the 12-digit number on the bill). The smart-meter link is built automatically, so there's no more pasting `smartmeter_url`. An account can still use its own login, and `smartmeter_url` keeps working as a legacy option.

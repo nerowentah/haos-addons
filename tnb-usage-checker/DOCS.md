@@ -39,17 +39,17 @@ mytnb_username: "you@example.com"   # one myTNB login for every account below
 mytnb_password: "********"
 accounts:
   - name: "Home"
-    account_number: "220012345678"   # the 12-digit number on the bill
+    account_number: "123456789012"   # the 12-digit number on the bill
     tariff: "tou"
     billing_start_day: 12
     import_entity: "sensor.shelly_em_channel_1_energy"
     export_entity: "sensor.solar_export_energy"
   - name: "Shop"
-    account_number: "220087654321"
+    account_number: "123456789013"
     tariff: "general"
     billing_start_day: 1
   - name: "Parents"                  # belongs to a different myTNB login
-    account_number: "220011112222"
+    account_number: "123456789014"
     tariff: "general"
     billing_start_day: 5
     mytnb_username: "parents@example.com"
@@ -97,7 +97,7 @@ Changes made in the Configuration tab are picked up within about 30 seconds. You
 
 ### If the configuration has a problem
 
-The app no longer stops and restarts in a loop. It keeps running, and the panel shows **Configuration needs attention**. That page gives the exact problem (for example *"Account 'HHGV': add account_number, the 12-digit number printed on your TNB bill"*) and an example. Fix the option in the Configuration tab and save. The app starts within 15 seconds, with no restart.
+The app no longer stops and restarts in a loop. It keeps running, and the panel shows **Configuration needs attention**. That page gives the exact problem (for example *"Account 'Home': add account_number, the 12-digit number printed on your TNB bill"*) and an example. Fix the option in the Configuration tab and save. The app starts within 15 seconds, with no restart.
 
 ## Panel
 
