@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.6.0
+
+- New sidebar panel (ingress) styled like Home Assistant. It uses the live HA theme, including dark mode, and works on phones.
+  - **TV cards:** status, last attempt, last success, next renewal, an **Auto renew** switch and a **Renew now** button.
+  - **Schedule card:** a **Failure notifications** switch and a **Renew all now** button.
+  - **Phones card:** one notification switch per phone.
+- Switches apply immediately without a restart. Each one is saved to the app options, so it also shows in the Configuration tab. Configuration-tab edits (TVs, tokens, interval, retries) are now hot-reloaded within about 30 seconds.
+- New optional per-session `enabled` option ("Auto renew"). A paused TV keeps its token and is skipped by the schedule.
+- Discovered phones are written back to the options only when a new phone appears, not on every start.
+- `BUILD_VERSION` is now passed into the image, so the panel shows the real version.
+
 ## 1.5.1
 
 - Fix persisting the per-phone toggles: `POST /addons/self/options` now sends the payload as `{"options": {...}}`, so the merged `notification_overrides` actually reach the Configuration page instead of failing with HTTP 400 (they already applied in-memory for the current run).

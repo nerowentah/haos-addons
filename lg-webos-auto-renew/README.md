@@ -18,7 +18,9 @@ Inspired by:
 - Automatically renews one or more LG webOS Developer Mode sessions
 - Configurable renewal interval (1-168 hours) with retry + backoff
 - Optional Home Assistant notification on failure, automatically pushed to every registered Companion device (`notify.mobile_app_*` services) or shown as a persistent notification if none exist
-- No external Python dependencies (stdlib only), no web UI, runs fully on-device
+- **Panel in the Home Assistant sidebar** (**LG Dev Renew**, opened through ingress). Each TV gets a card showing the last attempt, last success and next renewal. Each card has an **Auto renew** switch and a **Renew now** button. There are also switches for failure notifications and for each phone, plus a **Renew all now** button. The panel follows your Home Assistant theme, including dark mode.
+- **Switches take effect immediately.** A panel switch is saved into the app options, so it also shows in the Configuration tab. Changes made in the Configuration tab (TVs, tokens, interval, retries) are picked up within about 30 seconds. Neither needs a restart.
+- No external Python dependencies (stdlib only). Runs fully on-device.
 - Private by default: renewal URLs and session tokens are never written to the logs
 - Modernized Configuration page: every option has a label and helper text, the session token renders as a masked password field, and discovered phones appear as per-phone notification switches (all on by default)
 
@@ -70,7 +72,7 @@ sessions:
 | `retries`                 | int  | `3`     | Retries per session before marking the renewal failed (0-10).                      |
 | `notify_on_failure`       | bool | `true`  | Master switch: send a push notification on final failure (needs at least one phone enabled in `notification_overrides`; falls back to a persistent notification when no mobile app is registered). |
 | `notification_overrides`  | list | `[]`    | One row per discovered Home Assistant mobile app, each on by default. Switch a phone off to stop its failure notifications. This list is maintained automatically: newly discovered phones are added with `notify: true`, and existing rows keep their saved switch value. |
-| `sessions`                | list | -       | One or more TVs. Each session needs a `name` and either a `token` or a full `url`. |
+| `sessions`                | list | -       | One or more TVs. Each session needs a `name` and either a `token` or a full `url`. Optional `enabled` (default `true`) pauses scheduled renewal; it is the panel's **Auto renew** switch. |
 
 ```yaml
 sessions:
@@ -122,6 +124,17 @@ sessions:
    **entire** value into the session's `token` field. (A truncated or stale value
    makes LG return `errorCode ERR_005, Check user session`.)
 
+## Panel
+
+Open **LG Dev Renew** from the sidebar, or click **Open web UI** on the app page.
+
+- **TV cards:** status (*Renewed*, *Failed*, *Renewing…*, *Paused* or *Not run yet*), last attempt, last success and next renewal.
+- **Auto renew switch:** turning a TV off pauses its scheduled renewals and keeps its token. **Renew now** still works while it is paused.
+- **Schedule card:** shows the interval and retries, and has the **Failure notifications** switch and the **Renew all now** button.
+- **Phones card:** one switch per Home Assistant companion app.
+
+The panel never shows tokens or renewal URLs. Only administrators see it in the sidebar.
+
 ## Usage
 
 On start the add-on immediately attempts a renewal for every configured session, then re-runs on the schedule. Renewals and failures are visible in the add-on **Log** tab. The logs deliberately never show the renewal URL or the session token — you'll only see session names (e.g. `Renewing dev session 'living-room-tv'`).
@@ -131,7 +144,7 @@ On start the add-on immediately attempts a renewal for every configured session,
 - **Invalid URL error**: session `url` must start with `http://` or `https://`.
 - **Repeated network errors**: confirm the HA host can reach `developer.lge.com`.
 - **Growth in failures / API "not success"**: the token itself expired; fetch a fresh key from the TV Dev Mode app and update the session.
-- **Notifications not arriving**: `notify_on_failure` must be `true` and the add-on needs the internal Home Assistant API (enabled by default here via `homeassistant_api`). Each discovered phone must have its switch on in the **Mobile app notifications** section of the Configuration page (all are on by default). Targets are derived from the registered `notify.mobile_app_*` services, so a phone only receives pushes while its Companion app device exists in Home Assistant; if no phone is detected the add-on falls back to a persistent notification (check the startup log for `Auto-discovered N mobile notification target(s)` and `Notifications suppressed for: ...`).
+- **Notifications not arriving**: `notify_on_failure` must be `true` and the add-on needs the internal Home Assistant API (enabled by default here via `homeassistant_api`). Each discovered phone must have its switch on, either in the panel's **Phones** card or in the **Mobile app notifications** section of the Configuration tab (all are on by default). Targets are derived from the registered `notify.mobile_app_*` services, so a phone only receives pushes while its Companion app device exists in Home Assistant; if no phone is detected the add-on falls back to a persistent notification (check the startup log for `Auto-discovered N mobile notification target(s)` and `Notifications suppressed for: ...`).
 
 ## License / Attribution
 

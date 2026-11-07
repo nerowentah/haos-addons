@@ -31,3 +31,6 @@ configuration:
       url:
         name: API URL (optional)
         description: Override the LG renewal endpoint; defaults to the built-in URL.
+      enabled:
+        name: Auto renew
+        description: Switch off to pause scheduled renewals for this TV without deleting its token. Also switchable from the LG Dev Renew panel; applies without a restart.
