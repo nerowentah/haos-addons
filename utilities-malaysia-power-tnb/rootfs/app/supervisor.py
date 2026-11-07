@@ -6,11 +6,12 @@ import json
 import logging
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-from config import ConfigError, NotificationOverride, load_options
+from config import load_options
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ HTTP_TIMEOUT = 30
 _CONTAINER_ENV_DIRS = (Path("/run/s6/container_environment"), Path("/run/s6-container-env"))
 
 
-def _merge_s6_environment() -> None:
+def merge_s6_environment() -> None:
     """Import s6 container environment vars into ``os.environ``.
 
     With ``init: false`` and no ``with-contenv`` wrapper the Supervisor-injected
@@ -49,12 +50,14 @@ def _merge_s6_environment() -> None:
                 continue
             if value:
                 os.environ.setdefault(var.name, value)
+    if hasattr(time, "tzset"):
+        time.tzset()  # pick up the merged TZ so log lines use local time
 
 
 def load_supervisor_token() -> str:
     """Return the supervisor token from the container environment ("" when missing)."""
 
-    _merge_s6_environment()
+    merge_s6_environment()
     for name in SUPERVISOR_TOKEN_ENV_CANDIDATES:
         value = os.environ.get(name, "")
         if value:
@@ -114,6 +117,15 @@ class Supervisor:
 
         return self._request(f"{SUPERVISOR_CORE_API}{path}", "POST", body)
 
+    def core_delete(self, path: str) -> None:
+        """DELETE on the Core REST API (a missing resource is fine)."""
+
+        try:
+            self._request(f"{SUPERVISOR_CORE_API}{path}", "DELETE")
+        except SupervisorError as err:
+            if "HTTP 404" not in str(err):
+                raise
+
     def get_state(self, entity_id: str) -> dict[str, object] | None:
         """Return the state object of an entity, or None when it does not exist."""
 
@@ -125,13 +137,22 @@ class Supervisor:
             raise
         return state if isinstance(state, dict) else None
 
-    def mqtt_service(self) -> dict[str, object]:
-        """Return the MQTT broker credentials granted via ``services: mqtt:need``."""
+    def mqtt_service(self) -> dict[str, object] | None:
+        """The MQTT broker the Supervisor offers (``services: mqtt:want``), or None when there is none.
 
-        reply = self._request(f"{SUPERVISOR_API}/services/mqtt")
+        Supervisor answers HTTP 400 while no app (e.g. Mosquitto) provides MQTT.
+        Other failures (Supervisor unreachable) raise, so callers keep their current broker.
+        """
+
+        try:
+            reply = self._request(f"{SUPERVISOR_API}/services/mqtt")
+        except SupervisorError as err:
+            if "HTTP 400" in str(err) or "HTTP 404" in str(err):
+                return None
+            raise
         data = reply.get("data") if isinstance(reply, dict) else None
         if not isinstance(data, dict) or not data.get("host"):
-            raise SupervisorError("No MQTT service available; install and start the Mosquitto broker add-on")
+            return None
         return data
 
     def fetch_options(self) -> dict[str, object]:
@@ -159,16 +180,16 @@ class Supervisor:
         options.update(updates)
         self.write_options(options)
 
-    def discover_mobile_targets(self) -> list[str]:
-        """Return every ``notify.mobile_app_*`` service name ([] when none or unreachable)."""
+    def discover_mobile_targets(self) -> list[str] | None:
+        """Every linked ``notify.mobile_app_*`` service name, or None when Home Assistant is unreachable."""
 
         try:
             services = self.core_get("/services")
         except SupervisorError:
-            _LOGGER.exception("Failed to discover mobile-app notification targets")
-            return []
+            _LOGGER.warning("Could not list mobile-app notification targets; keeping the known phones")
+            return None
         if not isinstance(services, list):
-            return []
+            return None
         names = {
             str(name)
             for entry in services
@@ -176,23 +197,6 @@ class Supervisor:
             for name in (entry.get("services") or {})
         }
         return sorted(name for name in names if name.startswith(MOBILE_TARGET_PREFIX))
-
-    def seed_notification_overrides(
-        self, overrides: list[NotificationOverride], discovered: list[str]
-    ) -> list[NotificationOverride]:
-        """Add newly discovered phones (notify on) and persist the list so toggles show in the UI."""
-
-        merged = list(overrides)
-        known = {o.name for o in merged}
-        added = [NotificationOverride(name=name) for name in discovered if name not in known]
-        merged.extend(added)
-        if added:
-            try:
-                self.save_options({"notification_overrides": [{"name": o.name, "notify": o.notify} for o in merged]})
-                _LOGGER.info("Added %d phone(s) to notification_overrides", len(added))
-            except (SupervisorError, ConfigError):
-                _LOGGER.warning("Could not persist notification overrides; toggles still apply for this run")
-        return merged
 
     def notify(self, targets: list[str], title: str, message: str, notification_id: str) -> None:
         """Push to the given mobile apps, or create a persistent notification when there are none."""
@@ -214,11 +218,27 @@ class Supervisor:
             _LOGGER.exception("Failed to create persistent notification")
 
 
-def effective_targets(discovered: list[str], overrides: list[NotificationOverride]) -> list[str]:
-    """Discovered phones minus the ones switched off."""
+def effective_targets(discovered: list[str], phones: dict[str, object]) -> list[str]:
+    """Linked phones that are not switched off (new phones default to on)."""
 
-    off = {o.name for o in overrides if not o.notify}
-    return [t for t in discovered if t not in off]
+    return [t for t in discovered if phones.get(t, True) is not False]
+
+
+def merge_discovered(phones: dict[str, object], discovered: list[str]) -> dict[str, bool]:
+    """Switches for exactly the linked phones: new phones on, unlinked phones dropped."""
+
+    return {name: phones.get(name, True) is not False for name in discovered}
+
+
+def overrides_from_options(raw_options: dict[str, object]) -> dict[str, bool]:
+    """Phone switches from the retired ``notification_overrides`` option (migration)."""
+
+    rows = raw_options.get("notification_overrides")
+    prefs: dict[str, bool] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and str(row.get("name") or "").strip():
+            prefs[str(row["name"]).strip()] = bool(row.get("notify", True))
+    return prefs
 
 
 def notification_id(account_id: str) -> str:
