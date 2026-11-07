@@ -152,31 +152,38 @@ def build_state(app: App) -> dict[str, object]:
             stat("Off-peak holiday today", "Yes" if app.holidays.is_holiday(today) else "No"),
             stat("myTNB sync every", config.portal_interval_hours, "h"),
             stat("Sensor poll every", config.meter_poll_seconds, "s"),
+            stat("Entities via", app.mqtt_status()),
         ],
         "toggles": [
+            toggle(
+                "mqtt",
+                "Use MQTT when available",
+                config.mqtt,
+                "Publish devices via MQTT discovery when a broker (e.g. Mosquitto) is found; "
+                "otherwise entities are created through the Home Assistant states API",
+            ),
             toggle(
                 "notify_on_failure",
                 "Sync failure notifications",
                 config.notify_on_failure,
                 "Notify the phones below when myTNB sync fails or recovers",
-            )
+            ),
         ],
     }
 
-    overrides = {o.name: o.notify for o in config.notification_overrides}
-    phones = sorted(set(app.discovered) | set(overrides))
+    phones = app.phones
     phones_card = {
         "title": "Phones",
-        "subtitle": "Home Assistant companion apps that receive notifications",
+        "subtitle": "Companion apps linked to this Home Assistant (found automatically)",
         "toggles": [
             toggle(
                 f"phone:{name}",
                 name.removeprefix("mobile_app_").replace("_", " "),
-                overrides.get(name, True),
-                name if name in app.discovered else f"{name} (not currently registered)",
+                phones.get(name, True) is not False,
+                name,
                 disabled=not config.notify_on_failure,
             )
-            for name in phones
+            for name in sorted(app.discovered)
         ],
         "empty": "No mobile apps found. Without phones a persistent notification is used.",
     }
@@ -195,19 +202,8 @@ def apply_toggle(options: dict[str, object], toggle_id: str, value: bool) -> Non
     """Write one toggle into a raw options dict (mutates ``options``)."""
 
     kind, _, rest = toggle_id.partition(":")
-    if kind == "notify_on_failure" and not rest:
-        options["notify_on_failure"] = value
-        return
-    if kind == "phone" and rest:
-        rows = options.get("notification_overrides")
-        rows = rows if isinstance(rows, list) else []
-        for row in rows:
-            if isinstance(row, dict) and row.get("name") == rest:
-                row["notify"] = value
-                break
-        else:
-            rows.append({"name": rest, "notify": value})
-        options["notification_overrides"] = rows
+    if kind in ("notify_on_failure", "mqtt") and not rest:
+        options[kind] = value
         return
     if kind == "account":
         account_id, _, field = rest.rpartition(":")

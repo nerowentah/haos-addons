@@ -8,7 +8,7 @@ A Home Assistant app (add-on) for Malaysian **TNB** electricity that supports **
 - **Import myTNB smart meter data.** It logs in to the myTNB portal and pulls hourly usage (kWh) and cost (RM). These become long-term statistics you can pick in the **Energy dashboard**.
 - **Estimate the running bill live** from a local energy sensor such as a Shelly EM or CT clamp. It uses the 2025 TNB domestic tariff: General or Time-of-Use, capacity, network, retail, AFA, EEI, KWTBB, SST and NEM export credit.
 
-Each account appears as its own device, created through MQTT discovery.
+Each account appears as its own device through MQTT discovery when an MQTT broker is available. Without one (or with `mqtt` switched off) the same `sensor.tnb_*` entities are created through the Home Assistant states API instead. The broker is detected automatically every minute, so installing Mosquitto later switches over without a restart.
 
 Inspired by:
 
@@ -43,7 +43,7 @@ Inspired by:
 ## Requirements
 
 - Home Assistant OS or Supervised.
-- The **Mosquitto broker** app, with the MQTT integration set up. This app requests the broker credentials automatically (`mqtt:need`).
+- Optional: the **Mosquitto broker** app with the MQTT integration, for proper devices and entities you can rename. The app requests the broker credentials automatically (`mqtt:want`).
 - For myTNB data: a smart meter (AMI) and a myTNB login.
 
 ## Installation
@@ -64,7 +64,7 @@ calendarific_api_key: ""    # optional
 extra_holidays:
   - "2026-03-21"            # e.g. Hari Raya Aidilfitri
 notify_on_failure: true
-notification_overrides: []  # filled in automatically with your phones
+mqtt: true
 accounts:
   - name: "Home"
     tariff: "tou"
@@ -91,8 +91,8 @@ accounts:
 | `afa_rate` | `0.0` | Automatic Fuel Adjustment in RM/kWh. A negative value is a rebate. It only applies above 600 kWh. |
 | `calendarific_api_key` | `""` | Optional key for lunar public holidays (ToU off-peak). |
 | `extra_holidays` | `[]` | Extra `YYYY-MM-DD` dates treated as off-peak all day. |
-| `notify_on_failure` | `true` | Master switch for sync failure and recovery notifications. |
-| `notification_overrides` | `[]` | One row per discovered mobile app, each on by default. This list is kept up to date automatically. |
+| `notify_on_failure` | `true` | Master switch for sync failure and recovery notifications. Phones linked to Home Assistant are found automatically (re-checked every 5 minutes) and switched on or off in the panel's **Phones** card. |
+| `mqtt` | `true` | Use MQTT discovery when a broker is found. Off, or with no broker, entities go through the Home Assistant states API (no device, re-created every 5 minutes after a Home Assistant restart). |
 
 ### Account options
 
@@ -167,7 +167,7 @@ The rates live in `rootfs/app/tariff.py`.
   - Check the email and password by logging in to myTNB in a browser.
   - Check that the account has a smart meter and that **View Energy Usage** opens the smartliving dashboard.
   - After an auth error the app waits one full sync interval before trying again, to avoid getting your account locked.
-- **No entities:** make sure the Mosquitto broker and the MQTT integration are running. Discovery is published again whenever Home Assistant restarts.
+- **No entities:** the panel's Settings card shows **Entities via**. With MQTT, make sure the Mosquitto broker and the MQTT integration are running; discovery is published again whenever Home Assistant restarts. Without MQTT the entities come back within 5 minutes of a Home Assistant restart.
 - **Estimate is too low after a restart:** energy used while the app was stopped is still counted when it comes back, because readings are cumulative. A meter reset (the reading going backwards) is not counted.
 
 ## License

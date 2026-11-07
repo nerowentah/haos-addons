@@ -16,17 +16,10 @@ configuration:
     description: Additional YYYY-MM-DD dates treated as ToU off-peak all day.
   notify_on_failure:
     name: Notify on sync failure
-    description: Push a notification to the phones switched on below when a myTNB sync fails (and again when it recovers).
-  notification_overrides:
-    name: Mobile app notifications
-    description: One row per discovered Home Assistant mobile app, each on by default. Switch a phone off to stop its notifications.
-    fields:
-      name:
-        name: Mobile app
-        description: Home Assistant companion app that receives the notification.
-      notify:
-        name: Notify
-        description: On by default for every discovered phone; switch off to suppress notifications for this phone.
+    description: Push a notification when a myTNB sync fails (and again when it recovers). Phones are found automatically; switch individual phones on or off in the Power TNB panel.
+  mqtt:
+    name: Use MQTT when available
+    description: Publish one MQTT device per account when a broker (e.g. the Mosquitto broker app) is found; it is detected automatically while the app runs. Off, or without a broker, entities are created through the Home Assistant states API instead.
   accounts:
     name: TNB accounts
     description: One entry per electricity account. Each needs myTNB credentials, a local energy sensor, or both.

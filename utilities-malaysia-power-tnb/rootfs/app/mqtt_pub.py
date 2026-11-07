@@ -116,6 +116,39 @@ def sensors_for(account: Account) -> list[SensorDef]:
     return [s for s in SENSORS if s.source in sources]
 
 
+def entity_id(account_id: str, key: str) -> str:
+    """Entity id of an account sensor (the same for MQTT and the states-API fallback)."""
+
+    return f"sensor.tnb_{account_id}_{key}"
+
+
+HOLIDAY_ENTITY_ID = "binary_sensor.tnb_holiday_today"
+HOLIDAY_NAME = "TNB off-peak holiday today"
+
+
+def state_attributes(account: Account, sensor: SensorDef) -> dict[str, object]:
+    """Static attributes for a sensor posted through the Home Assistant states API."""
+
+    attributes: dict[str, object] = {
+        "friendly_name": f"TNB {account.name} {sensor.name}",
+        "unit_of_measurement": sensor.unit,
+        "device_class": sensor.device_class,
+        "state_class": sensor.state_class,
+        "icon": sensor.icon,
+    }
+    return {k: v for k, v in attributes.items() if v is not None}
+
+
+def state_value(sensor: SensorDef, value: object) -> str:
+    """State string for the states API (rounded like the MQTT display precision)."""
+
+    if value is None:
+        return "unknown"
+    if isinstance(value, float) and sensor.precision is not None:
+        return f"{value:.{sensor.precision}f}"
+    return str(value)
+
+
 def state_topic(account_id: str) -> str:
     """JSON state topic of an account."""
 
@@ -147,7 +180,7 @@ def sensor_config(account: Account, sensor: SensorDef, version: str) -> dict[str
     payload: dict[str, object] = {
         "name": sensor.name,
         "unique_id": unique_id,
-        "default_entity_id": f"sensor.tnb_{account.account_id}_{sensor.key}",
+        "default_entity_id": entity_id(account.account_id, sensor.key),
         "state_topic": state_topic(account.account_id),
         "value_template": f"{{{{ value_json.{sensor.key} }}}}",
         "availability": [
@@ -184,9 +217,9 @@ def holiday_config(version: str) -> dict[str, object]:
     """Discovery payload for the shared ToU holiday binary sensor."""
 
     return {
-        "name": "TNB off-peak holiday today",
+        "name": HOLIDAY_NAME,
         "unique_id": f"{BASE_TOPIC}_holiday_today",
-        "default_entity_id": "binary_sensor.tnb_holiday_today",
+        "default_entity_id": HOLIDAY_ENTITY_ID,
         "state_topic": f"{BASE_TOPIC}/holiday_today",
         "availability_topic": AVAILABILITY_TOPIC,
         "icon": "mdi:calendar-star",
@@ -216,7 +249,13 @@ class Publisher:
         self._host = str(broker["host"])
         self._port = int(broker.get("port") or 1883)
 
-    def start(self, timeout: float = 30.0) -> None:
+    @property
+    def connected(self) -> bool:
+        """Whether the broker connection is up."""
+
+        return self._connected.is_set()
+
+    def start(self, timeout: float = 5.0) -> None:
         """Connect and start the network thread."""
 
         self._client.connect_async(self._host, self._port, keepalive=60)

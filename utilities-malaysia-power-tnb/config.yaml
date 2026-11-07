@@ -1,11 +1,11 @@
 name: "Power TNB"
-version: "0.1.0"
+version: "0.2.0"
 slug: "power_tnb"
 description: >-
   Tracks Malaysian TNB electricity for multiple accounts: imports hourly
   myTNB smart meter usage and cost into the Energy dashboard and estimates
   the running bill (2025 tariff, ToU, AFA, EEI, SST, KWTBB, NEM) from a local
-  energy sensor, published as MQTT devices.
+  energy sensor, published as MQTT devices when a broker is available.
 url: "https://github.com/nerowentah/haos-addons/tree/main/utilities-malaysia-power-tnb"
 image: "ghcr.io/nerowentah/power-tnb"
 arch:
@@ -21,7 +21,7 @@ panel_title: Power TNB
 homeassistant_api: true
 hassio_api: true
 services:
-  - mqtt:need
+  - mqtt:want
 options:
   portal_interval_hours: 6
   meter_poll_seconds: 60
@@ -29,7 +29,7 @@ options:
   calendarific_api_key: ""
   extra_holidays: []
   notify_on_failure: true
-  notification_overrides: []
+  mqtt: true
   accounts:
     - name: "Home"
       tariff: "general"
@@ -45,9 +45,7 @@ schema:
   extra_holidays:
     - match(^\d{4}-\d{2}-\d{2}$)
   notify_on_failure: bool
-  notification_overrides:
-    - name: str
-      notify: bool
+  mqtt: bool
   accounts:
     - name: str
       tariff: list(general|tou)

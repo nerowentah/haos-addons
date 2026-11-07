@@ -25,7 +25,16 @@ from holidays import HolidayCalendar
 from meter import MYT, AccountMeter, billing_period_start, is_peak, to_kwh
 from mytnb import AuthError, MyTnbError, MyTnbSession, PortalData
 from store import Store
-from supervisor import Supervisor, SupervisorError, effective_targets, load_supervisor_token, notification_id
+from supervisor import (
+    Supervisor,
+    SupervisorError,
+    effective_targets,
+    load_supervisor_token,
+    merge_discovered,
+    merge_s6_environment,
+    notification_id,
+    overrides_from_options,
+)
 from webui import PanelError, PanelServer
 
 _LOGGER = logging.getLogger("power_tnb")
@@ -38,6 +47,9 @@ PORTAL_RETRY_SECONDS = 30 * 60
 PORTAL_STAGGER_SECONDS = 20
 TRANSIENT_FAILURES_BEFORE_NOTIFY = 3
 OPTIONS_CHECK_SECONDS = 30
+MQTT_CHECK_SECONDS = 60
+PHONE_CHECK_SECONDS = 300
+STATES_REFRESH_SECONDS = 300
 WEB_DIR = Path(__file__).resolve().parent / "web"
 UNAVAILABLE_STATES = {"unknown", "unavailable", "none", ""}
 
@@ -71,7 +83,7 @@ class AccountRuntime:
 
 
 class App:
-    """Scheduler that polls meters, syncs the portal and publishes to MQTT."""
+    """Scheduler that polls meters, syncs the portal and publishes entities (MQTT or the states API)."""
 
     def __init__(
         self, config: Config, supervisor: Supervisor, store: Store, raw_options: dict[str, object] | None = None
@@ -83,6 +95,12 @@ class App:
         self.store = store
         self.holidays = HolidayCalendar(config.extra_holidays, config.calendarific_api_key)
         self.publisher: mqtt_pub.Publisher | None = None
+        self.broker_key: tuple[object, ...] | None = None
+        self.broker_found: bool | None = None  # None until the first check
+        self.next_mqtt_check = 0.0
+        self.next_states_refresh = 0.0
+        self.next_phone_check = 0.0
+        self.states_warned = False
         self.republish = threading.Event()
         self.stopping = threading.Event()
         self.wake = threading.Event()
@@ -152,6 +170,8 @@ class App:
         if (old.extra_holidays, old.calendarific_api_key) != (config.extra_holidays, config.calendarific_api_key):
             self.holidays = HolidayCalendar(config.extra_holidays, config.calendarific_api_key)
             self.holidays.refresh(datetime.now(MYT).year)
+        if old.mqtt != config.mqtt:
+            self.next_mqtt_check = 0.0
         self.publish_discovery()
         _LOGGER.info("Applied updated options (%d account(s))", len(config.accounts))
 
@@ -197,6 +217,10 @@ class App:
     def panel_toggle(self, toggle_id: str, value: bool) -> None:
         """Persist and apply one panel switch."""
 
+        kind, _, name = toggle_id.partition(":")
+        if kind == "phone" and name:
+            self.set_phone(name, value)
+            return
         self.update_options(lambda raw: panel.apply_toggle(raw, toggle_id, value))
 
     def panel_action(self, action_id: str, args: dict[str, object]) -> str | None:
@@ -223,26 +247,211 @@ class App:
         return values
 
     # -- Notifications ----------------------------------------------------------
-    def setup_notifications(self) -> None:
-        """Discover phones and persist per-phone toggles (all on by default)."""
+    @property
+    def phones(self) -> dict[str, object]:
+        """Per-phone switches kept in /data (phone name -> notify)."""
 
-        self.discovered = self.supervisor.discover_mobile_targets()
-        overrides = self.supervisor.seed_notification_overrides(self.config.notification_overrides, self.discovered)
-        targets = effective_targets(self.discovered, overrides)
-        _LOGGER.info("Notifications go to %d phone(s): %s", len(targets), ", ".join(targets) or "-")
+        return self.store.section("phones")
+
+    def migrate_overrides(self) -> None:
+        """Move switches from the retired ``notification_overrides`` option into /data."""
+
+        if "notification_overrides" not in self.raw_options:
+            return
+        old = overrides_from_options(self.raw_options)
+        for name, notify in old.items():
+            self.phones.setdefault(name, notify)
+        self.store.dirty = True
+        self.store.save()
+        raw = {k: v for k, v in self.raw_options.items() if k != "notification_overrides"}
+        try:
+            self.supervisor.write_options(raw)
+            self.raw_options = raw
+            _LOGGER.info("Moved %d phone switch(es) out of the Configuration tab", len(old))
+        except SupervisorError:
+            _LOGGER.warning("Could not remove notification_overrides from the options; it is ignored")
+
+    def refresh_phones(self) -> None:
+        """Re-list the phones linked to Home Assistant (new phones are notified by default)."""
+
+        found = self.supervisor.discover_mobile_targets()
+        if found is None:
+            return
+        with self.options_lock:
+            current = self.phones
+            merged = merge_discovered(current, found)
+            added = sorted(set(merged) - set(current))
+            removed = sorted(set(current) - set(merged))
+            first = not self.discovered and not added and not removed
+            self.discovered = found
+            if merged != current:
+                self.store.data["phones"] = merged
+                self.store.dirty = True
+        if added:
+            _LOGGER.info("Found phone(s): %s", ", ".join(added))
+        if removed:
+            _LOGGER.info("Phone(s) no longer linked: %s", ", ".join(removed))
+        if added or removed or first:
+            targets = effective_targets(self.discovered, self.phones)
+            _LOGGER.info("Notifications go to %d phone(s): %s", len(targets), ", ".join(targets) or "-")
+
+    def set_phone(self, name: str, value: bool) -> None:
+        """Panel switch for one phone (kept in /data, applies immediately)."""
+
+        with self.options_lock:
+            if name not in self.discovered:
+                raise PanelError("That phone is no longer linked to Home Assistant; reload the page")
+            self.phones[name] = value
+            self.store.dirty = True
 
     def notify(self, account: Account, title: str, message: str) -> None:
         """Send a notification for an account when enabled."""
 
         if self.config.notify_on_failure:
-            targets = effective_targets(self.discovered, self.config.notification_overrides)
+            targets = effective_targets(self.discovered, self.phones)
             self.supervisor.notify(targets, title, message, notification_id(account.account_id))
+
+    # -- MQTT broker (optional, detected while running) -------------------------
+    def mqtt_status(self) -> str:
+        """How entities currently reach Home Assistant (for the panel)."""
+
+        if self.publisher is not None:
+            return "MQTT (connected)" if self.publisher.connected else "MQTT (connecting)"
+        if not self.config.mqtt:
+            return "HA states API (MQTT off)"
+        if self.broker_found is None:
+            return "Checking for MQTT..."
+        return "HA states API (no MQTT broker)"
+
+    def check_mqtt(self) -> None:
+        """Use MQTT when it is switched on and a broker exists; otherwise fall back to the states API."""
+
+        if not self.config.mqtt:
+            if self.publisher is not None:
+                self._retire_mqtt()
+                _LOGGER.info("MQTT switched off; entities now go through the Home Assistant states API")
+                # Give Home Assistant a moment to drop the MQTT entities before reusing their ids.
+                self.next_states_refresh = time.monotonic() + 10
+            return
+        try:
+            broker = self.supervisor.mqtt_service()
+        except SupervisorError as err:
+            _LOGGER.warning("Could not check for an MQTT broker: %s", err)
+            return  # keep whatever is in use
+        found = broker is not None
+        if found != self.broker_found and broker is None:
+            _LOGGER.warning(
+                "No MQTT broker found (install the Mosquitto broker app to get MQTT devices); "
+                "publishing entities through the Home Assistant states API and checking again every minute"
+            )
+        self.broker_found = found
+        if broker is None:
+            return  # an existing publisher keeps reconnecting, so entity ids never flip sinks
+        key = tuple(broker.get(k) for k in ("host", "port", "username", "password", "ssl"))
+        if self.publisher is not None and key == self.broker_key:
+            return
+        if self.publisher is not None:
+            _LOGGER.info("MQTT broker settings changed; reconnecting")
+            self.publisher.stop()
+        else:
+            _LOGGER.info("MQTT broker found; switching entities to MQTT discovery")
+            self._delete_rest_entities()
+        self.broker_key = key
+        self.publisher = mqtt_pub.Publisher(broker, self.republish.set)
+        self.publisher.start()
+        self.republish.set()
+
+    def _retire_mqtt(self) -> None:
+        """Remove retained discovery configs and disconnect."""
+
+        publisher = self.publisher
+        if publisher is None:
+            return
+        topics = self.store.data.get("discovery_topics")
+        for topic in topics if isinstance(topics, list) else []:
+            publisher.publish_json(topic, None)
+        self.store.data["discovery_topics"] = []
+        self.store.dirty = True
+        publisher.stop()
+        self.publisher = None
+        self.broker_key = None
+
+    # -- Home Assistant states API (used while there is no MQTT) ------------------
+    def _rest_entities(self) -> list[str]:
+        value = self.store.data.get("rest_entities")
+        return [str(v) for v in value] if isinstance(value, list) else []
+
+    def _post_state(self, entity_id: str, state: str, attributes: dict[str, object]) -> bool:
+        try:
+            self.supervisor.core_post(f"/states/{entity_id}", {"state": state, "attributes": attributes})
+        except SupervisorError as err:
+            if not self.states_warned:
+                self.states_warned = True
+                _LOGGER.warning("Could not update entities through the states API: %s", err)
+            return False
+        self.states_warned = False
+        return True
+
+    def _post_states(self, runtime: AccountRuntime) -> None:
+        account = runtime.account
+        active = {mqtt_pub.SOURCE_PORTAL: account.portal_active, mqtt_pub.SOURCE_METER: account.meter_active}
+        extra = {"bill_estimate": runtime.bill_attributes, "portal_usage_latest_day": runtime.portal_attributes}
+        for sensor in mqtt_pub.sensors_for(account):
+            attributes = mqtt_pub.state_attributes(account, sensor)
+            if sensor.last_reset_key and runtime.values.get(sensor.last_reset_key):
+                attributes["last_reset"] = runtime.values[sensor.last_reset_key]
+            attributes.update(extra.get(sensor.key) or {})
+            value = mqtt_pub.state_value(sensor, runtime.values.get(sensor.key))
+            state = value if active[sensor.source] else "unavailable"
+            self._post_state(mqtt_pub.entity_id(account.account_id, sensor.key), state, attributes)
+
+    def _post_holiday(self) -> None:
+        today = datetime.now(MYT).date()
+        self._post_state(
+            mqtt_pub.HOLIDAY_ENTITY_ID,
+            "on" if self.holidays.is_holiday(today) else "off",
+            {"friendly_name": mqtt_pub.HOLIDAY_NAME, "icon": "mdi:calendar-star"},
+        )
+
+    def _sync_rest_entities(self) -> None:
+        """Post every entity through the states API and drop ones that no longer exist."""
+
+        current = [
+            mqtt_pub.entity_id(rt.account.account_id, s.key)
+            for rt in self.runtimes
+            for s in mqtt_pub.sensors_for(rt.account)
+        ]
+        current.append(mqtt_pub.HOLIDAY_ENTITY_ID)
+        for stale in set(self._rest_entities()) - set(current):
+            try:
+                self.supervisor.core_delete(f"/states/{stale}")
+            except SupervisorError:
+                continue
+        self.store.data["rest_entities"] = current
+        self.store.dirty = True
+        for runtime in self.runtimes:
+            self._post_states(runtime)
+        self._post_holiday()
+        self.next_states_refresh = time.monotonic() + STATES_REFRESH_SECONDS
+
+    def _delete_rest_entities(self) -> None:
+        """Remove states-API entities so MQTT discovery can own the same entity ids."""
+
+        for entity_id in self._rest_entities():
+            try:
+                self.supervisor.core_delete(f"/states/{entity_id}")
+            except SupervisorError as err:
+                _LOGGER.warning("Could not remove %s: %s", entity_id, err)
+        self.store.data["rest_entities"] = []
+        self.store.dirty = True
 
     # -- MQTT -------------------------------------------------------------------
     def publish_discovery(self) -> None:
-        """Publish retained discovery configs and clear configs of removed sensors/accounts."""
+        """Publish every entity: MQTT discovery when connected to a broker, else the states API."""
 
         if self.publisher is None:
+            if self.broker_found is not None or not self.config.mqtt:
+                self._sync_rest_entities()
             return
         published: list[str] = []
         for runtime in self.runtimes:
@@ -285,6 +494,8 @@ class App:
         """Publish an account's state (and attributes) payloads."""
 
         if self.publisher is None:
+            if self.broker_found is not None or not self.config.mqtt:
+                self._post_states(runtime)
             return
         account_id = runtime.account.account_id
         self.publisher.publish_json(mqtt_pub.state_topic(account_id), runtime.values)
@@ -298,6 +509,8 @@ class App:
     def publish_holiday(self) -> None:
         """Publish whether today is an off-peak holiday."""
 
+        if self.publisher is None and (self.broker_found is not None or not self.config.mqtt):
+            self._post_holiday()
         if self.publisher is not None:
             today = datetime.now(MYT).date()
             self.publisher.publish_raw(
@@ -488,6 +701,17 @@ class App:
         if time.monotonic() >= self.next_options_check:
             self.next_options_check = time.monotonic() + OPTIONS_CHECK_SECONDS
             self.check_options()
+        now = time.monotonic()
+        if now >= self.next_mqtt_check:
+            self.next_mqtt_check = now + MQTT_CHECK_SECONDS
+            self.check_mqtt()
+            if self.publisher is None and self.next_states_refresh == 0.0:
+                self.republish.set()  # first pass without a broker: create the entities
+        if now >= self.next_phone_check:
+            self.next_phone_check = now + PHONE_CHECK_SECONDS
+            self.refresh_phones()
+        if self.publisher is None and self.next_states_refresh and now >= self.next_states_refresh:
+            self.republish.set()  # states-API entities vanish when Home Assistant restarts
 
         if self.republish.is_set():
             self.republish.clear()
@@ -525,9 +749,6 @@ class App:
 
         server = PanelServer(WEB_DIR, lambda: panel.build_state(self), self.panel_toggle, self.panel_action)
         server.start()
-        broker = self.supervisor.mqtt_service()
-        self.publisher = mqtt_pub.Publisher(broker, self.republish.set)
-        self.publisher.start()
         last_save = time.monotonic()
         try:
             while not self.stopping.is_set():
@@ -540,13 +761,15 @@ class App:
         finally:
             server.stop()
             self.store.save()
-            self.publisher.stop()
+            if self.publisher is not None:
+                self.publisher.stop()
             _LOGGER.info("Stopped")
 
 
 def main() -> None:
     """Entry point."""
 
+    merge_s6_environment()  # TZ first, so every log line uses local time
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     _LOGGER.info("Starting Power TNB %s", VERSION)
     try:
@@ -585,12 +808,8 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    app.setup_notifications()
-    try:
-        app.run()
-    except SupervisorError:
-        _LOGGER.exception("Supervisor API error")
-        raise SystemExit(1) from None
+    app.migrate_overrides()
+    app.run()
 
 
 if __name__ == "__main__":
