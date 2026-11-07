@@ -3,145 +3,23 @@
 ![Supports aarch64 Architecture](https://img.shields.io/badge/aarch64-yes-green.svg)
 ![Supports amd64 Architecture](https://img.shields.io/badge/amd64-yes-green.svg)
 
-A Home Assistant add-on that keeps your LG webOS Developer Mode session from expiring.
-
-LG Developer Mode sessions (used by `webostv` and by the LG ThinQ integrations when tinkering via Dev Mode) expire periodically, which silently breaks device access. This add-on automatically calls the LG Developer API on a schedule so your session never lapses and your devices stay connected without manual re-login.
-
-Inspired by:
-
-- <https://github.com/dyarfaradj/homeassistant-addons> and the [community add-on thread](https://community.home-assistant.io/t/lg-dev-session-auto-renewal-addon/939012)
-- the simpler REST method recommended by <https://github.com/SR-Lut3t1um/Webos-renew-dev>
-- the multi-token scheduling concept from <https://github.com/LucifersCircle/webOS-Token-Refresh>
+Keeps your LG webOS **Developer Mode** sessions from expiring. The app renews them through the LG Developer API on a schedule, so `webostv` and your Dev Mode tinkering stay connected without logging in again by hand.
 
 ## Features
 
-- Automatically renews one or more LG webOS Developer Mode sessions
-- Configurable renewal interval (1-168 hours) with retry + backoff
-- Optional Home Assistant notification on failure, pushed to the Companion apps linked to this Home Assistant (`notify.mobile_app_*` services, found automatically and re-checked every 5 minutes) or shown as a persistent notification if none exist
-- **Panel in the Home Assistant sidebar** (**LG Dev Renew**, opened through ingress). Each TV gets a card showing the last attempt, last success and next renewal. Each card has an **Auto renew** switch and a **Renew now** button. There are also switches for failure notifications and for each phone, plus a **Renew all now** button. The panel follows your Home Assistant theme, including dark mode.
-- **Switches take effect immediately.** TV and notification switches are saved into the app options, so they also show in the Configuration tab. Per-phone switches are kept by the app itself (no phone names to type in). Changes made in the Configuration tab (TVs, tokens, interval, retries) are picked up within about 30 seconds. Neither needs a restart.
-- No external Python dependencies (stdlib only). Runs fully on-device.
-- Private by default: renewal URLs and session tokens are never written to the logs
-- Modernized Configuration page: every option has a label and helper text and the session token renders as a masked password field
+- **One or more TVs**, each renewed every 1-168 hours, with retries and backoff.
+- **Sidebar panel.** A card per TV shows the last and next renewal, with an **Auto renew** switch and a **Renew now** button. The panel follows your HA theme.
+- **Switches apply immediately.** Configuration-tab edits are picked up within about 30 seconds, with no restart.
+- **Failure notifications** go to the phones linked to your Home Assistant. Phones are found automatically and each has its own switch. With no phones, a persistent notification is used.
+- **Private.** Tokens and renewal URLs are never logged or shown.
+- **Small.** It uses only the Python standard library.
 
-## Installation
+## Install
 
-The add-on is distributed from the public [repository](https://github.com/nerowentah/haos-addons) as a prebuilt multi-architecture image (`ghcr.io/nerowentah/lg-webos-auto-renew`) on GitHub Container Registry.
+[![Add repository](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fnerowentah%2Fhaos-addons)
 
-### Option A — Add-on Store repository URL (recommended)
+1. Add the repository above.
+2. Install **LG webOS Dev Session Auto Renew**.
+3. Add your TV's session token in the Configuration tab and start the app.
 
-1. In the frontend go to **Settings** -> **Add-ons** -> **Add-on Store**, open the **...** menu (top right), and select **Repositories**.
-2. Paste the repository URL:
-   ```
-   https://github.com/nerowentah/haos-addons
-   ```
-3. Click **Add**, then the new repository appears under **Home Assistant Add-ons**. Reload the page if needed, **Install** the `LG webOS Dev Session Auto Renew` add-on, configure your session (below), then **Start**.
-
-### Option B — Local add-on
-
-1. Get this folder (`lg-webos-auto-renew/`, the one containing `config.yaml`) onto the Home Assistant host under `/addons`:
-   - **Samba**: share the `addons` share, then copy it to `/addons/lg-webos-auto-renew/`, or
-   - **SSH / Advanced SSH & Web Terminal**: `scp -r lg-webos-auto-renew root@<ha-ip>:/addons/`
-2. In the frontend go to **Settings** -> **Add-ons** -> **Add-on Store**, open the **...** menu (top right), and select **Repositories**.
-3. Click **Add local repository** and pick `/addons/lg-webos-auto-renew`, or simply reload the add-on store — the add-on appears under **Local add-ons**.
-4. Click **Install**, configure your session (below), then **Start**.
-
-## Configuration
-
-Example configuration:
-
-```yaml
-interval_hours: 48
-retries: 3
-notify_on_failure: true
-sessions:
-  - name: "living-room-tv"
-    token: "YOUR_DEV_MODE_SESSION_TOKEN"
-```
-
-### Options
-
-| Option                    | Type | Default | Description                                                                        |
-| ------------------------- | ---- | ------- | ---------------------------------------------------------------------------------- |
-| `interval_hours`          | int  | `48`    | Hours between renewal attempts (1-168).                                            |
-| `retries`                 | int  | `3`     | Retries per session before marking the renewal failed (0-10).                      |
-| `notify_on_failure`       | bool | `true`  | Master switch: send a push notification on final failure to every linked phone that is switched on in the panel's **Phones** card (all on by default). Falls back to a persistent notification when no mobile app is linked. |
-| `sessions`                | list | -       | One or more TVs. Each session needs a `name` and either a `token` or a full `url`. Optional `enabled` (default `true`) pauses scheduled renewal; it is the panel's **Auto renew** switch. |
-
-```yaml
-sessions:
-  - name: "living-room-tv"
-    token: "YOUR_DEV_MODE_SESSION_TOKEN"
-  - name: "bedroom-tv"
-    url: "https://developer.lge.com/secure/ResetDevModeSession.dev?sessionToken=YOUR_OTHER_TOKEN"
-```
-
-- A session with `token` uses the endpoint `https://developer.lge.com/secure/ResetDevModeSession.dev?sessionToken=<token>`.
-- A session with `url` is called exactly as given (useful if LG changes the endpoint).
-
-### Getting your session token
-
-1. Install the **Developer Mode** app on the TV and enable Developer Mode
-   (`Settings -> General -> About this TV`, double-tap the OS version, launch the
-   Developer Mode app, sign in with an LG account, toggle it on).
-2. In the Developer Mode app, enable the **Key Server**.
-
-3. Save the TV's SSH private key on your computer:
-   - **Option A (no LG tooling)** — download it from the TV's key server (port 9991):
-     - Linux/macOS: `curl -o ~/.ssh/lg_tv_webos http://<tv-ip>:9991/webos_rsa && chmod 600 ~/.ssh/lg_tv_webos`
-     - Windows PowerShell: `Invoke-WebRequest -Uri "http://<tv-ip>:9991/webos_rsa" -OutFile "$env:USERPROFILE\.ssh\lg_tv_webos"`
-   - **Option B (webOS SDK)** — `ares-novacom --device <name> --getkey`
-   - The key is passphrase-protected with the passcode shown at the bottom-left of
-     the Developer Mode app screen (6 characters, case-sensitive). To remove the
-     passphrase for scripted access: `ssh-keygen -p -f <path-to-ssh-key>`.
-
-4. Read the dev-mode session token from the TV (SSH port `9922`, user `prisoner`).
-   webOS serves only the legacy `ssh-rsa` host key; OpenSSH 8.8+ refuses it by
-   default (`no matching host key type found. Their offer: ssh-rsa`), so re-enable
-   it explicitly:
-
-   ```text
-   ssh -p 9922 -i <path-to-ssh-key> `
-     -oHostKeyAlgorithms=+ssh-rsa `
-     -oPubkeyAcceptedAlgorithms=+ssh-rsa `
-     -oStrictHostKeyChecking=accept-new `
-     prisoner@<tv-ip> cat /var/luna/preferences/devmode_enabled
-   ```
-
-   - `<tv-ip>` and `<path-to-ssh-key>` (e.g. `C:\Users\<you>\.ssh\lg_tv_webos`) are placeholders.
-   - `-oStrictHostKeyChecking=accept-new` skips the interactive host-key prompt on first connect.
-   - If you get `PTY allocation request failed`, add `-T` (the `prisoner` user on a non-rooted TV cannot allocate a pseudo-terminal).
-   - PowerShell: backticks (`` ` ``) continue the line; or paste the whole thing as a single line.
-   - The key is also shown in the Developer Mode app on the TV.
-
-5. The command prints the session token as a long hex/base64 string — paste the
-   **entire** value into the session's `token` field. (A truncated or stale value
-   makes LG return `errorCode ERR_005, Check user session`.)
-
-## Panel
-
-Open **LG Dev Renew** from the sidebar, or click **Open web UI** on the app page.
-
-- **TV cards:** status (*Renewed*, *Failed*, *Renewing…*, *Paused* or *Not run yet*), last attempt, last success and next renewal.
-- **Auto renew switch:** turning a TV off pauses its scheduled renewals and keeps its token. **Renew now** still works while it is paused.
-- **Schedule card:** shows the interval and retries, and has the **Failure notifications** switch and the **Renew all now** button.
-- **Phones card:** one switch per Home Assistant companion app.
-
-The panel never shows tokens or renewal URLs. Only administrators see it in the sidebar.
-
-## Usage
-
-On start the add-on immediately attempts a renewal for every configured session, then re-runs on the schedule. Renewals and failures are visible in the add-on **Log** tab. The logs deliberately never show the renewal URL or the session token — you'll only see session names (e.g. `Renewing dev session 'living-room-tv'`).
-
-## Troubleshooting
-
-- **Invalid URL error**: session `url` must start with `http://` or `https://`.
-- **Repeated network errors**: confirm the HA host can reach `developer.lge.com`.
-- **Growth in failures / API "not success"**: the token itself expired; fetch a fresh key from the TV Dev Mode app and update the session.
-- **Notifications not arriving**: `notify_on_failure` must be `true` and the add-on needs the internal Home Assistant API (enabled by default here via `homeassistant_api`). Each discovered phone must have its switch on, either in the panel's **Phones** card or in the **Mobile app notifications** section of the Configuration tab (all are on by default). Targets are derived from the registered `notify.mobile_app_*` services, so a phone only receives pushes while its Companion app device exists in Home Assistant; if no phone is detected the add-on falls back to a persistent notification (check the startup log for `Auto-discovered N mobile notification target(s)` and `Notifications suppressed for: ...`).
-
-## License / Attribution
-
-Original implementation written for this repository; LG and webOS are trademarks of LG Electronics. The referenced projects ship under their own licenses.
-
-See the [CHANGELOG](CHANGELOG.md) for version history.
+The app's **Documentation** tab, or [DOCS.md](DOCS.md), explains how to read the token from your TV and covers every option. See the [changelog](CHANGELOG.md) for release history.
