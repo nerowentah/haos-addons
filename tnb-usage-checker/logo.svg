@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100" width="200" height="100">
   <circle cx="50" cy="50" r="45" fill="#0b3d91"/>
   <polygon points="56,12 26,56 46,56 40,88 74,40 53,40" fill="#ffc72c"/>
-  <text x="106" y="48" font-family="Arial, sans-serif" font-size="26" font-weight="bold" fill="#0b3d91">Power</text>
-  <text x="106" y="78" font-family="Arial, sans-serif" font-size="26" font-weight="bold" fill="#e4002b">TNB</text>
+  <text x="106" y="48" font-family="Arial, sans-serif" font-size="26" font-weight="bold" fill="#0b3d91">TNB</text>
+  <text x="106" y="78" font-family="Arial, sans-serif" font-size="26" font-weight="bold" fill="#e4002b">Usage</text>
 </svg>

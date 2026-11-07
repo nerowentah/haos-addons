@@ -32,6 +32,7 @@ ignore = ["E501"]
 ]
 "tnb-usage-checker/tests/*.py" = [
   "TRY003",
+  "S106",
   "S101",
   "PLR2004",
   "PT009",

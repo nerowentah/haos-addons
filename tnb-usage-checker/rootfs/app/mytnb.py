@@ -49,7 +49,7 @@ HTML_HEADERS = {
     ),
 }
 
-SMARTMETER_PATH_RE = re.compile(r"/AccountManagement/SmartMeter/Index/TRIL\?caNo=[^\"\s]+")
+SMARTMETER_PATH = "/AccountManagement/SmartMeter/Index/TRIL?caNo={ca_no}"
 FORM_FIELD_RE = re.compile(r'name="([^"]+)" value="([^"]*)"')
 SDPUDCID_RE = re.compile(r'"sdpudcid":"(\d+)"')
 POINT_DATETIME_FORMAT = "%Y-%m-%d %H:%M"
@@ -97,15 +97,6 @@ class _Response:
     content_type: str
 
 
-def extract_smartmeter_path(smartmeter_url: str) -> str:
-    """Extract the SmartMeter/Index/TRIL?caNo=... path from the pasted URL."""
-
-    match = SMARTMETER_PATH_RE.search(smartmeter_url)
-    if not match:
-        raise MyTnbError("Could not find a SmartMeter/Index/TRIL?caNo=... path in the URL")
-    return match.group(0)
-
-
 def _decode(raw: bytes, encoding: str | None) -> str:
     if encoding == "gzip":
         raw = gzip.decompress(raw)
@@ -136,12 +127,17 @@ def parse_points(payload: object) -> list[EnergyPoint]:
 
 
 class MyTnbSession:
-    """Logged-in portal session for one account (own cookie jar)."""
+    """Logged-in portal session for one TNB account number (own cookie jar).
 
-    def __init__(self, username: str, password: str, smartmeter_url: str) -> None:
+    Several accounts can share one myTNB login; each still gets its own session
+    so the smartliving dashboard is always bound to the right meter.
+    """
+
+    def __init__(self, username: str, password: str, ca_no: str) -> None:
         self._username = username
         self._password = password
-        self._smartmeter_path = extract_smartmeter_path(smartmeter_url)
+        self.ca_no = ca_no
+        self._smartmeter_path = SMARTMETER_PATH.format(ca_no=ca_no)
         self._jar = http.cookiejar.CookieJar()
         self._opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self._jar))
         self.sdpudcid: str | None = None
@@ -297,7 +293,7 @@ class MyTnbSession:
 
 
 def _cli() -> None:
-    """Smoke test: ``MYTNB_PASSWORD=... python3 -I mytnb.py <email> '<smartmeter url>'``."""
+    """Smoke test: ``MYTNB_PASSWORD=... python3 -I mytnb.py <email> <account number>``."""
 
     import getpass  # noqa: PLC0415 - CLI only
     import os  # noqa: PLC0415 - CLI only
@@ -305,7 +301,7 @@ def _cli() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     if len(sys.argv) != 3:  # noqa: PLR2004 - argv layout
-        _LOGGER.error("usage: MYTNB_PASSWORD=... python3 -I mytnb.py <email> '<smartmeter url>'")
+        _LOGGER.error("usage: MYTNB_PASSWORD=... python3 -I mytnb.py <email> <account number>")
         raise SystemExit(2)
     password = os.environ.get("MYTNB_PASSWORD") or getpass.getpass("myTNB password: ")
     session = MyTnbSession(sys.argv[1], password, sys.argv[2])

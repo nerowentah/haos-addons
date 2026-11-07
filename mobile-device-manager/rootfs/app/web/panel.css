@@ -328,6 +328,78 @@ h2.section-title {
   background: color-mix(in srgb, var(--success) 14%, transparent);
 }
 
+.icon {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.section-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.card-head-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.card-icon {
+  margin-top: 2px;
+  color: var(--primary);
+}
+
+.row-icon {
+  color: var(--text2);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.notice-icon {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+}
+
+.empty.mono {
+  margin: 0 16px 16px;
+  padding: 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text2) 10%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.empty {
+  white-space: pre-line;
+}
+
 #toast {
   position: fixed;
   left: 50%;

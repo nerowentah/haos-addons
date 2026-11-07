@@ -19,9 +19,9 @@ https://github.com/nerowentah/haos-addons
 
 | | App | Version | Arch | What it does |
 | --- | --- | --- | --- | --- |
-| <img src="tnb-usage-checker/icon.png" width="32" alt=""> | [TNB Usage Checker](tnb-usage-checker/) | 0.2.1 | aarch64, amd64 | Imports myTNB usage and cost into the Energy dashboard and estimates your TNB bill live, for multiple accounts. |
-| <img src="lg-webos-devmode-mgmt/icon.png" width="32" alt=""> | [LG webOS DevMode Mgmt](lg-webos-devmode-mgmt/) | 1.7.1 | aarch64, amd64 | Renews LG webOS Developer Mode sessions on a schedule so they never expire. |
-| <img src="mobile-device-manager/icon.png" width="32" alt=""> | [Mobile Device Manager](mobile-device-manager/) | 0.1.0 | aarch64, amd64 | Lists your Companion app devices with last seen, battery and every automation, script and notify call that uses them. Flags stale and duplicate devices and removes them safely. |
+| <img src="tnb-usage-checker/icon.png" width="32" alt=""> | [TNB Usage Checker](tnb-usage-checker/) | 0.3.0 | aarch64, amd64 | Imports myTNB usage and cost into the Energy dashboard and estimates your TNB bill live, for multiple accounts under one myTNB login. |
+| <img src="lg-webos-devmode-mgmt/icon.png" width="32" alt=""> | [LG webOS DevMode Mgmt](lg-webos-devmode-mgmt/) | 1.7.2 | aarch64, amd64 | Renews LG webOS Developer Mode sessions on a schedule so they never expire. |
+| <img src="mobile-device-manager/icon.png" width="32" alt=""> | [Mobile Device Manager](mobile-device-manager/) | 0.1.1 | aarch64, amd64 | Lists your Companion app devices with last seen, battery and every automation, script and notify call that uses them. Flags stale and duplicate devices and removes them safely. |
 
 **Planned:** TM Unifi Bill Checker (`tm-unifi-bill-checker/`) and Ranhill SAJ Bill Checker (`ranhill-saj-bill-checker/`).
 
@@ -34,6 +34,8 @@ Each app folder contains:
 
 - **A sidebar panel** opened through ingress. It follows your Home Assistant theme, including dark mode, and works on phones. Panels can link straight to the Home Assistant page you need to edit.
 - **Switches that apply immediately.** They are saved to the app options. Edits made in the Configuration tab are picked up within about 30 seconds, with no restart.
+- **No crash loops.** Invalid options start a setup page in the panel that names the problem. The app starts by itself once the options are fixed.
+- **Runs as an s6-overlay service** (`rootfs/etc/s6-overlay/s6-rc.d/<app>/`), with quiet s6 logging.
 - **Failure notifications** go to the Companion apps linked to your Home Assistant. Phones are found automatically, and each has its own switch in the panel.
 - **Privacy.** Passwords, tokens and account-specific URLs are never logged and never shown in the panel.
 
@@ -41,7 +43,8 @@ Each app folder contains:
 
 ```
 repository.json            store metadata
-tnb-usage-checker/         one folder per app: config.yaml, Dockerfile, rootfs/, docs, icons
+tnb-usage-checker/         one folder per app: config.yaml, Dockerfile, docs, icons, and
+                           rootfs/app/ (code + panel) + rootfs/etc/s6-overlay/ (the s6 service)
 lg-webos-devmode-mgmt/
 mobile-device-manager/
 .github/workflows/         builder.yaml (finds changed apps), build-app.yaml (builds, signs, verifies one app),
@@ -77,7 +80,7 @@ python -m unittest discover -s mobile-device-manager/tests
 **Checking an image signature yourself:**
 
 ```bash
-cosign verify ghcr.io/nerowentah/power-tnb:0.2.1 \
+cosign verify ghcr.io/nerowentah/power-tnb:0.3.0 \
   --certificate-identity-regexp '^https://github.com/nerowentah/haos-addons/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

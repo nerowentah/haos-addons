@@ -1,0 +1,2 @@
+# s6-overlay service scripts run in Linux containers: always LF.
+**/rootfs/etc/s6-overlay/** text eol=lf

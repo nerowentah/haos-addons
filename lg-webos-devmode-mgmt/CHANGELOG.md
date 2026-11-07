@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.2
+
+- **No more crash loop on a bad configuration** (for example no TVs yet). The app stays up, and the panel shows what to fix with an example. It starts by itself once the options are valid.
+- **Runs as a proper s6-overlay service.** The `legacy-cont-init` / `legacy-services` / `s6-rc.d is empty` log noise is gone, and a crash stops the app cleanly so the Supervisor watchdog can restart it.
+- **Icons** on sections, cards, switches and buttons in the panel. The store icon is now 128×128 and the logo 250×100, with the new name.
+
 ## 1.7.1
 
 - Renamed from **LG webOS Dev Session Auto Renew** to **LG webOS DevMode Mgmt** (sidebar: **LG DevMode**). The repository folder is now `lg-webos-devmode-mgmt/`. The slug, image, options and data are unchanged, so there is nothing to reconfigure.
