@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import signal
+import tempfile
 import threading
 import time
 import urllib.error
@@ -23,6 +24,7 @@ from webui import PanelError, PanelServer, action, badge, stat, toggle
 _LOGGER = logging.getLogger(__name__)
 
 CONFIG_PATH = Path("/data/options.json")
+PHONES_PATH = Path("/data/phones.json")
 WEB_DIR = Path(__file__).resolve().parent / "web"
 LG_DEV_ENDPOINT = "https://developer.lge.com/secure/ResetDevModeSession.dev"
 SUPERVISOR_API = "http://supervisor"
@@ -43,6 +45,7 @@ SUCCESS_RESULTS = {"success"}
 INFO_MSG_CODES = {"GNL", "OK"}
 LOOP_SECONDS = 30
 OPTIONS_CHECK_SECONDS = 30
+PHONE_CHECK_SECONDS = 300
 
 
 class ConfigError(ValueError):
@@ -70,25 +73,12 @@ class Session:
 
 
 @dataclass(slots=True)
-class NotificationOverride:
-    """Per-mobile notification override.
-
-    When discovered, every mobile app is notified by default; entries with
-    ``notify=False`` are suppressed.
-    """
-
-    name: str
-    notify: bool = True
-
-
-@dataclass(slots=True)
 class Config:
     """Parsed add-on options."""
 
     interval_hours: int
     retries: int
     notify_on_failure: bool
-    notification_overrides: list[NotificationOverride]
     sessions: list[Session]
 
 
@@ -243,23 +233,10 @@ def load_config(raw_config: dict[str, object]) -> Config:
     sessions_raw = raw_config.get("sessions")
     sessions = build_sessions(sessions_raw if isinstance(sessions_raw, list) else [])
 
-    notification_overrides_raw = raw_config.get("notification_overrides", [])
-    notification_overrides: list[NotificationOverride] = []
-    if isinstance(notification_overrides_raw, list):
-        for entry in notification_overrides_raw:
-            if not isinstance(entry, dict):
-                continue
-            name = str(entry.get("name") or "").strip()
-            if not name:
-                continue
-            notify = bool(entry.get("notify", True))
-            notification_overrides.append(NotificationOverride(name=name, notify=notify))
-
     return Config(
         interval_hours=interval_hours,
         retries=retries,
         notify_on_failure=bool(raw_config.get("notify_on_failure", True)),
-        notification_overrides=notification_overrides,
         sessions=sessions,
     )
 
@@ -393,27 +370,26 @@ def renew_with_retries(
     return False
 
 
-def discover_mobile_targets(supervisor_token: str) -> list[str]:
+def discover_mobile_targets(supervisor_token: str) -> list[str] | None:
     """Discover notify.mobile_app_* targets from existing Home Assistant services.
 
-    Every Companion app on the internal Home Assistant API registers a
+    Every Companion app linked to this Home Assistant registers a
     ``notify.mobile_app_<device>`` service; each such service becomes a target.
-    Returns [] (falling back to a persistent notification) when nothing is
-    found or the API is unreachable.
+    Returns None when the API is unreachable (so the known list is kept).
     """
 
     if not supervisor_token:
-        return []
+        return None
 
     try:
         services = _supervisor_request(supervisor_token, "/core/api/services")
     except (urllib.error.URLError, OSError, ValueError):
-        _LOGGER.exception("Failed to discover mobile-app notification targets")
-        return []
+        _LOGGER.warning("Could not list mobile-app notification targets; keeping the known phones")
+        return None
 
     if not isinstance(services, list):
-        _LOGGER.warning("Unexpected /services response (expected a list): %s", str(services)[:200])
-        return []
+        _LOGGER.warning("Unexpected /services response (expected a list)")
+        return None
 
     notify_targets = {
         str(name)
@@ -424,56 +400,55 @@ def discover_mobile_targets(supervisor_token: str) -> list[str]:
     return sorted(t for t in notify_targets if t.startswith(MOBILE_TARGET_PREFIX))
 
 
-def seed_notification_overrides(
-    config: Config, discovered: list[str], supervisor_token: str
-) -> list[NotificationOverride]:
-    """Persist discovered phones in the overrides so toggles show in the UI.
-
-    Every discovered mobile app is notified by default. Existing override rows
-    keep their saved switch value (so a phone switched off stays off); newly
-    discovered phones are appended with ``notify=True``. The merged list is
-    written back via ``POST /addons/self/options`` only when it changed.
-    """
-
-    merged = list(config.notification_overrides)
-    existing_names = {override.name for override in merged}
-    added = [NotificationOverride(name=name, notify=True) for name in discovered if name not in existing_names]
-    merged.extend(added)
-
-    enabled = sorted(override.name for override in merged if override.notify and override.name in discovered)
-    suppressed = sorted(override.name for override in merged if not override.notify and override.name in discovered)
-    _LOGGER.info(
-        "Notification overrides: %d enabled (%s)%s",
-        len(enabled),
-        ", ".join(enabled) or "-",
-        f"; suppressed: {', '.join(suppressed)}" if suppressed else "",
-    )
-
-    if not supervisor_token or not added:
-        return merged
+def load_phone_prefs(path: Path = PHONES_PATH) -> dict[str, bool]:
+    """Per-phone notification switches kept in /data (phone name -> notify)."""
 
     try:
-        try:
-            options = fetch_options(supervisor_token)
-        except (urllib.error.URLError, OSError, ValueError, ConfigError):
-            options = load_options()
-        options["notification_overrides"] = [{"name": override.name, "notify": override.notify} for override in merged]
-        write_options(supervisor_token, options)
-        _LOGGER.info("Wrote %d notification override(s) to add-on options", len(merged))
-    except (urllib.error.URLError, OSError, ValueError, ConfigError):
-        _LOGGER.warning(
-            "Could not persist notification overrides to the add-on options; toggles still apply for this run",
-            exc_info=True,
-        )
-
-    return merged
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        _LOGGER.warning("Phone settings file is unreadable; every phone is notified")
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(name): value for name, value in raw.items() if isinstance(value, bool)}
 
 
-def effective_mobile_targets(discovered: list[str], overrides: list[NotificationOverride]) -> list[str]:
-    """Return discovered targets that are not switched off in the overrides."""
+def save_phone_prefs(prefs: dict[str, bool], path: Path = PHONES_PATH) -> None:
+    """Write the phone switches atomically."""
 
-    off = {override.name for override in overrides if not override.notify}
-    return [target for target in discovered if target not in off]
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".phones-", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(prefs, handle, sort_keys=True)
+        os.replace(tmp, path)
+    except OSError:
+        _LOGGER.exception("Could not save phone settings")
+
+
+def overrides_from_options(raw_options: dict[str, object]) -> dict[str, bool]:
+    """Phone switches from the retired ``notification_overrides`` option (migration)."""
+
+    rows = raw_options.get("notification_overrides")
+    prefs: dict[str, bool] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and str(row.get("name") or "").strip():
+            prefs[str(row["name"]).strip()] = bool(row.get("notify", True))
+    return prefs
+
+
+def merge_discovered(prefs: dict[str, bool], discovered: list[str]) -> dict[str, bool]:
+    """Switches for exactly the linked phones: new phones on, unlinked phones dropped."""
+
+    return {name: prefs.get(name, True) for name in discovered}
+
+
+def effective_mobile_targets(discovered: list[str], prefs: dict[str, bool]) -> list[str]:
+    """Return linked phones that are not switched off."""
+
+    return [target for target in discovered if prefs.get(target, True)]
 
 
 def notify_failure(session: Session, targets: list[str], supervisor_token: str) -> None:
@@ -537,17 +512,6 @@ def apply_toggle(options: dict[str, object], toggle_id: str, value: bool) -> Non
     if kind == "notify_on_failure" and not rest:
         options["notify_on_failure"] = value
         return
-    if kind == "phone" and rest:
-        rows = options.get("notification_overrides")
-        rows = rows if isinstance(rows, list) else []
-        for row in rows:
-            if isinstance(row, dict) and row.get("name") == rest:
-                row["notify"] = value
-                break
-        else:
-            rows.append({"name": rest, "notify": value})
-        options["notification_overrides"] = rows
-        return
     if kind == "session":
         key, _, field_name = rest.rpartition(":")
         matched = False
@@ -565,11 +529,20 @@ def apply_toggle(options: dict[str, object], toggle_id: str, value: bool) -> Non
 class App:
     """Renews on a schedule, serves the ingress panel and applies option changes live."""
 
-    def __init__(self, config: Config, raw_options: dict[str, object], supervisor_token: str) -> None:
+    def __init__(
+        self,
+        config: Config,
+        raw_options: dict[str, object],
+        supervisor_token: str,
+        phones_path: Path = PHONES_PATH,
+    ) -> None:
         self.config = config
         self.raw_options = raw_options
         self.token = supervisor_token
-        self.discovered: list[str] = []
+        self.phones_path = phones_path
+        self.phones: dict[str, bool] = load_phone_prefs(phones_path)
+        self.discovered: list[str] = list(self.phones)
+        self.next_phone_check = 0.0
         self.status: dict[str, SessionStatus] = {}
         self.stopping = threading.Event()
         self.wake = threading.Event()
@@ -646,6 +619,55 @@ class App:
             return
         self.apply_config(raw, config)
 
+    # -- phones -------------------------------------------------------------
+    def migrate_overrides(self) -> None:
+        """Move switches from the retired ``notification_overrides`` option into /data."""
+
+        if "notification_overrides" not in self.raw_options:
+            return
+        old = overrides_from_options(self.raw_options)
+        for name, notify in old.items():
+            self.phones.setdefault(name, notify)
+        save_phone_prefs(self.phones, self.phones_path)
+        raw = {k: v for k, v in self.raw_options.items() if k != "notification_overrides"}
+        try:
+            write_options(self.token, raw)
+            self.raw_options = raw
+            _LOGGER.info("Moved %d phone switch(es) out of the Configuration tab", len(old))
+        except (urllib.error.URLError, OSError, ValueError):
+            _LOGGER.warning("Could not remove notification_overrides from the options; it is ignored")
+
+    def refresh_phones(self) -> None:
+        """Re-list the phones linked to Home Assistant (new phones are notified by default)."""
+
+        found = discover_mobile_targets(self.token)
+        if found is None:
+            return
+        with self.options_lock:
+            merged = merge_discovered(self.phones, found)
+            added = sorted(set(merged) - set(self.phones))
+            removed = sorted(set(self.phones) - set(merged))
+            self.discovered = found
+            if merged != self.phones:
+                self.phones = merged
+                save_phone_prefs(merged, self.phones_path)
+        if added:
+            _LOGGER.info("Found phone(s): %s", ", ".join(added))
+        if removed:
+            _LOGGER.info("Phone(s) no longer linked: %s", ", ".join(removed))
+        if added or removed:
+            targets = effective_mobile_targets(self.discovered, self.phones)
+            _LOGGER.info("Notifications go to %d phone(s): %s", len(targets), ", ".join(targets) or "-")
+
+    def set_phone(self, name: str, value: bool) -> None:
+        """Panel switch for one phone (kept in /data, applies immediately)."""
+
+        with self.options_lock:
+            if name not in self.discovered:
+                raise PanelError("That phone is no longer linked to Home Assistant; reload the page")
+            self.phones[name] = value
+            save_phone_prefs(self.phones, self.phones_path)
+
     # -- renewals -----------------------------------------------------------
     def renew(self, sessions: list[Session]) -> None:
         """Renew the given sessions, recording status and notifying on failure."""
@@ -662,7 +684,7 @@ class App:
             if ok:
                 status.last_success = time.time()
             elif self.config.notify_on_failure:
-                targets = effective_mobile_targets(self.discovered, self.config.notification_overrides)
+                targets = effective_mobile_targets(self.discovered, self.phones)
                 notify_failure(session, targets, self.token)
 
     def _tick(self) -> None:
@@ -673,6 +695,9 @@ class App:
         if time.monotonic() >= self.next_options_check:
             self.next_options_check = time.monotonic() + OPTIONS_CHECK_SECONDS
             self.check_options()
+        if time.monotonic() >= self.next_phone_check:
+            self.next_phone_check = time.monotonic() + PHONE_CHECK_SECONDS
+            self.refresh_phones()
 
         with self.options_lock:
             queued, self.queue = self.queue, []
@@ -705,6 +730,10 @@ class App:
     def panel_toggle(self, toggle_id: str, value: bool) -> None:
         """Persist and apply one panel switch."""
 
+        kind, _, name = toggle_id.partition(":")
+        if kind == "phone" and name:
+            self.set_phone(name, value)
+            return
         self.update_options(lambda raw: apply_toggle(raw, toggle_id, value))
 
     def panel_action(self, action_id: str, args: dict[str, object]) -> str | None:
@@ -763,8 +792,7 @@ class App:
         """The panel view model."""
 
         config = self.view_config()
-        overrides = {o.name: o.notify for o in config.notification_overrides}
-        phones = sorted(set(self.discovered) | set(overrides))
+        phones = sorted(self.discovered)
         enabled = sum(s.enabled for s in config.sessions)
         return {
             "title": "LG webOS Dev Session Auto Renew",
@@ -794,13 +822,13 @@ class App:
                         },
                         {
                             "title": "Phones",
-                            "subtitle": "Home Assistant companion apps that receive notifications",
+                            "subtitle": "Companion apps linked to this Home Assistant (found automatically)",
                             "toggles": [
                                 toggle(
                                     f"phone:{name}",
                                     name.removeprefix(MOBILE_TARGET_PREFIX).replace("_", " "),
-                                    overrides.get(name, True),
-                                    name if name in self.discovered else f"{name} (not currently registered)",
+                                    self.phones.get(name, True),
+                                    name,
                                     disabled=not config.notify_on_failure,
                                 )
                                 for name in phones
@@ -816,6 +844,7 @@ class App:
 def main() -> None:
     """Entry point."""
 
+    _merge_s6_environment()  # TZ first, so every log line uses local time
     setup_logging()
     _LOGGER.info("Starting LG webOS Dev Session Auto Renew %s", VERSION)
 
@@ -838,13 +867,11 @@ def main() -> None:
 
     token = load_supervisor_token()
     app = App(config, raw_options, token)
-    app.discovered = discover_mobile_targets(token)
-    _LOGGER.info(
-        "Auto-discovered %d mobile notification target(s): %s",
-        len(app.discovered),
-        ", ".join(app.discovered) or "-",
-    )
-    seed_notification_overrides(config, app.discovered, token)
+    app.migrate_overrides()
+    app.refresh_phones()
+    app.next_phone_check = time.monotonic() + PHONE_CHECK_SECONDS
+    targets = effective_mobile_targets(app.discovered, app.phones)
+    _LOGGER.info("Notifications go to %d phone(s): %s", len(targets), ", ".join(targets) or "-")
 
     def _stop(signum: int, _frame: object) -> None:
         _LOGGER.info("Received signal %d; shutting down", signum)
