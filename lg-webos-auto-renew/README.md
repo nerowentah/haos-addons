@@ -17,12 +17,12 @@ Inspired by:
 
 - Automatically renews one or more LG webOS Developer Mode sessions
 - Configurable renewal interval (1-168 hours) with retry + backoff
-- Optional Home Assistant notification on failure, automatically pushed to every registered Companion device (`notify.mobile_app_*` services) or shown as a persistent notification if none exist
+- Optional Home Assistant notification on failure, pushed to the Companion apps linked to this Home Assistant (`notify.mobile_app_*` services, found automatically and re-checked every 5 minutes) or shown as a persistent notification if none exist
 - **Panel in the Home Assistant sidebar** (**LG Dev Renew**, opened through ingress). Each TV gets a card showing the last attempt, last success and next renewal. Each card has an **Auto renew** switch and a **Renew now** button. There are also switches for failure notifications and for each phone, plus a **Renew all now** button. The panel follows your Home Assistant theme, including dark mode.
-- **Switches take effect immediately.** A panel switch is saved into the app options, so it also shows in the Configuration tab. Changes made in the Configuration tab (TVs, tokens, interval, retries) are picked up within about 30 seconds. Neither needs a restart.
+- **Switches take effect immediately.** TV and notification switches are saved into the app options, so they also show in the Configuration tab. Per-phone switches are kept by the app itself (no phone names to type in). Changes made in the Configuration tab (TVs, tokens, interval, retries) are picked up within about 30 seconds. Neither needs a restart.
 - No external Python dependencies (stdlib only). Runs fully on-device.
 - Private by default: renewal URLs and session tokens are never written to the logs
-- Modernized Configuration page: every option has a label and helper text, the session token renders as a masked password field, and discovered phones appear as per-phone notification switches (all on by default)
+- Modernized Configuration page: every option has a label and helper text and the session token renders as a masked password field
 
 ## Installation
 
@@ -54,11 +54,6 @@ Example configuration:
 interval_hours: 48
 retries: 3
 notify_on_failure: true
-notification_overrides:
-  - name: "mobile_app_iphon"
-    notify: true
-  - name: "mobile_app_sm_s948b"
-    notify: true
 sessions:
   - name: "living-room-tv"
     token: "YOUR_DEV_MODE_SESSION_TOKEN"
@@ -70,8 +65,7 @@ sessions:
 | ------------------------- | ---- | ------- | ---------------------------------------------------------------------------------- |
 | `interval_hours`          | int  | `48`    | Hours between renewal attempts (1-168).                                            |
 | `retries`                 | int  | `3`     | Retries per session before marking the renewal failed (0-10).                      |
-| `notify_on_failure`       | bool | `true`  | Master switch: send a push notification on final failure (needs at least one phone enabled in `notification_overrides`; falls back to a persistent notification when no mobile app is registered). |
-| `notification_overrides`  | list | `[]`    | One row per discovered Home Assistant mobile app, each on by default. Switch a phone off to stop its failure notifications. This list is maintained automatically: newly discovered phones are added with `notify: true`, and existing rows keep their saved switch value. |
+| `notify_on_failure`       | bool | `true`  | Master switch: send a push notification on final failure to every linked phone that is switched on in the panel's **Phones** card (all on by default). Falls back to a persistent notification when no mobile app is linked. |
 | `sessions`                | list | -       | One or more TVs. Each session needs a `name` and either a `token` or a full `url`. Optional `enabled` (default `true`) pauses scheduled renewal; it is the panel's **Auto renew** switch. |
 
 ```yaml
