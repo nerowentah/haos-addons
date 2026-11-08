@@ -76,6 +76,7 @@ If sync reports `meter_error`, myTNB uses an encoded account id in its smart met
 | `notify_on_failure` | `true` | Master switch for sync failure and recovery notifications. |
 | `mqtt` | `true` | Use MQTT discovery when a broker is found. See [MQTT or not](#mqtt-or-not). |
 | `mytnb_username`, `mytnb_password` | empty | The shared myTNB login, used by every account that has an `account_number` and no login of its own. |
+| `maintenance_windows` | `daily 00:00-06:00` | When TNB does system maintenance (Malaysia time), one per line: `daily 00:00-06:00`, `sun 01:00-05:00`, `mon-fri 23:00-02:00` (crosses midnight), `weekends 02:00-04:00` or `mon,wed 00:00-24:00`. The app never calls myTNB inside a window: a sync due then waits until the window ends, plus a few random minutes, and **Sync myTNB now** explains why it is paused. An empty list allows syncing at any time. |
 | `daily_report` | `true` | Once per account and day, when a sync brings in a new complete day (all hourly readings), notify the phones with that day's kWh and RM, the change from the day before, and the cycle so far. myTNB data is about 2 days behind, so the report is about the day before yesterday. |
 | `debug_login` | `false` | Logs every myTNB login step: redirects, HTTP status, page titles, and cookie and form field names. Use it to debug `auth_error` and `meter_error`. Passwords, cookie and form values, and account numbers (only the last 4 characters are shown) are never logged. It is also a switch in the panel. |
 
@@ -206,6 +207,8 @@ TNB domestic tariff for Peninsular Malaysia, valid 1 July 2025 to 31 December 20
 When a myTNB sync fails and when it recovers, the app notifies every phone that is switched on in the **Phones** card. It sends one notification per change, not one per retry. With no linked phones, it creates a persistent notification instead.
 
 ## Troubleshooting
+
+- **`maintenance` status (TNB maintenance):** myTNB answered with a maintenance page or HTTP 503 outside your windows. The app keeps the last data, sends no failure alert, and retries after 30 min, then 1 h, 2 h, 4 h, up to 6 h. It returns to the normal schedule after the next successful sync. If this keeps happening at the same time of day, add that time to `maintenance_windows`.
 
 - **What do the `s6-rc` lines in the log mean?** The app runs as an s6-overlay service, the process supervisor built into Home Assistant app images. Only s6 warnings and errors are logged. Older versions printed `legacy-cont-init`, `legacy-services` and `s6-rc.d is empty` on every start. Those came from running without a proper service definition and were harmless.
 - **Icons missing in the app store:** open **⋮ → Check for updates** in the app store. Home Assistant caches app icons per repository refresh.

@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import FrameType
 
+import maintenance
 import mqtt_pub
 import panel
 import report
@@ -24,7 +25,15 @@ import tariff
 from config import Account, Config, ConfigError, load_config, load_options
 from holidays import HolidayCalendar
 from meter import MYT, AccountMeter, billing_period_start, is_peak, to_kwh
-from mytnb import AuthError, CredentialsError, MeterNotFoundError, MyTnbError, MyTnbSession, PortalData, set_debug
+from mytnb import (
+    CredentialsError,
+    MaintenanceError,
+    MeterNotFoundError,
+    MyTnbError,
+    MyTnbSession,
+    PortalData,
+    set_debug,
+)
 from store import Store
 from supervisor import (
     Supervisor,
@@ -61,6 +70,7 @@ STATUS_OK = "ok"
 STATUS_AUTH = "auth_error"
 STATUS_ERROR = "error"
 STATUS_METER = "meter_error"
+STATUS_MAINTENANCE = "maintenance"
 FAILURE_HINTS = {
     STATUS_AUTH: "Check the myTNB email and password.",
     STATUS_METER: "Login worked but no smart meter was found: paste the account's View Energy Usage link as smartmeter_url.",
@@ -89,6 +99,7 @@ class AccountRuntime:
     portal_failures: int = 0
     failure_notified: bool = False
     missing_entities: set[str] = field(default_factory=set)
+    maintenance_backoff: maintenance.Backoff = field(default_factory=maintenance.Backoff)
 
 
 class App:
@@ -243,6 +254,11 @@ class App:
                 if runtime.account.account_id == account_id:
                     if not runtime.account.portal_active:
                         raise PanelError("myTNB sync is switched off for this account")
+                    until = self.maintenance_until()
+                    if until is not None:
+                        raise PanelError(
+                            f"myTNB is in its maintenance window until {until:%H:%M}; it syncs by itself after that"
+                        )
                     runtime.next_portal = 0.0
                     self.wake.set()
                     return f"Syncing myTNB for {runtime.account.name}..."
@@ -624,22 +640,15 @@ class App:
         if session is None:
             return
         now = datetime.now(MYT)
+        if self._defer_for_maintenance_window(runtime, now):
+            return
         window_start = datetime.combine(now.date() - timedelta(days=PORTAL_WINDOW_DAYS), datetime.min.time(), MYT)
         interval = self.config.portal_interval_hours * 3600
         _LOGGER.info("Syncing myTNB portal for '%s'", account.name)
         try:
             data = session.fetch(window_start, now + timedelta(days=1))
-        except CredentialsError as err:
-            self._portal_failed(runtime, STATUS_AUTH, str(err), retry_seconds=interval)
-            return
-        except AuthError as err:  # smartliving session flakiness (redirect loops), not the password
-            self._portal_failed(runtime, STATUS_ERROR, str(err), retry_seconds=min(interval, PORTAL_RETRY_SECONDS))
-            return
-        except MeterNotFoundError as err:
-            self._portal_failed(runtime, STATUS_METER, str(err), retry_seconds=min(interval, METER_RETRY_SECONDS))
-            return
         except MyTnbError as err:
-            self._portal_failed(runtime, STATUS_ERROR, str(err), retry_seconds=min(interval, PORTAL_RETRY_SECONDS))
+            self._portal_error(runtime, err, interval)
             return
 
         if account.statistics_enabled:
@@ -647,6 +656,49 @@ class App:
         else:
             _LOGGER.info("Energy dashboard import is switched off for '%s'", account.name)
         self._portal_succeeded(runtime, data, now, interval)
+
+    def _portal_error(self, runtime: AccountRuntime, err: MyTnbError, interval: int) -> None:
+        """Map a portal failure to a status and a retry delay."""
+
+        retry = min(interval, PORTAL_RETRY_SECONDS)
+        if isinstance(err, MaintenanceError):
+            self._portal_in_maintenance(runtime, str(err))
+        elif isinstance(err, CredentialsError):
+            self._portal_failed(runtime, STATUS_AUTH, str(err), retry_seconds=interval)
+        elif isinstance(err, MeterNotFoundError):
+            self._portal_failed(runtime, STATUS_METER, str(err), retry_seconds=min(interval, METER_RETRY_SECONDS))
+        else:  # incl. AuthError: smartliving session flakiness (redirect loops), not the password
+            self._portal_failed(runtime, STATUS_ERROR, str(err), retry_seconds=retry)
+
+    def maintenance_until(self, now: datetime | None = None) -> datetime | None:
+        """End of the current myTNB maintenance window (Malaysia time), or None outside one."""
+
+        return maintenance.window_end(self.config.maintenance_windows, now or datetime.now(MYT))
+
+    def _defer_for_maintenance_window(self, runtime: AccountRuntime, now: datetime) -> bool:
+        """Inside a maintenance window: don't call myTNB; try again shortly after it ends."""
+
+        until = self.maintenance_until(now)
+        if until is None:
+            return False
+        wait = (until - now).total_seconds() + maintenance.resume_jitter_seconds()
+        runtime.next_portal = time.monotonic() + wait
+        _LOGGER.info(
+            "myTNB maintenance window (%s): '%s' syncs after %s",
+            maintenance.describe(self.config.maintenance_windows),
+            runtime.account.name,
+            until.strftime("%a %H:%M"),
+        )
+        return True
+
+    def _portal_in_maintenance(self, runtime: AccountRuntime, reason: str) -> None:
+        """myTNB answered with a maintenance page: back off, keep the last data, no alert."""
+
+        delay = runtime.maintenance_backoff.next_delay()
+        runtime.next_portal = time.monotonic() + delay
+        runtime.values["portal_status"] = STATUS_MAINTENANCE
+        _LOGGER.warning("%s; '%s' retries in %d min", reason, runtime.account.name, delay // 60)
+        self.publish_state(runtime)
 
     def _import_statistics(self, account: Account, window_start: datetime, data: PortalData) -> None:
         try:
@@ -700,6 +752,7 @@ class App:
             self.notify(account, "TNB portal sync recovered", f"myTNB data for '{account.name}' is syncing again.")
         runtime.portal_failures = 0
         runtime.failure_notified = False
+        runtime.maintenance_backoff.reset()
         runtime.next_portal = time.monotonic() + interval
         self.publish_state(runtime)
 

@@ -17,8 +17,10 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
+import maintenance
 from webui import (
     PanelError,
     PanelRouter,
@@ -90,6 +92,7 @@ class Config:
     retries: int
     notify_on_failure: bool
     sessions: list[Session]
+    maintenance_windows: list[maintenance.Window] = field(default_factory=list)
 
 
 def setup_logging() -> None:
@@ -243,11 +246,17 @@ def load_config(raw_config: dict[str, object]) -> Config:
     sessions_raw = raw_config.get("sessions")
     sessions = build_sessions(sessions_raw if isinstance(sessions_raw, list) else [])
 
+    try:
+        windows = maintenance.parse_windows(raw_config.get("maintenance_windows"))
+    except maintenance.MaintenanceConfigError as err:
+        raise ConfigError(f"maintenance_windows: {err}") from err
+
     return Config(
         interval_hours=interval_hours,
         retries=retries,
         notify_on_failure=bool(raw_config.get("notify_on_failure", True)),
         sessions=sessions,
+        maintenance_windows=windows,
     )
 
 
@@ -337,15 +346,23 @@ def handle_response(body: str, status: int, session_name: str) -> bool:
     return False
 
 
+class VendorMaintenanceError(Exception):
+    """LG's developer site answered with a maintenance page or HTTP 503."""
+
+
 def renew_session(session: Session) -> bool:
-    """Renew one dev session and return whether it succeeded."""
+    """Renew one dev session and return whether it succeeded (raises VendorMaintenanceError)."""
 
     _LOGGER.info("Renewing dev session '%s'", session.name)
     try:
         with urllib.request.urlopen(session.url, timeout=HTTP_TIMEOUT) as response:  # noqa: S310 - admin-supplied LG URL
             body = response.read().decode("utf-8", errors="replace")
+            if maintenance.looks_like_maintenance(response.status, body):
+                raise VendorMaintenanceError(f"LG developer site is under maintenance (HTTP {response.status})")
             return handle_response(body, response.status, session.name)
     except urllib.error.HTTPError as err:
+        if maintenance.looks_like_maintenance(err.code):
+            raise VendorMaintenanceError(f"LG developer site is under maintenance (HTTP {err.code})") from err
         _LOGGER.exception("Renewal for '%s' failed: HTTP %s %s", session.name, err.code, err.reason)
         return False
     except urllib.error.URLError as err:
@@ -509,6 +526,7 @@ class SessionStatus:
     last_success: float | None = None
     last_ok: bool | None = None
     running: bool = False
+    maintenance: bool = False
 
 
 def _clock(epoch: float | None) -> str | None:
@@ -562,6 +580,7 @@ class App:
         self.next_run = time.time()  # first renewal right away
         self.last_scheduled: float | None = None
         self.next_options_check = time.monotonic() + OPTIONS_CHECK_SECONDS
+        self.backoff = maintenance.Backoff()
 
     # -- options ------------------------------------------------------------
     def view_config(self) -> Config:
@@ -689,23 +708,47 @@ class App:
             save_phone_prefs(self.phones, self.phones_path)
 
     # -- renewals -----------------------------------------------------------
-    def renew(self, sessions: list[Session]) -> None:
-        """Renew the given sessions, recording status and notifying on failure."""
+    def renew(self, sessions: list[Session]) -> bool:
+        """Renew the given sessions, recording status and notifying on failure.
+
+        Returns False when LG's site answered with a maintenance page: the
+        remaining sessions are skipped and no failure is reported.
+        """
 
         for session in sessions:
             if self.stopping.is_set():
-                return
+                return True
             status = self.status.setdefault(session.notification_id, SessionStatus())
             status.running = True
             status.last_attempt = time.time()
-            ok = renew_with_retries(session, self.config.retries, sleep=self.stopping.wait)
+            try:
+                ok = renew_with_retries(session, self.config.retries, sleep=self.stopping.wait)
+            except VendorMaintenanceError as err:
+                status.running = False
+                for other in sessions:
+                    self.status.setdefault(other.notification_id, SessionStatus()).maintenance = True
+                self._retry_after_maintenance(str(err))
+                return False
             status.running = False
+            status.maintenance = False
             status.last_ok = ok
             if ok:
                 status.last_success = time.time()
             elif self.config.notify_on_failure:
                 targets = effective_mobile_targets(self.discovered, self.phones)
                 notify_failure(session, targets, self.token)
+        self.backoff.reset()
+        return True
+
+    def maintenance_until(self) -> datetime | None:
+        """End of the current LG maintenance window (Home Assistant's timezone), or None."""
+
+        return maintenance.window_end(self.config.maintenance_windows, datetime.now().astimezone())
+
+    def _retry_after_maintenance(self, reason: str) -> None:
+        delay = self.backoff.next_delay()
+        self.next_run = time.time() + delay  # re-renewing early is harmless
+        _LOGGER.warning("%s; retrying at %s", reason, time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(self.next_run)))
 
     def _tick(self) -> None:
         with self.options_lock:
@@ -726,9 +769,19 @@ class App:
             self.renew([s for s in self.config.sessions if wanted is None or s.notification_id in wanted])
 
         if time.time() >= self.next_run:
+            until = self.maintenance_until()
+            if until is not None:
+                self.next_run = until.timestamp() + maintenance.resume_jitter_seconds()
+                _LOGGER.info(
+                    "LG maintenance window (%s): renewal moved to %s",
+                    maintenance.describe(self.config.maintenance_windows),
+                    time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(self.next_run)),
+                )
+                return
             enabled = [s for s in self.config.sessions if s.enabled]
             _LOGGER.info("Scheduled renewal of %d TV(s)", len(enabled))
-            self.renew(enabled)
+            if not self.renew(enabled):
+                return  # LG maintenance: _retry_after_maintenance set next_run
             self.last_scheduled = time.time()
             self.next_run = self.last_scheduled + self.config.interval_hours * 3600
             _LOGGER.info("Next renewal at %s", time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(self.next_run)))
@@ -765,6 +818,11 @@ class App:
             label = match.name
         else:
             raise PanelError("Unknown action")
+        until = self.maintenance_until()
+        if until is not None:
+            raise PanelError(
+                f"LG's developer site is in its maintenance window until {until:%H:%M}; try again after that"
+            )
         with self.options_lock:
             self.queue.append(target)
         self.wake.set()
@@ -776,6 +834,8 @@ class App:
             chip = badge("Paused", "off")
         elif status.running:
             chip = badge("Renewing...", "warn")
+        elif status.maintenance:
+            chip = badge("LG maintenance", "warn")
         elif status.last_ok is None:
             chip = badge("Not run yet")
         else:
@@ -811,6 +871,12 @@ class App:
             ],
         }
 
+    @staticmethod
+    def _maintenance_text(config: Config) -> str:
+        text = maintenance.describe(config.maintenance_windows)
+        until = maintenance.window_end(config.maintenance_windows, datetime.now().astimezone())
+        return f"{text} (now, until {until:%H:%M})" if until else text
+
     def panel_state(self) -> dict[str, object]:
         """The panel view model."""
 
@@ -838,6 +904,7 @@ class App:
                                 stat("Renew every", config.interval_hours, "h"),
                                 stat("Retries", config.retries),
                                 stat("Next renewal", _clock(self.next_run)),
+                                stat("Maintenance windows", self._maintenance_text(config)),
                             ],
                             "toggles": [
                                 toggle(

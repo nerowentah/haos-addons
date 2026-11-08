@@ -5,6 +5,9 @@ configuration:
   retries:
     name: Retries
     description: Times to re-attempt a failed renewal before reporting a failure.
+  maintenance_windows:
+    name: LG maintenance windows
+    description: "Times (Home Assistant's timezone) when the app never calls LG's developer site. One per line, e.g. daily 00:00-06:00, sun 01:00-05:00, mon-fri 23:00-02:00. A renewal due inside a window waits until it ends. Leave the list empty to renew at any time; maintenance pages and HTTP 503 are still detected and backed off."
   notify_on_failure:
     name: Notify on failure
     description: Send a push notification when a renewal fails. Phones are found automatically; switch individual phones on or off in the LG DevMode panel.

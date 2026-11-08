@@ -24,6 +24,8 @@ import zlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+import maintenance
+
 _LOGGER = logging.getLogger(__name__)
 
 MYT = timezone(timedelta(hours=8), "MYT")
@@ -92,6 +94,10 @@ class CredentialsError(AuthError):
 
 class PortalError(MyTnbError):
     """Transient network or server-side failure."""
+
+
+class MaintenanceError(PortalError):
+    """myTNB answered with a maintenance page or HTTP 503: back off, don't alert."""
 
 
 class MeterNotFoundError(MyTnbError):
@@ -407,6 +413,13 @@ class MyTnbSession:
             response = self._client.open(url, body, all_headers)
         except (http.client.HTTPException, OSError, EOFError, zlib.error) as err:
             raise PortalError(f"Portal request failed: {type(err).__name__}") from err
+        title_match = TITLE_RE.search(response.body) if "html" in response.content_type else None
+        if maintenance.looks_like_maintenance(
+            response.status,
+            response.body if "html" in response.content_type else "",
+            html.unescape(title_match.group(1)) if title_match else "",
+        ):
+            raise MaintenanceError(f"myTNB is under maintenance ({_where(response.url)} HTTP {response.status})")
         if response.status in AUTH_STATUSES:
             return _Response(status=response.status, body="", content_type="", url=response.url)
         if response.status >= 400:  # noqa: PLR2004 - HTTP error range
