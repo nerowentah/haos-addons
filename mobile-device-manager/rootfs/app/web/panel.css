@@ -417,7 +417,159 @@ h2.section-title {
   background: var(--error);
 }
 
+/* Optional card parts: hero figures, progress bar, bar chart, collapsible switches. */
+.hero {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 28px;
+  padding: 4px 16px 10px;
+}
+
+.hero-value {
+  font-size: 30px;
+  line-height: 1.15;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.hero-unit {
+  margin-left: 4px;
+  color: var(--text2);
+  font-size: 15px;
+}
+
+.hero-label {
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.progress {
+  padding: 0 16px 12px;
+}
+
+.progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text2) 18%, transparent);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 0.4s ease;
+}
+
+.progress-text {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.progress-text .muted {
+  margin: 0;
+}
+
+.chart {
+  margin: 0 16px 12px;
+  padding: 10px 12px 8px;
+  border-radius: calc(var(--radius) * 0.67);
+  background: color-mix(in srgb, var(--text2) 7%, transparent);
+}
+
+.chart-title {
+  color: var(--text2);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.chart-svg {
+  display: block;
+  width: 100%;
+  height: 56px;
+}
+
+.chart-svg .bar {
+  fill: color-mix(in srgb, var(--primary) 45%, transparent);
+}
+
+.chart-svg .bar.last {
+  fill: var(--primary);
+}
+
+.chart-svg .bar:hover {
+  fill: color-mix(in srgb, var(--primary) 80%, var(--text));
+}
+
+.chart-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+  color: var(--text2);
+  font-size: 11px;
+}
+
+.chart-caption {
+  margin-top: 6px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+details.toggles > summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 48px;
+  padding: 8px 16px;
+  color: var(--text2);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+details.toggles > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.toggles > summary::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  margin-left: auto;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.2s ease;
+}
+
+details.toggles[open] > summary::after {
+  transform: rotate(-135deg);
+}
+
+details.toggles[open] > summary {
+  border-bottom: 1px solid var(--divider);
+}
+
+details.toggles > summary:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+@media (max-width: 420px) {
+  .hero-value {
+    font-size: 26px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .progress-fill,
+  details.toggles > summary::after {
+    transition: none;
+  }
   .switch::before,
   .switch::after {
     transition: none;

@@ -334,3 +334,28 @@ def badge(text: str, tone: str = "neutral") -> dict[str, str]:
     """A status chip; tone is ok | warn | error | neutral | off."""
 
     return {"text": text, "tone": tone}
+
+
+def hero_item(label: str, value: object, unit: str = "") -> dict[str, object]:
+    """A large headline figure (a card's ``hero`` is a list of these)."""
+
+    return stat(label, value, unit)
+
+
+def progress(fraction: float, label: str, caption: str = "") -> dict[str, object]:
+    """A thin progress bar; ``fraction`` is clamped to 0..1."""
+
+    return {"value": round(min(max(fraction, 0.0), 1.0), 4), "label": label, "caption": caption}
+
+
+def chart(title: str, bars: list[tuple[str, float]], unit: str = "", caption: str = "") -> dict[str, object] | None:
+    """A small bar chart of (label, value) pairs, oldest first; None when there is nothing to draw."""
+
+    if not bars:
+        return None
+    return {
+        "title": title,
+        "unit": unit,
+        "caption": caption,
+        "bars": [{"label": label, "value": round(float(value), 3)} for label, value in bars],
+    }

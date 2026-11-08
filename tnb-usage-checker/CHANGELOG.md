@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.4
+
+- **Redesigned account cards.**
+  - The cycle's cost and kWh are shown as large figures, with a billing-cycle progress bar ("Day 17 of 31 · 15 days left · next cycle 23 Nov").
+  - A bar chart shows the last 14 complete days of myTNB usage. The newest day's figure and trend are written under it, and hovering a bar shows its value.
+  - Details are compact: data up to, last sync and account number.
+  - Accounts with an energy sensor lead with the bill estimate.
+  - The switches fold into a **Settings** row that remembers whether it is open.
+- The daily chart is kept in `/data`, so it shows right after a restart.
+
 ## 0.3.3
 
 - **Daily usage report** (`daily_report`, on by default, also a panel switch). When a sync brings in a new complete day, each account sends one notification with that day's kWh and RM, the change from the day before, and the billing cycle so far. For example: *"Home: 8.42 kWh, RM 3.71 (▲12% vs the day before). Cycle since 23 Oct: 248.99 kWh, RM 110.62."* It is sent once per day, even across restarts, and never replaces a sync failure alert.

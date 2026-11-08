@@ -631,15 +631,25 @@ class App:
 
     # -- phones -------------------------------------------------------------
     def migrate_overrides(self) -> None:
-        """Move switches from the retired ``notification_overrides`` option into /data."""
+        """Move switches from the retired ``notification_overrides`` option into /data.
 
-        if "notification_overrides" not in self.raw_options:
+        The key has to be looked up in the options the Supervisor has stored
+        (``/addons/self/info``): ``/data/options.json`` is already filtered to
+        the schema, so the key never shows up there, yet the stored copy makes
+        the Supervisor warn about it on every options check.
+        """
+
+        try:
+            stored = fetch_options(self.token)
+        except (urllib.error.URLError, OSError, ValueError, ConfigError):
+            stored = self.raw_options
+        if "notification_overrides" not in stored:
             return
-        old = overrides_from_options(self.raw_options)
+        old = overrides_from_options(stored)
         for name, notify in old.items():
             self.phones.setdefault(name, notify)
         save_phone_prefs(self.phones, self.phones_path)
-        raw = {k: v for k, v in self.raw_options.items() if k != "notification_overrides"}
+        raw = {k: v for k, v in stored.items() if k != "notification_overrides"}
         try:
             write_options(self.token, raw)
             self.raw_options = raw

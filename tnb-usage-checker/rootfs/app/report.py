@@ -33,18 +33,35 @@ class DailyReport:
         """One short paragraph for a phone notification."""
 
         cost = f", RM {self.cost_rm:.2f}" if self.cost_rm is not None else ""
-        trend = ""
-        if self.previous_kwh:
-            change = (self.usage_kwh - self.previous_kwh) / self.previous_kwh * 100
-            if abs(change) < SIGNIFICANT_CHANGE_PCT:
-                trend = " (same as the day before)"
-            else:
-                arrow = "▲" if change > 0 else "▼"
-                trend = f" ({arrow}{abs(change):.0f}% vs the day before)"
+        trend = trend_text(self.usage_kwh, self.previous_kwh, long=True)
+        trend = f" ({trend})" if trend else ""
         return (
             f"{account_name}: {self.usage_kwh:.2f} kWh{cost}{trend}. "
             f"Cycle since {self.cycle_start:%d %b}: {self.cycle_kwh:.2f} kWh, RM {self.cycle_cost_rm:.2f}."
         )
+
+
+def trend_text(current: float, previous: float | None, *, long: bool = False) -> str:
+    """'▲12%' (or '▲12% vs the day before' when ``long``); '' without a previous day."""
+
+    if not previous:
+        return ""
+    change = (current - previous) / previous * 100
+    if abs(change) < SIGNIFICANT_CHANGE_PCT:
+        return "same as the day before" if long else "no change"
+    arrow = "▲" if change > 0 else "▼"
+    return f"{arrow}{abs(change):.0f}%" + (" vs the day before" if long else "")
+
+
+def latest_day_caption(history: dict[date, float]) -> str:
+    """'6 Nov: 10.89 kWh ▲12%' for the newest day in ``history`` ('' when empty)."""
+
+    if not history:
+        return ""
+    days = sorted(history)
+    day = days[-1]
+    trend = trend_text(history[day], history[days[-2]] if len(days) > 1 else None)
+    return f"{day.day} {day:%b}: {history[day]:.2f} kWh" + (f" {trend}" if trend else "")
 
 
 def complete_days(usage: list[EnergyPoint]) -> dict[date, float]:

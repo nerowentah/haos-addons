@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+
+- Shared panel update: optional large figures, progress bars, bar charts and a collapsible switch list (used by TNB Usage Checker). This app's panel looks the same.
+
 ## 0.1.2
 
 - Lighter scans:
