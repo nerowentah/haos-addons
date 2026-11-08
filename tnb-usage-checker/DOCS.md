@@ -62,7 +62,7 @@ accounts:
 2. Add one entry under `accounts` per electricity account, with its **`account_number`**. That is the 12-digit number printed on your TNB bill, also shown in the myTNB app under each account. Spaces and dashes are ignored.
 3. For an account that belongs to someone else's myTNB login, also set `mytnb_username` and `mytnb_password` on that account only.
 
-You no longer need to copy the long smart-meter link. The app builds it from the account number. Each account still gets its own portal session, and accounts sync one after another, never in parallel.
+If sync reports `meter_error`, myTNB uses an encoded account id in its smart meter link rather than the number on the bill. Paste the link as `smartmeter_url` (see [Troubleshooting](#troubleshooting)). Each account still gets its own portal session, and accounts sync one after another, never in parallel.
 
 ### Global options
 
@@ -76,6 +76,8 @@ You no longer need to copy the long smart-meter link. The app builds it from the
 | `notify_on_failure` | `true` | Master switch for sync failure and recovery notifications. |
 | `mqtt` | `true` | Use MQTT discovery when a broker is found. See [MQTT or not](#mqtt-or-not). |
 | `mytnb_username`, `mytnb_password` | empty | The shared myTNB login, used by every account that has an `account_number` and no login of its own. |
+| `daily_report` | `true` | Once per account and day, when a sync brings in a new complete day (all hourly readings), notify the phones with that day's kWh and RM, the change from the day before, and the cycle so far. myTNB data is about 2 days behind, so the report is about the day before yesterday. |
+| `debug_login` | `false` | Logs every myTNB login step: redirects, HTTP status, page titles, and cookie and form field names. Use it to debug `auth_error` and `meter_error`. Passwords, cookie and form values, and account numbers (only the last 4 characters are shown) are never logged. It is also a switch in the panel. |
 
 ### Account options
 
@@ -86,7 +88,7 @@ You no longer need to copy the long smart-meter link. The app builds it from the
 | `billing_start_day` | yes | Day of the month your billing cycle starts (1-31). Short months use their last day. |
 | `account_number` | for myTNB | The 12-digit TNB account number from your bill. Enables myTNB sync with the shared login. |
 | `mytnb_username`, `mytnb_password` | optional | Only for an account under a different myTNB login. Set both together. |
-| `smartmeter_url` | legacy | Older way to identify the account. If set, the `caNo` in the link is used. Prefer `account_number`. |
+| `smartmeter_url` | optional | The address of **View Energy Usage** for this account on the myTNB website. Only needed if sync reports `meter_error`. When set, it is used instead of `account_number`. |
 | `import_entity` | optional | Cumulative grid-import energy sensor (kWh, Wh or MWh). Enables the live estimate. |
 | `export_entity` | optional | Cumulative grid-export energy sensor, for NEM. Needs `import_entity`. |
 | `enabled`, `portal_enabled`, `meter_enabled`, `statistics_enabled` | optional | On/off switches, all on by default. These are the panel switches. |
@@ -212,6 +214,12 @@ When a myTNB sync fails and when it recovers, the app notifies every phone that 
   - Check the email and password by logging in to myTNB in a browser.
   - Check that the account has a smart meter and that **View Energy Usage** opens the smartliving dashboard.
   - After an auth error the app waits one full sync interval before trying again, to avoid getting your account locked.
+  - `auth_error` only means myTNB rejected the email or password. A smartliving redirect loop shows `error` instead and retries after 30 minutes.
+- **`meter_error` status (Smart meter not found):** the login worked, but the smartliving dashboard did not return a meter for this account.
+  - Log in at myaccount.mytnb.com.my, open **View Energy Usage** on the account, and copy the address from the browser. It contains `/AccountManagement/SmartMeter/Index/TRIL?caNo=...`.
+  - Paste it as the account's `smartmeter_url` and save. You can keep `account_number`.
+  - The app retries every 3 hours until it works.
+- **Debugging a login:** turn on **Verbose login log** in the panel, or `debug_login` in the Configuration tab. The next sync logs each step as `[login]`, `[sso]`, `[smart meter page]`, `[dashboard n]`, `[usage page n]` and so on, with redirects. A healthy run ends with `[dashboard n] ... title 'Energy Engage' ... sdpudcid yes`. If the dashboard keeps redirecting to `smartliving.../login`, the smart meter link did not identify the account. The log is safe to share. Turn the switch off again afterwards.
 - **No entities:**
   - Check **Entities via** in the panel.
   - **With MQTT:** make sure the Mosquitto broker and the MQTT integration are running.

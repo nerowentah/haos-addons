@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.3
+
+- **Daily usage report** (`daily_report`, on by default, also a panel switch). When a sync brings in a new complete day, each account sends one notification with that day's kWh and RM, the change from the day before, and the billing cycle so far. For example: *"Home: 8.42 kWh, RM 3.71 (▲12% vs the day before). Cycle since 23 Oct: 248.99 kWh, RM 110.62."* It is sent once per day, even across restarts, and never replaces a sync failure alert.
+- **Clearer smart meter errors.** If login works but the smartliving dashboard has no meter id, the status is now `meter_error` (**Smart meter not found**) instead of `auth_error`. The log says where the dashboard landed and how many smart meter links the account page listed. It retries after 3 hours instead of a full sync interval. The phone notification points to the fix instead of the password.
+- **Fixed myTNB sync.** Verified live on two accounts, now about 4 seconds per account. It had been failing with "did not return a meter id" or redirect loops. There were three causes:
+  - The app now completes the smartliving hand-off a browser does. The **Loading Smart Meter** page posts a session token to smartliving's `/login?renew`, and the app skipped that step.
+  - Each portal host now uses one kept-alive connection, as a browser does. smartliving keeps sessions per backend, so a new connection per request lost the session and redirected through `/login` until it gave up.
+  - Requests use browser header casing and order. Cloudflare in front of smartliving answered HTTP 403 to Python's default `User-agent` and `Dnt` spellings.
+- **A smartliving redirect loop is no longer reported as a login failure.** `auth_error` is now only for a rejected email or password, and waits a full interval before retrying. Session hiccups show `error` and retry after 30 minutes, with a notification after 3 failures in a row.
+- **Verbose login log** (`debug_login`, or the switch in the panel's Settings card). It logs each myTNB step, including every redirect hop, with HTTP status, page titles, and cookie and form field names. Values are never logged: passwords, cookies, form values and account numbers (only the last 4 characters) stay out of the log. It applies without a restart. The CLI smoke test also accepts `MYTNB_DEBUG=1`.
+- **`smartmeter_url` is now a masked field** in the Configuration tab, like the passwords, because its `caNo` identifies the account.
+- **`smartmeter_url` wins when set**, and its `caNo` is used exactly as copied, so encoded values work too. Use it when the link built from `account_number` does not reach the meter: open **View Energy Usage** for the account on the myTNB website and paste that address.
+
 ## 0.3.2
 
 - Lighter and quieter:

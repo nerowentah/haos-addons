@@ -1,5 +1,5 @@
 name: "TNB Usage Checker"
-version: "0.3.2"
+version: "0.3.3"
 slug: "power_tnb"
 description: >-
   Tracks Malaysian TNB electricity for multiple accounts: imports hourly
@@ -31,6 +31,8 @@ options:
   extra_holidays: []
   notify_on_failure: true
   mqtt: true
+  daily_report: true
+  debug_login: false
   mytnb_username: ""
   mytnb_password: ""
   accounts:
@@ -47,6 +49,8 @@ schema:
     - match(^\d{4}-\d{2}-\d{2}$)
   notify_on_failure: bool
   mqtt: bool
+  daily_report: bool?
+  debug_login: bool?
   mytnb_username: str?
   mytnb_password: password?
   accounts:
@@ -56,7 +60,7 @@ schema:
       billing_start_day: int(1,31)
       mytnb_username: email?
       mytnb_password: password?
-      smartmeter_url: url?
+      smartmeter_url: password?
       import_entity: str?
       export_entity: str?
       enabled: bool?
