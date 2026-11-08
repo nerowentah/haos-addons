@@ -1,5 +1,5 @@
 name: "LG webOS DevMode Mgmt"
-version: "1.7.4"
+version: "1.7.5"
 slug: "lg_webos_auto_renew"
 description: >-
   Periodically renews LG webOS Developer Mode sessions before they expire by
@@ -23,6 +23,8 @@ hassio_api: true
 options:
   interval_hours: 48
   retries: 3
+  maintenance_windows:
+    - "daily 00:00-06:00"
   notify_on_failure: true
   sessions:
     - name: "living-room-tv"
@@ -31,6 +33,8 @@ options:
 schema:
   interval_hours: int(1,168)
   retries: int(0,10)
+  maintenance_windows:
+    - str
   notify_on_failure: bool
   sessions:
     - name: str

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+import maintenance
 import tariff
 
 CONFIG_PATH = Path("/data/options.json")
@@ -85,6 +86,7 @@ class Config:
     mqtt: bool = True
     debug_login: bool = False
     daily_report: bool = True
+    maintenance_windows: list[maintenance.Window] = field(default_factory=list)
 
 
 def slugify(value: str) -> str:
@@ -231,6 +233,11 @@ def load_config(raw: dict[str, object]) -> Config:
         except ValueError as err:
             raise ConfigError(f"extra_holidays: '{value}' is not a YYYY-MM-DD date") from err
 
+    try:
+        windows = maintenance.parse_windows(raw.get("maintenance_windows"))
+    except maintenance.MaintenanceConfigError as err:
+        raise ConfigError(f"maintenance_windows: {err}") from err
+
     return Config(
         portal_interval_hours=_int(raw, "portal_interval_hours", 6, 1, 24),
         meter_poll_seconds=_int(raw, "meter_poll_seconds", 60, 10, 600),
@@ -242,6 +249,7 @@ def load_config(raw: dict[str, object]) -> Config:
         mqtt=_bool(raw, "mqtt"),
         debug_login=_bool(raw, "debug_login", default=False),
         daily_report=_bool(raw, "daily_report"),
+        maintenance_windows=windows,
     )
 
 

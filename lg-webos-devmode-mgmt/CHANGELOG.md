@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.5
+
+- **LG maintenance windows** (`maintenance_windows`, default `daily 00:00-06:00`, Home Assistant's timezone). No renewal is attempted inside a window: a renewal due then waits until it ends, and **Renew now** says when that is. The Schedule card shows the windows.
+- **Back-off when LG's developer site is down for maintenance.** An HTTP 503 or a maintenance page shows **LG maintenance** on the TV, and it isn't counted as a failure, so no alert is sent. Retries come after 30 min, doubling up to 6 h, then the normal interval resumes after the next success.
+
 ## 1.7.4
 
 - **Fixed the Supervisor warning** `Option 'notification_overrides' does not exist in the schema`, logged every 30 seconds. The one-time move of the old per-phone switches into the panel looked for the option in `/data/options.json`, which the Supervisor already filters to the schema, so it never ran. It now reads the stored options, keeps any phone switch you already set in the panel, and removes the option.

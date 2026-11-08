@@ -38,6 +38,7 @@ sessions:
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `interval_hours` | int | `48` | Hours between renewals (1-168). Keep this well below the ~50-hour session lifetime. |
+| `maintenance_windows` | list | `daily 00:00-06:00` | When LG's developer site may be down for maintenance (Home Assistant's timezone), one per line: `daily 00:00-06:00`, `sun 01:00-05:00`, `mon-fri 23:00-02:00` (crosses midnight), `weekends 02:00-04:00` or `mon,wed 00:00-24:00`. No renewal is attempted inside a window; a renewal due then waits until it ends. An empty list allows renewing at any time. |
 | `retries` | int | `3` | Retries per TV, with backoff, before a renewal counts as failed (0-10). |
 | `notify_on_failure` | bool | `true` | Notify when a renewal fails after all retries. See [Notifications](#notifications). |
 | `sessions` | list | - | One entry per TV (see below). |
@@ -107,6 +108,8 @@ When a renewal fails after all retries, the app notifies every phone that is swi
 - The **Log** tab shows each renewal by TV name only. It never shows renewal URLs or tokens.
 
 ## Troubleshooting
+
+- **TV shows "LG maintenance":** LG's site answered with a maintenance page or HTTP 503. That doesn't count as a failure and sends no alert. The app retries after 30 min, then 1 h, 2 h, 4 h, up to 6 h, and returns to the normal interval after the next success.
 
 - **Configuration needs attention:** if the options are invalid (for example no TV yet), the app keeps running and the panel shows exactly what to fix. It starts within 15 seconds of saving valid options.
 - **What do the `s6-rc` lines in the log mean?** The app runs as an s6-overlay service, the process supervisor built into Home Assistant app images. Only s6 warnings and errors are logged. Older versions printed `legacy-cont-init`, `legacy-services` and `s6-rc.d is empty` on every start. Those were harmless, and came from running without a proper service definition.

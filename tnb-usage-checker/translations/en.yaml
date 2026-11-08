@@ -20,6 +20,9 @@ configuration:
   mqtt:
     name: Use MQTT when available
     description: Publish one MQTT device per account when a broker (e.g. the Mosquitto broker app) is found; it is detected automatically while the app runs. Off, or without a broker, entities are created through the Home Assistant states API instead.
+  maintenance_windows:
+    name: myTNB maintenance windows
+    description: "Times (Malaysia time) when the app never calls myTNB, because TNB does system maintenance then. One per line, e.g. daily 00:00-06:00, sun 01:00-05:00, mon-fri 23:00-02:00. A sync due inside a window waits until it ends. Leave the list empty to sync at any time; maintenance pages are still detected and backed off."
   daily_report:
     name: Daily usage report
     description: Once a day, when myTNB publishes a new complete day, notify the phones with that day's kWh and RM, the change from the day before, and the billing cycle so far. Also a switch in the TNB Usage panel.

@@ -5,8 +5,9 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 
+import maintenance
 import report
-from config import Account, mask_email, mask_number, slugify
+from config import Account, Config, mask_email, mask_number, slugify
 from meter import MYT, billing_period_start, next_period_start
 from webui import PanelError, action, badge, chart, hero_item, progress, stat, toggle
 
@@ -25,6 +26,7 @@ PORTAL_STATUS = {
     "auth_error": badge("Login failed", "error"),
     "meter_error": badge("Smart meter not found", "error"),
     "error": badge("Portal error", "warn"),
+    "maintenance": badge("TNB maintenance", "warn"),
 }
 
 
@@ -193,6 +195,14 @@ def _account_card(
     }
 
 
+def _maintenance_text(config: Config) -> str:
+    """'daily 00:00-06:00 (now, until 06:00)' or 'none'."""
+
+    text = maintenance.describe(config.maintenance_windows)
+    until = maintenance.window_end(config.maintenance_windows, datetime.now(MYT))
+    return f"{text} (now, until {until:%H:%M})" if until else text
+
+
 def build_state(app: App) -> dict[str, object]:
     """The whole panel view model."""
 
@@ -214,6 +224,7 @@ def build_state(app: App) -> dict[str, object]:
             stat("AFA", f"{afa_sen:+.2f}", "sen/kWh"),
             stat("Off-peak holiday today", "Yes" if app.holidays.is_holiday(today) else "No"),
             stat("myTNB sync every", config.portal_interval_hours, "h"),
+            stat("myTNB maintenance", _maintenance_text(config)),
             stat("Sensor poll every", config.meter_poll_seconds, "s"),
             stat("Entities via", app.mqtt_status()),
             stat(

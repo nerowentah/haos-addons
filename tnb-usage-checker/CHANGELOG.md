@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.5
+
+- **myTNB maintenance windows** (`maintenance_windows`, default `daily 00:00-06:00`, Malaysia time).
+  - No myTNB calls inside a window. A sync due then runs a few random minutes after the window ends.
+  - **Sync myTNB now** says when the window ends. Accepts `daily`, `weekdays`, `weekends`, day names, ranges and lists, and windows that cross midnight.
+  - The panel's Settings card shows the windows and whether one is active.
+- **Back-off when myTNB is down for maintenance.** An HTTP 503 or a maintenance page gives the new `maintenance` status (**TNB maintenance**). The last data is kept and no failure alert is sent. Retries come after 30 min, doubling up to 6 h, and the back-off resets after the next successful sync.
+
 ## 0.3.4
 
 - **Redesigned account cards.**
