@@ -114,6 +114,83 @@ class SetupView:
         raise PanelError("Fix the configuration first")
 
 
+SECRET_PREFIX = "!secret "  # noqa: S105 - the reference syntax, not a secret
+
+
+class SecretError(ValueError):
+    """An option names a ``!secret`` whose value this run does not have."""
+
+
+class SecretRefs:
+    """``!secret name`` references in the stored options, with the values the Supervisor resolved.
+
+    The Supervisor resolves ``!secret`` only into /data/options.json, when the
+    app starts; its API (``/addons/self/info``) returns the references. Live
+    option changes therefore come back as references: resolve them with the
+    values from start-up, and write the references (never the values) back.
+    """
+
+    def __init__(self) -> None:
+        self._values: dict[str, object] = {}
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def learn(self, stored: object, resolved: object) -> None:
+        """Record the resolved value of every reference in ``stored`` (walked in step with ``resolved``)."""
+
+        if isinstance(stored, str):
+            if stored.startswith(SECRET_PREFIX) and resolved is not None and resolved != stored:
+                self._values[stored[len(SECRET_PREFIX) :].strip()] = resolved
+        elif isinstance(stored, dict) and isinstance(resolved, dict):
+            for key, value in stored.items():
+                self.learn(value, resolved.get(key))
+        elif isinstance(stored, list) and isinstance(resolved, list):
+            for value, resolved_value in zip(stored, resolved, strict=False):
+                self.learn(value, resolved_value)
+
+    def resolve(self, raw: object) -> object:
+        """A copy of ``raw`` with every reference replaced by its value (raises SecretError)."""
+
+        if isinstance(raw, str) and raw.startswith(SECRET_PREFIX):
+            name = raw[len(SECRET_PREFIX) :].strip()
+            if name not in self._values:
+                raise SecretError(
+                    f"An option uses !secret {name}, which was added after the app started; restart the app to load it"
+                )
+            return self._values[name]
+        if isinstance(raw, dict):
+            return {key: self.resolve(value) for key, value in raw.items()}
+        if isinstance(raw, list):
+            return [self.resolve(value) for value in raw]
+        return raw
+
+
+def initial_options(
+    load_resolved: Callable[[], dict[str, object]],
+    fetch_stored: Callable[[], dict[str, object]],
+    secrets: SecretRefs,
+) -> dict[str, object]:
+    """Options to start with: the stored ones (with references) when the Supervisor answers, else the file.
+
+    Teaches ``secrets`` the resolved values from /data/options.json on the way.
+    """
+
+    try:
+        resolved: dict[str, object] | None = load_resolved()
+    except ValueError:
+        resolved = None
+    try:
+        stored: dict[str, object] | None = fetch_stored()
+    except (OSError, RuntimeError, ValueError):
+        stored = None
+    if stored is not None and resolved is not None:
+        secrets.learn(stored, resolved)
+    if stored is not None:
+        return stored
+    return resolved or {}
+
+
 def wait_for_valid_config(
     fetch: Callable[[], dict[str, object]],
     validate: Callable[[dict[str, object]], object],

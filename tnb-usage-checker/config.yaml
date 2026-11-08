@@ -1,5 +1,5 @@
 name: "TNB Usage Checker"
-version: "0.3.5"
+version: "0.4.0"
 slug: "power_tnb"
 description: >-
   Tracks Malaysian TNB electricity for multiple accounts: imports hourly
@@ -30,6 +30,7 @@ options:
   calendarific_api_key: ""
   extra_holidays: []
   notify_on_failure: true
+  notify_on_unpaid: true
   mqtt: true
   daily_report: true
   maintenance_windows:
@@ -42,14 +43,16 @@ options:
       account_number: ""
       tariff: "general"
       billing_start_day: 1
+  log_level: info
 schema:
-  portal_interval_hours: int(1,24)
+  portal_interval_hours: int(1,168)
   meter_poll_seconds: int(10,600)
   afa_rate: float(-1,1)
   calendarific_api_key: password?
   extra_holidays:
     - match(^\d{4}-\d{2}-\d{2}$)
   notify_on_failure: bool
+  notify_on_unpaid: bool?
   mqtt: bool
   daily_report: bool?
   maintenance_windows:
@@ -71,3 +74,4 @@ schema:
       portal_enabled: bool?
       meter_enabled: bool?
       statistics_enabled: bool?
+  log_level: list(trace|debug|info|notice|warning|error|fatal)?

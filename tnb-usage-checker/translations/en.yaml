@@ -1,7 +1,10 @@
 configuration:
+  log_level:
+    name: Log level
+    description: How much the app writes to its log - trace, debug, info (default), notice, warning, error or fatal. Use debug while troubleshooting, then set it back to info. Applies without a restart.
   portal_interval_hours:
     name: myTNB sync interval (hours)
-    description: How often to log in to myTNB and import smart meter data. TNB publishes data about two days late, so every few hours is plenty.
+    description: How often to log in to myTNB and import smart meter data. TNB publishes data about two days late, so every few hours is plenty (1-168, up to 7 days).
   meter_poll_seconds:
     name: Energy sensor poll interval (seconds)
     description: How often to read each account's local energy sensor for the live bill estimate.
@@ -17,6 +20,9 @@ configuration:
   notify_on_failure:
     name: Notify on sync failure
     description: Push a notification when a myTNB sync fails (and again when it recovers). Phones are found automatically; switch individual phones on or off in the TNB Usage panel.
+  notify_on_unpaid:
+    name: Notify on unpaid bill
+    description: Push a notification when myTNB shows a new amount due, a reminder once a week while it stays unpaid, and one when it is paid. Also a switch in the TNB Usage panel.
   mqtt:
     name: Use MQTT when available
     description: Publish one MQTT device per account when a broker (e.g. the Mosquitto broker app) is found; it is detected automatically while the app runs. Off, or without a broker, entities are created through the Home Assistant states API instead.
@@ -28,7 +34,7 @@ configuration:
     description: Once a day, when myTNB publishes a new complete day, notify the phones with that day's kWh and RM, the change from the day before, and the billing cycle so far. Also a switch in the TNB Usage panel.
   debug_login:
     name: Verbose login log
-    description: Log every myTNB login step (redirects, HTTP status, cookie and form field names, page titles) to debug login and meter errors. Passwords, cookie values and account numbers are never logged. Also a switch in the TNB Usage panel.
+    description: Log every myTNB login step (redirects, HTTP status, cookie and form field names, page titles) to debug login and meter errors. Passwords, cookie values and account numbers are never logged. Also a switch in the TNB Usage panel. log_level debug shows the same trace.
   mytnb_username:
     name: myTNB email (shared)
     description: The email you log in to myTNB with. Used by every account below that has an account number, so one login covers all your TNB accounts. Needs a smart meter (AMI).

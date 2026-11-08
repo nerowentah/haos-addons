@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -17,6 +18,33 @@ ACCOUNT_NUMBER_RE = re.compile(r"^\d{10,14}$")
 SMARTMETER_PATH = "/AccountManagement/SmartMeter/Index/TRIL?caNo={ca_no}"
 ENTITY_ID_RE = re.compile(r"^sensor\.[a-z0-9_]+$")
 TARIFFS = {tariff.TARIFF_GENERAL, tariff.TARIFF_TOU}
+
+TRACE = 5
+NOTICE = 25
+LOG_LEVELS = {
+    "trace": TRACE,
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "notice": NOTICE,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "fatal": logging.CRITICAL,
+}
+
+
+def parse_log_level(raw: dict[str, object]) -> str:
+    """The ``log_level`` option, lower-cased ("info" when missing or unknown)."""
+
+    value = str(raw.get("log_level") or "info").strip().lower()
+    return value if value in LOG_LEVELS else "info"
+
+
+def apply_log_level(name: str) -> None:
+    """Set the root logger to ``name`` (one of LOG_LEVELS)."""
+
+    logging.addLevelName(TRACE, "TRACE")
+    logging.addLevelName(NOTICE, "NOTICE")
+    logging.getLogger().setLevel(LOG_LEVELS.get(name, logging.INFO))
 
 
 class ConfigError(ValueError):
@@ -34,6 +62,7 @@ class Account:
     mytnb_username: str = ""
     mytnb_password: str = ""
     ca_no: str = ""
+    bill_no: str = ""  # the number printed on the bill (picks the account on the myTNB dashboard)
     import_entity: str = ""
     export_entity: str = ""
     enabled: bool = True
@@ -87,6 +116,8 @@ class Config:
     debug_login: bool = False
     daily_report: bool = True
     maintenance_windows: list[maintenance.Window] = field(default_factory=list)
+    notify_on_unpaid: bool = True
+    log_level: str = "info"
 
 
 def slugify(value: str) -> str:
@@ -169,6 +200,7 @@ def build_account(index: int, entry: object, default_login: tuple[str, str] = ("
         mytnb_username=_str(entry, "mytnb_username") or default_login[0],
         mytnb_password=_str(entry, "mytnb_password") or default_login[1],
         ca_no=_account_number(name, entry),
+        bill_no=re.sub(r"[\s-]", "", _str(entry, "account_number")),
         import_entity=_str(entry, "import_entity").lower(),
         export_entity=_str(entry, "export_entity").lower(),
         enabled=_bool(entry, "enabled"),
@@ -239,7 +271,7 @@ def load_config(raw: dict[str, object]) -> Config:
         raise ConfigError(f"maintenance_windows: {err}") from err
 
     return Config(
-        portal_interval_hours=_int(raw, "portal_interval_hours", 6, 1, 24),
+        portal_interval_hours=_int(raw, "portal_interval_hours", 6, 1, 168),
         meter_poll_seconds=_int(raw, "meter_poll_seconds", 60, 10, 600),
         afa_rate=afa_rate,
         calendarific_api_key=_str(raw, "calendarific_api_key"),
@@ -250,6 +282,8 @@ def load_config(raw: dict[str, object]) -> Config:
         debug_login=_bool(raw, "debug_login", default=False),
         daily_report=_bool(raw, "daily_report"),
         maintenance_windows=windows,
+        notify_on_unpaid=_bool(raw, "notify_on_unpaid"),
+        log_level=parse_log_level(raw),
     )
 
 

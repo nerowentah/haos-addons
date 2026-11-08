@@ -39,11 +39,18 @@ def when(value: object) -> str | None:
     return moment.strftime("%d %b %H:%M")
 
 
+def payment_text(due: object) -> str | None:
+    """``Due`` / ``Paid`` for the payment-due flag (None while unknown)."""
+
+    return None if due is None else ("Due" if due else "Paid")
+
+
 def _account_card(runtime: AccountRuntime, account: Account) -> dict[str, object]:
     values = runtime.values
     status = str(values.get("status") or "pending")
     stats = [
         stat("Amount due", money(values.get("amount_due"))),
+        stat("Payment", payment_text(values.get("payment_due"))),
         stat("Account no.", mask_number(account.account_number)),
         stat("Account holder", runtime.holder or None),
         stat("Last checked", when(values.get("last_checked"))),
@@ -93,7 +100,7 @@ def build_state(app: App) -> dict[str, object]:
         "icon": "mdi:cog",
         "subtitle": "Edit the remaining options in the app's Configuration tab",
         "stats": [
-            stat("Check every", config.poll_interval_hours, "h"),
+            stat("Check every", "week (or Check now)"),
             stat("Entities via", app.mqtt_status()),
         ],
         "toggles": [
@@ -112,6 +119,13 @@ def build_state(app: App) -> dict[str, object]:
                 "Notify the phones below when checks keep failing, and again when they recover",
                 icon="mdi:bell",
             ),
+            toggle(
+                "notify_on_unpaid",
+                "Unpaid bill notifications",
+                config.notify_on_unpaid,
+                "Notify the phones below when a bill is due, weekly while it stays unpaid, and once when it is paid",
+                icon="mdi:cash-clock",
+            ),
         ],
     }
 
@@ -126,7 +140,7 @@ def build_state(app: App) -> dict[str, object]:
                 name.removeprefix("mobile_app_").replace("_", " "),
                 phones.get(name, True) is not False,
                 name,
-                disabled=not config.notify_on_failure,
+                disabled=not (config.notify_on_failure or config.notify_on_unpaid),
                 icon="mdi:cellphone",
             )
             for name in sorted(app.discovered)
@@ -148,7 +162,7 @@ def apply_toggle(options: dict[str, object], toggle_id: str, value: bool) -> Non
     """Write one toggle into a raw options dict (mutates ``options``)."""
 
     kind, _, rest = toggle_id.partition(":")
-    if kind in ("notify_on_failure", "mqtt") and not rest:
+    if kind in ("notify_on_failure", "notify_on_unpaid", "mqtt") and not rest:
         options[kind] = value
         return
     if kind == "account":

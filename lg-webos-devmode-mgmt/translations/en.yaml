@@ -1,4 +1,7 @@
 configuration:
+  log_level:
+    name: Log level
+    description: How much the app writes to its log - trace, debug, info (default), notice, warning, error or fatal. Use debug while troubleshooting, then set it back to info. Applies without a restart.
   interval_hours:
     name: Renewal interval (hours)
     description: How often to renew the TV dev-mode sessions. LG dev-mode sessions last about 50 hours, so keep this well below that.

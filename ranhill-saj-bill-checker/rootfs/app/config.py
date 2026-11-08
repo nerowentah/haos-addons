@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,33 @@ CONFIG_PATH = Path("/data/options.json")
 # 8 digits, 1 letter, 7 digits, e.g. 91234582-J2542356 (Ranhill SAJ's own example on the bill page).
 ACCOUNT_NUMBER_RE = re.compile(r"^\d{8}[A-Z]\d{7}$")
 ACCOUNT_EXAMPLE = "12345678-A1234567"
+
+TRACE = 5
+NOTICE = 25
+LOG_LEVELS = {
+    "trace": TRACE,
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "notice": NOTICE,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "fatal": logging.CRITICAL,
+}
+
+
+def parse_log_level(raw: dict[str, object]) -> str:
+    """The ``log_level`` option, lower-cased ("info" when missing or unknown)."""
+
+    value = str(raw.get("log_level") or "info").strip().lower()
+    return value if value in LOG_LEVELS else "info"
+
+
+def apply_log_level(name: str) -> None:
+    """Set the root logger to ``name`` (one of LOG_LEVELS)."""
+
+    logging.addLevelName(TRACE, "TRACE")
+    logging.addLevelName(NOTICE, "NOTICE")
+    logging.getLogger().setLevel(LOG_LEVELS.get(name, logging.INFO))
 
 
 class ConfigError(ValueError):
@@ -31,10 +59,11 @@ class Account:
 class Config:
     """Parsed app options."""
 
-    poll_interval_hours: int
     notify_on_failure: bool
     accounts: list[Account]
     mqtt: bool = True
+    notify_on_unpaid: bool = True
+    log_level: str = "info"
 
 
 def slugify(value: str) -> str:
@@ -64,13 +93,6 @@ def _str(entry: dict[str, object], key: str) -> str:
 def _bool(entry: dict[str, object], key: str, default: bool = True) -> bool:
     value = entry.get(key)
     return value if isinstance(value, bool) else default
-
-
-def _int(raw: dict[str, object], key: str, default: int, low: int, high: int) -> int:
-    value = raw.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, int):
-        return default
-    return min(max(value, low), high)
 
 
 def normalize_account_number(value: str) -> str:
@@ -120,10 +142,11 @@ def load_config(raw: dict[str, object]) -> Config:
         seen_ids.add(account.account_id)
         seen_numbers.add(account.account_number)
     return Config(
-        poll_interval_hours=_int(raw, "poll_interval_hours", 6, 1, 24),
         notify_on_failure=_bool(raw, "notify_on_failure"),
         accounts=accounts,
         mqtt=_bool(raw, "mqtt"),
+        notify_on_unpaid=_bool(raw, "notify_on_unpaid"),
+        log_level=parse_log_level(raw),
     )
 
 

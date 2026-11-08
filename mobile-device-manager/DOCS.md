@@ -22,9 +22,10 @@ ignored_devices: []
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `scan_minutes` | `30` | How often to rescan (5-1440). The panel also has **Rescan now**. |
+| `scan_minutes` | `30` | How often to rescan (5-10080 minutes, up to 7 days). The panel also has **Rescan now**. |
 | `stale_days` | `30` | A device that has reported nothing for this many days is flagged **Stale** (1-365). |
 | `notify_on_attention` | `true` | Notify when devices turn stale or scanning fails 3 times in a row (and again when it recovers). |
+| `log_level` | `info` | How much is logged: `trace`, `debug`, `info`, `notice`, `warning`, `error` or `fatal`. Use `debug` while troubleshooting. Applies without a restart. |
 | `ignored_devices` | `[]` | Device ids never flagged stale, for example a tablet you rarely use. The **Ignore** button in the panel fills this in. |
 
 Changes made in the Configuration tab are picked up within about 30 seconds. You don't need to restart the app.
@@ -102,6 +103,16 @@ The phone itself is not affected. To use it again, sign in again from the Compan
 - Devices that newly turn stale are reported once, in a single notification. A device is reported again only after it has been active in between.
 - Scan failures are reported after 3 failed scans in a row, and again when scanning recovers.
 - Without any linked phones, the app creates a persistent notification instead.
+
+## Passwords and secrets
+
+- **Where they live:** Home Assistant's Supervisor stores the app options, including its options (it has no passwords). The app keeps no copy: its own file `/data/state.json` never holds a password, token or account number. Home Assistant encrypts its backups.
+- **Masked:** password fields show as dots in the Configuration tab.
+- **Never logged:** passwords, tokens and cookie values never appear in the log or the panel, and numbers are masked.
+- **`!secret`:** to keep a value out of the app options, put it in `/config/secrets.yaml` and reference it, for example `ignored_devices: ["!secret old_tablet"]`.
+  - The panel switches and live edits keep the reference as it is. The app never writes the value back.
+  - A new or changed secret takes effect after you **restart** the app, because the Supervisor reads `secrets.yaml` only at start. Until then the panel keeps the old value and the log says a restart is needed.
+- Anyone who can open the app's Configuration tab, or log in to the host, can still see the values. Give the Home Assistant admin role only to people you trust.
 
 ## Troubleshooting
 

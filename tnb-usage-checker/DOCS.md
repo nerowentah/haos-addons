@@ -34,6 +34,7 @@ calendarific_api_key: ""    # optional
 extra_holidays:
   - "2026-03-21"            # e.g. Hari Raya Aidilfitri
 notify_on_failure: true
+notify_on_unpaid: true
 mqtt: true
 mytnb_username: "you@example.com"   # one myTNB login for every account below
 mytnb_password: "********"
@@ -68,17 +69,19 @@ If sync reports `meter_error`, myTNB uses an encoded account id in its smart met
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `portal_interval_hours` | `6` | Hours between myTNB syncs (1-24). TNB data is about 2 days behind. |
+| `portal_interval_hours` | `6` | Hours between myTNB syncs (1-168, up to 7 days). TNB data is about 2 days behind. The amount due is read on every sync. |
 | `meter_poll_seconds` | `60` | How often each account's energy sensor is read (10-600). |
 | `afa_rate` | `0.0` | Automatic Fuel Adjustment in RM/kWh. A negative value is a rebate. It only applies above 600 kWh. |
 | `calendarific_api_key` | `""` | Optional key for lunar public holidays (ToU off-peak). |
 | `extra_holidays` | `[]` | Extra `YYYY-MM-DD` dates treated as off-peak all day. |
 | `notify_on_failure` | `true` | Master switch for sync failure and recovery notifications. |
+| `notify_on_unpaid` | `true` | Notify when myTNB shows a new amount due, remind once a week while it stays unpaid, and say when it is paid. Also a panel switch. |
 | `mqtt` | `true` | Use MQTT discovery when a broker is found. See [MQTT or not](#mqtt-or-not). |
 | `mytnb_username`, `mytnb_password` | empty | The shared myTNB login, used by every account that has an `account_number` and no login of its own. |
 | `maintenance_windows` | `daily 00:00-06:00` | When TNB does system maintenance (Malaysia time), one per line: `daily 00:00-06:00`, `sun 01:00-05:00`, `mon-fri 23:00-02:00` (crosses midnight), `weekends 02:00-04:00` or `mon,wed 00:00-24:00`. The app never calls myTNB inside a window: a sync due then waits until the window ends, plus a few random minutes, and **Sync myTNB now** explains why it is paused. An empty list allows syncing at any time. |
 | `daily_report` | `true` | Once per account and day, when a sync brings in a new complete day (all hourly readings), notify the phones with that day's kWh and RM, the change from the day before, and the cycle so far. myTNB data is about 2 days behind, so the report is about the day before yesterday. |
-| `debug_login` | `false` | Logs every myTNB login step: redirects, HTTP status, page titles, and cookie and form field names. Use it to debug `auth_error` and `meter_error`. Passwords, cookie and form values, and account numbers (only the last 4 characters are shown) are never logged. It is also a switch in the panel. |
+| `debug_login` | `false` | Logs every myTNB login step: redirects, HTTP status, page titles, and cookie and form field names. Use it to debug `auth_error` and `meter_error`. Passwords, cookie and form values, and account numbers (only the last 4 characters are shown) are never logged. It is also a switch in the panel. `log_level: debug` shows the same trace. |
+| `log_level` | `info` | How much is logged: `trace`, `debug`, `info`, `notice`, `warning`, `error` or `fatal`. Use `debug` while troubleshooting. Applies without a restart. |
 
 ### Account options
 
@@ -89,7 +92,7 @@ If sync reports `meter_error`, myTNB uses an encoded account id in its smart met
 | `billing_start_day` | yes | Day of the month your billing cycle starts (1-31). Short months use their last day. |
 | `account_number` | for myTNB | The 12-digit TNB account number from your bill. Enables myTNB sync with the shared login. |
 | `mytnb_username`, `mytnb_password` | optional | Only for an account under a different myTNB login. Set both together. |
-| `smartmeter_url` | optional | The address of **View Energy Usage** for this account on the myTNB website. Only needed if sync reports `meter_error`. When set, it is used instead of `account_number`. |
+| `smartmeter_url` | optional | The address of **View Energy Usage** for this account on the myTNB website. Only needed if sync reports `meter_error`. When set, it is used instead of `account_number` for usage. Keep `account_number` as well: the app uses it to pick this account's amount due on the myTNB dashboard. |
 | `import_entity` | optional | Cumulative grid-import energy sensor (kWh, Wh or MWh). Enables the live estimate. |
 | `export_entity` | optional | Cumulative grid-export energy sensor, for NEM. Needs `import_entity`. |
 | `enabled`, `portal_enabled`, `meter_enabled`, `statistics_enabled` | optional | On/off switches, all on by default. These are the panel switches. |
@@ -147,6 +150,9 @@ Account and settings switches are saved into the app options, so they also show 
 | --- | --- |
 | `sensor.tnb_<id>_portal_usage_cycle` / `_portal_cost_cycle` | kWh and RM so far in the current billing cycle, according to TNB |
 | `sensor.tnb_<id>_portal_usage_latest_day` / `_portal_cost_latest_day` | The most recent day TNB has published |
+| `sensor.tnb_<id>_amount_due` | Amount due on the account page in RM. A credit shows as a negative number. |
+| `sensor.tnb_<id>_due_date` | When the amount is due, if myTNB shows it |
+| `binary_sensor.tnb_<id>_payment_due` | On while an amount is due, off once it is paid |
 | `sensor.tnb_<id>_portal_data_as_of`, `_portal_last_sync`, `_portal_status` | Diagnostics |
 
 **From the energy sensor** (if `import_entity` is set):
@@ -205,6 +211,16 @@ TNB domestic tariff for Peninsular Malaysia, valid 1 July 2025 to 31 December 20
 ## Notifications
 
 When a myTNB sync fails and when it recovers, the app notifies every phone that is switched on in the **Phones** card. It sends one notification per change, not one per retry. With no linked phones, it creates a persistent notification instead.
+
+## Passwords and secrets
+
+- **Where they live:** Home Assistant's Supervisor stores the app options, including `mytnb_password`, `smartmeter_url` and `calendarific_api_key`. The app keeps no copy: its own file `/data/state.json` never holds a password, token or account number. Home Assistant encrypts its backups.
+- **Masked:** password fields show as dots in the Configuration tab.
+- **Never logged:** passwords, tokens and cookie values never appear in the log or the panel, and numbers are masked.
+- **`!secret`:** to keep a value out of the app options, put it in `/config/secrets.yaml` and reference it, for example `mytnb_password: "!secret mytnb_password"`.
+  - The panel switches and live edits keep the reference as it is. The app never writes the value back.
+  - A new or changed secret takes effect after you **restart** the app, because the Supervisor reads `secrets.yaml` only at start. Until then the panel keeps the old value and the log says a restart is needed.
+- Anyone who can open the app's Configuration tab, or log in to the host, can still see the values. Give the Home Assistant admin role only to people you trust.
 
 ## Troubleshooting
 

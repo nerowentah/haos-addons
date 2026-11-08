@@ -25,9 +25,12 @@ from webui import (
     PanelError,
     PanelRouter,
     PanelServer,
+    SecretError,
+    SecretRefs,
     SetupView,
     action,
     badge,
+    initial_options,
     stat,
     toggle,
     wait_for_valid_config,
@@ -93,6 +96,35 @@ class Config:
     notify_on_failure: bool
     sessions: list[Session]
     maintenance_windows: list[maintenance.Window] = field(default_factory=list)
+    log_level: str = "info"
+
+
+TRACE = 5
+NOTICE = 25
+LOG_LEVELS = {
+    "trace": TRACE,
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "notice": NOTICE,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "fatal": logging.CRITICAL,
+}
+
+
+def parse_log_level(raw: dict[str, object]) -> str:
+    """The ``log_level`` option, lower-cased ("info" when missing or unknown)."""
+
+    value = str(raw.get("log_level") or "info").strip().lower()
+    return value if value in LOG_LEVELS else "info"
+
+
+def apply_log_level(name: str) -> None:
+    """Set the root logger to ``name`` (one of LOG_LEVELS)."""
+
+    logging.addLevelName(TRACE, "TRACE")
+    logging.addLevelName(NOTICE, "NOTICE")
+    logging.getLogger().setLevel(LOG_LEVELS.get(name, logging.INFO))
 
 
 def setup_logging() -> None:
@@ -211,8 +243,9 @@ def build_sessions(raw_sessions: list[object]) -> list[Session]:
         url = str(entry.get("url") or "").strip()
 
         if url:
-            if not url.startswith(("http://", "https://")):
-                raise ConfigError(f"Session '{name}': url must start with http:// or https://")
+            parts = urllib.parse.urlsplit(url)
+            if parts.scheme != "https" or not parts.hostname:
+                raise ConfigError(f"Session '{name}': url must be an https:// address (it carries the session token)")
         elif token:
             url = f"{LG_DEV_ENDPOINT}?sessionToken={urllib.parse.quote(token, safe='')}"
         else:
@@ -257,6 +290,7 @@ def load_config(raw_config: dict[str, object]) -> Config:
         notify_on_failure=bool(raw_config.get("notify_on_failure", True)),
         sessions=sessions,
         maintenance_windows=windows,
+        log_level=parse_log_level(raw_config),
     )
 
 
@@ -565,7 +599,8 @@ class App:
         phones_path: Path = PHONES_PATH,
     ) -> None:
         self.config = config
-        self.raw_options = raw_options
+        self.raw_options = raw_options  # as stored: !secret references, never their values
+        self.secrets = SecretRefs()
         self.token = supervisor_token
         self.phones_path = phones_path
         self.phones: dict[str, bool] = load_phone_prefs(phones_path)
@@ -592,6 +627,9 @@ class App:
     def apply_config(self, raw: dict[str, object], config: Config) -> None:
         """Switch to new options in place (main thread)."""
 
+        if config.log_level != self.config.log_level:
+            _LOGGER.info("Log level set to %s", config.log_level)  # before applying: may hide info
+            apply_log_level(config.log_level)
         if config.interval_hours != self.config.interval_hours and self.last_scheduled is not None:
             self.next_run = self.last_scheduled + config.interval_hours * 3600
         newly_enabled = [
@@ -616,13 +654,14 @@ class App:
         with self.options_lock:
             try:
                 base = fetch_options(self.token)
-            except (urllib.error.URLError, OSError, ValueError, ConfigError):
-                base = self.raw_options
+            except (urllib.error.URLError, OSError, ValueError, ConfigError) as err:
+                # Never fall back to the start-up copy: it holds resolved !secret values.
+                raise PanelError("Home Assistant is not reachable; try again") from err
             raw = copy.deepcopy(base)
             mutate(raw)
             try:
-                config = load_config(raw)
-            except ConfigError as err:
+                config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+            except (ConfigError, SecretError) as err:
                 raise PanelError(str(err)) from err
             try:
                 write_options(self.token, raw)
@@ -641,8 +680,8 @@ class App:
         if raw == self.raw_options:
             return
         try:
-            config = load_config(raw)
-        except ConfigError as err:
+            config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+        except (ConfigError, SecretError) as err:
             _LOGGER.error("Ignoring updated options until they are fixed: %s", err)  # noqa: TRY400 - no traceback needed
             self.raw_options = raw
             return
@@ -661,7 +700,7 @@ class App:
         try:
             stored = fetch_options(self.token)
         except (urllib.error.URLError, OSError, ValueError, ConfigError):
-            stored = self.raw_options
+            return  # the start-up copy holds resolved secrets; never write it back
         if "notification_overrides" not in stored:
             return
         old = overrides_from_options(stored)
@@ -952,6 +991,30 @@ sessions:
     token: YOUR_DEV_MODE_SESSION_TOKEN"""
 
 
+def _load_config(
+    token: str, secrets: SecretRefs, router: PanelRouter, stop: threading.Event
+) -> tuple[dict[str, object], Config] | None:
+    """The stored options (!secret references kept) and their config; waits in the panel while invalid."""
+
+    raw_options = initial_options(load_options, lambda: fetch_options(token), secrets)
+
+    def validate(raw: dict[str, object]) -> Config:
+        return load_config(secrets.resolve(raw))  # type: ignore[arg-type]
+
+    try:
+        return raw_options, validate(raw_options)
+    except (ConfigError, SecretError) as err:
+        _LOGGER.error("Configuration problem: %s", err)  # noqa: TRY400 - no traceback needed
+        _LOGGER.info("Waiting for a valid configuration; open the LG DevMode panel for details")
+        view = SetupView("LG webOS DevMode Mgmt", str(err), SETUP_HELP, SETUP_EXAMPLE)
+        router.target = view
+        result = wait_for_valid_config(lambda: fetch_options(token), validate, view, stop)
+        if result is None:
+            return None
+        _LOGGER.info("Configuration is valid now; starting")
+        return result  # type: ignore[return-value]
+
+
 def main() -> None:
     """Entry point."""
 
@@ -976,20 +1039,15 @@ def main() -> None:
     server = PanelServer(WEB_DIR, router.get_state, router.on_toggle, router.on_action)
     server.start()
     try:
-        try:
-            raw_options = load_options()
-            config = load_config(raw_options)
-        except ConfigError as err:
-            _LOGGER.error("Configuration problem: %s", err)  # noqa: TRY400 - no traceback needed
-            _LOGGER.info("Waiting for a valid configuration; open the LG DevMode panel for details")
-            view = SetupView("LG webOS DevMode Mgmt", str(err), SETUP_HELP, SETUP_EXAMPLE)
-            router.target = view
-            result = wait_for_valid_config(lambda: fetch_options(token), load_config, view, stop)
-            if result is None:
-                return
-            raw_options, config = result  # type: ignore[assignment]
-            _LOGGER.info("Configuration is valid now; starting")
+        secrets = SecretRefs()
+        loaded = _load_config(token, secrets, router, stop)
+        if loaded is None:
+            return
+        raw_options, config = loaded
 
+        if config.log_level != "info":
+            _LOGGER.info("Log level set to %s", config.log_level)
+        apply_log_level(config.log_level)
         _LOGGER.info(
             "Configured %d session(s), interval=%s h, retries=%s, notify=%s",
             len(config.sessions),
@@ -1001,6 +1059,7 @@ def main() -> None:
             _LOGGER.info("Session '%s'%s", session.name, "" if session.enabled else " (paused)")
 
         app = App(config, raw_options, token)
+        app.secrets = secrets
         router.target = app
         if stop.is_set():
             return

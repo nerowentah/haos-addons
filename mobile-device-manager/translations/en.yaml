@@ -1,7 +1,10 @@
 configuration:
+  log_level:
+    name: Log level
+    description: How much the app writes to its log - trace, debug, info (default), notice, warning, error or fatal. Use debug while troubleshooting, then set it back to info. Applies without a restart.
   scan_minutes:
     name: Scan interval (minutes)
-    description: How often to rescan the Companion app devices and the automations, scripts and notify calls that use them (5-1440). The panel also has a Rescan now button.
+    description: How often to rescan the Companion app devices and the automations, scripts and notify calls that use them (5-10080, up to 7 days). The panel also has a Rescan now button.
   stale_days:
     name: Stale after (days)
     description: A device that has not reported anything for this many days is flagged Stale (1-365).

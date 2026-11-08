@@ -39,6 +39,7 @@ class SensorDef:
     attributes: bool = False
     last_reset_key: str | None = None
     precision: int | None = None
+    component: str = "sensor"
 
 
 SENSORS: tuple[SensorDef, ...] = (
@@ -73,6 +74,9 @@ SENSORS: tuple[SensorDef, ...] = (
         attributes=True,
     ),
     SensorDef("portal_cost_latest_day", "Portal cost latest day", SOURCE_PORTAL, "MYR", "monetary", precision=2),
+    SensorDef("amount_due", "Amount due", SOURCE_PORTAL, "MYR", "monetary", "total", precision=2),
+    SensorDef("payment_due", "Payment due", SOURCE_PORTAL, icon="mdi:cash-clock", component="binary_sensor"),
+    SensorDef("due_date", "Due date", SOURCE_PORTAL, device_class="date", icon="mdi:calendar-alert"),
     SensorDef("portal_data_as_of", "Portal data as of", SOURCE_PORTAL, device_class="timestamp", diagnostic=True),
     SensorDef("portal_status", "Portal status", SOURCE_PORTAL, icon="mdi:cloud-check-outline", diagnostic=True),
     SensorDef("portal_last_sync", "Portal last sync", SOURCE_PORTAL, device_class="timestamp", diagnostic=True),
@@ -119,10 +123,10 @@ def sensors_for(account: Account) -> list[SensorDef]:
     return [s for s in SENSORS if s.source in sources]
 
 
-def entity_id(account_id: str, key: str) -> str:
+def entity_id(account_id: str, key: str, component: str = "sensor") -> str:
     """Entity id of an account sensor (the same for MQTT and the states-API fallback)."""
 
-    return f"sensor.tnb_{account_id}_{key}"
+    return f"{component}.tnb_{account_id}_{key}"
 
 
 HOLIDAY_ENTITY_ID = "binary_sensor.tnb_holiday_today"
@@ -147,6 +151,8 @@ def state_value(sensor: SensorDef, value: object) -> str:
 
     if value is None:
         return "unknown"
+    if sensor.component == "binary_sensor":
+        return "on" if value else "off"
     if isinstance(value, float) and sensor.precision is not None:
         return f"{value:.{sensor.precision}f}"
     return str(value)
@@ -176,6 +182,15 @@ def discovery_topic(component: str, object_id: str) -> str:
     return f"{DISCOVERY_PREFIX}/{component}/{BASE_TOPIC}/{object_id}/config"
 
 
+def value_template(sensor: SensorDef) -> str:
+    """Template reading one key of the account's JSON state (ON/OFF/None for a binary sensor)."""
+
+    if sensor.component == "binary_sensor":
+        key = f"value_json.{sensor.key}"
+        return f"{{% if {key} is true %}}ON{{% elif {key} is false %}}OFF{{% else %}}None{{% endif %}}"
+    return f"{{{{ value_json.{sensor.key} }}}}"
+
+
 def sensor_config(account: Account, sensor: SensorDef, version: str) -> dict[str, object]:
     """Discovery payload for one account sensor."""
 
@@ -183,9 +198,9 @@ def sensor_config(account: Account, sensor: SensorDef, version: str) -> dict[str
     payload: dict[str, object] = {
         "name": sensor.name,
         "unique_id": unique_id,
-        "default_entity_id": entity_id(account.account_id, sensor.key),
+        "default_entity_id": entity_id(account.account_id, sensor.key, sensor.component),
         "state_topic": state_topic(account.account_id),
-        "value_template": f"{{{{ value_json.{sensor.key} }}}}",
+        "value_template": value_template(sensor),
         "availability": [
             {"topic": AVAILABILITY_TOPIC},
             {"topic": source_availability_topic(account.account_id, sensor.source)},

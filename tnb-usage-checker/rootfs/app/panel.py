@@ -74,6 +74,15 @@ def _daily_chart(history: dict[date, float]) -> dict[str, object] | None:
     )
 
 
+def _day(value: object) -> str:
+    """``23 Nov`` for an ISO date (the text itself when unreadable)."""
+
+    try:
+        return date.fromisoformat(str(value)).strftime("%d %b")
+    except ValueError:
+        return str(value)
+
+
 def _account_card(
     runtime: AccountRuntime, account: Account, history: dict[date, float] | None = None, today: date | None = None
 ) -> dict[str, object]:
@@ -109,6 +118,12 @@ def _account_card(
             stats += [
                 stat("myTNB usage (cycle)", _kwh(values.get("portal_usage_cycle")), "kWh"),
                 stat("myTNB cost (cycle)", _money(values.get("portal_cost_cycle"))),
+            ]
+        if values.get("amount_due") is not None:
+            due = values.get("due_date")
+            stats += [
+                stat("Amount due", _money(values.get("amount_due"))),
+                stat("Payment", ("Due" + (f" by {_day(due)}" if due else "")) if values.get("payment_due") else "Paid"),
             ]
         stats += [
             stat("myTNB data up to", _when(values.get("portal_data_as_of"))),
@@ -249,6 +264,14 @@ def build_state(app: App) -> dict[str, object]:
                 icon="mdi:bell",
             ),
             toggle(
+                "notify_on_unpaid",
+                "Unpaid bill notifications",
+                config.notify_on_unpaid,
+                "Notify the phones below when myTNB shows a new amount due, weekly while it stays unpaid, "
+                "and once when it is paid",
+                icon="mdi:cash-clock",
+            ),
+            toggle(
                 "daily_report",
                 "Daily usage report",
                 config.daily_report,
@@ -278,7 +301,7 @@ def build_state(app: App) -> dict[str, object]:
                 name.removeprefix("mobile_app_").replace("_", " "),
                 phones.get(name, True) is not False,
                 name,
-                disabled=not config.notify_on_failure,
+                disabled=not (config.notify_on_failure or config.notify_on_unpaid or config.daily_report),
                 icon="mdi:cellphone",
             )
             for name in sorted(app.discovered)
@@ -300,7 +323,7 @@ def apply_toggle(options: dict[str, object], toggle_id: str, value: bool) -> Non
     """Write one toggle into a raw options dict (mutates ``options``)."""
 
     kind, _, rest = toggle_id.partition(":")
-    if kind in ("notify_on_failure", "mqtt", "debug_login", "daily_report") and not rest:
+    if kind in ("notify_on_failure", "notify_on_unpaid", "mqtt", "debug_login", "daily_report") and not rest:
         options[kind] = value
         return
     if kind == "account":
