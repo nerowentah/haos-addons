@@ -18,7 +18,17 @@ from types import FrameType
 
 import mqtt_pub
 import panel
-from config import Account, Config, ConfigError, load_config, load_options, mask_name, mask_number
+import unpaid
+from config import (
+    Account,
+    Config,
+    ConfigError,
+    apply_log_level,
+    load_config,
+    load_options,
+    mask_name,
+    mask_number,
+)
 from ranhill import AccountNotFoundError, Bill, ParseError, SajClient, SajError
 from store import Store
 from supervisor import (
@@ -38,7 +48,9 @@ VERSION = os.environ.get("RANHILL_SAJ_VERSION", "dev")
 LOOP_SECONDS = 60  # longest idle sleep; the loop wakes earlier for due work or panel actions
 MIN_SLEEP_SECONDS = 1
 STORE_SAVE_SECONDS = 60
+CHECK_INTERVAL_SECONDS = 7 * 24 * 3600  # bills are monthly: a weekly check (plus Check now) is plenty
 RETRY_SECONDS = 30 * 60
+PROBLEM_RETRY_SECONDS = 24 * 3600  # unknown account or changed page: retry daily, not weekly
 STAGGER_SECONDS = 20
 FIRST_CHECK_SECONDS = 5
 TRANSIENT_FAILURES_BEFORE_NOTIFY = 3
@@ -54,7 +66,8 @@ STATUS_PENDING = "pending"
 STATUS_NOT_FOUND = "not_found"
 STATUS_LAYOUT = "layout_changed"
 STATUS_ERROR = "error"
-PERSISTED_KEYS = ("amount_due", "amount_changed", "status", "last_checked")
+RETIRED_OPTIONS = ("poll_interval_hours",)
+PERSISTED_KEYS = ("amount_due", "payment_due", "amount_changed", "status", "last_checked")
 
 
 def now_iso() -> str:
@@ -74,11 +87,25 @@ class AccountRuntime:
     failures: int = 0
     failure_notified: bool = False
     last_error: str = ""
+    unpaid_notified_at: str = ""  # when the last unpaid-bill notice went out
 
     def to_dict(self) -> dict[str, object]:
         """What survives a restart (no raw account number or name)."""
 
-        return {**{k: self.values.get(k) for k in PERSISTED_KEYS}, "holder": self.holder}
+        return {
+            **{k: self.values.get(k) for k in PERSISTED_KEYS},
+            "holder": self.holder,
+            "unpaid_notified_at": self.unpaid_notified_at or None,
+        }
+
+    def seconds_until_due(self) -> float | None:
+        """Seconds left of the weekly interval after the last good check (None: check soon)."""
+
+        checked = unpaid.parse_time(self.values.get("last_checked"))
+        if self.values.get("status") != STATUS_OK or checked is None:
+            return None
+        elapsed = (datetime.now().astimezone() - checked).total_seconds()
+        return CHECK_INTERVAL_SECONDS - elapsed if 0 <= elapsed < CHECK_INTERVAL_SECONDS else None
 
 
 class App:
@@ -128,7 +155,8 @@ class App:
             previous = runtime.account if runtime else None
             if runtime is None or previous is None or previous.account_number != account.account_number:
                 runtime = self._new_runtime(account, saved, fresh=runtime is not None)
-                runtime.next_check = start + FIRST_CHECK_SECONDS + index * STAGGER_SECONDS
+                soon = FIRST_CHECK_SECONDS + index * STAGGER_SECONDS
+                runtime.next_check = start + max(soon, runtime.seconds_until_due() or 0.0)
             else:
                 runtime.account = account
                 if not previous.enabled and account.enabled:
@@ -147,6 +175,7 @@ class App:
         if not fresh and isinstance(row, dict) and row.get("number") == mask_number(account.account_number):
             runtime.values.update({k: row.get(k) for k in PERSISTED_KEYS if row.get(k) is not None})
             runtime.holder = str(row.get("holder") or "")
+            runtime.unpaid_notified_at = str(row.get("unpaid_notified_at") or "")
         return runtime
 
     def _save_runtime(self, runtime: AccountRuntime) -> None:
@@ -171,8 +200,34 @@ class App:
         self.raw_options = raw
         if old.mqtt != config.mqtt:
             self.next_mqtt_check = 0.0
+        if old.log_level != config.log_level:
+            _LOGGER.info("Log level set to %s", config.log_level)  # before applying: may hide info
+            apply_log_level(config.log_level)
         self.publish_discovery()
         _LOGGER.info("Applied updated options (%d account(s))", len(config.accounts))
+
+    def migrate_options(self) -> None:
+        """Drop options this version no longer has (the check interval is fixed at a week now).
+
+        Reads the stored options: /data/options.json is already filtered to the
+        schema, so a retired key only shows up there.
+        """
+
+        try:
+            stored = self.supervisor.fetch_options()
+        except SupervisorError:
+            return
+        retired = [key for key in RETIRED_OPTIONS if key in stored]
+        if not retired:
+            return
+        raw = {k: v for k, v in stored.items() if k not in retired}
+        try:
+            self.supervisor.write_options(raw)
+        except SupervisorError:
+            _LOGGER.warning("Could not remove %s from the options; it is ignored", ", ".join(retired))
+            return
+        self.raw_options = raw
+        _LOGGER.info("Removed retired option(s) %s; accounts are now checked weekly", ", ".join(retired))
 
     def update_options(self, mutate: Callable[[dict[str, object]], None]) -> None:
         """Change the saved options from the panel and apply them right away (any thread)."""
@@ -282,12 +337,13 @@ class App:
             self.phones[name] = value
             self.store.dirty = True
 
-    def notify(self, account: Account, title: str, message: str) -> None:
-        """Send a notification for an account when enabled."""
+    def notify(self, account: Account, title: str, message: str, *, bill: bool = False) -> None:
+        """Send a notification for an account when enabled (``bill``: an unpaid-bill notice)."""
 
-        if self.config.notify_on_failure:
+        if self.config.notify_on_unpaid if bill else self.config.notify_on_failure:
             targets = effective_targets(self.discovered, self.phones)
-            self.supervisor.notify(targets, title, message, notification_id(account.account_id))
+            suffix = "_bill" if bill else ""
+            self.supervisor.notify(targets, title, message, notification_id(account.account_id) + suffix)
 
     # -- MQTT broker (optional, detected while running) -------------------------
     def mqtt_status(self) -> str:
@@ -391,7 +447,7 @@ class App:
                 attributes.update(self._amount_attributes(runtime))
             value = mqtt_pub.state_value(sensor, runtime.values.get(sensor.key))
             self._post_state(
-                mqtt_pub.entity_id(account.account_id, sensor.key),
+                mqtt_pub.entity_id(account.account_id, sensor.key, sensor.component),
                 value if account.enabled else "unavailable",
                 attributes,
             )
@@ -399,7 +455,11 @@ class App:
     def _sync_rest_entities(self) -> None:
         """Post every entity through the states API and drop ones that no longer exist."""
 
-        current = [mqtt_pub.entity_id(rt.account.account_id, s.key) for rt in self.runtimes for s in mqtt_pub.SENSORS]
+        current = [
+            mqtt_pub.entity_id(rt.account.account_id, s.key, s.component)
+            for rt in self.runtimes
+            for s in mqtt_pub.SENSORS
+        ]
         for stale in set(self._rest_entities()) - set(current):
             try:
                 self.supervisor.core_delete(f"/states/{stale}")
@@ -440,7 +500,7 @@ class App:
         published: list[str] = []
         for runtime in self.runtimes:
             for sensor in mqtt_pub.SENSORS:
-                topic = mqtt_pub.discovery_topic("sensor", f"{runtime.account.account_id}_{sensor.key}")
+                topic = mqtt_pub.discovery_topic(sensor.component, f"{runtime.account.account_id}_{sensor.key}")
                 self.publisher.publish_json(topic, mqtt_pub.sensor_config(runtime.account, sensor, VERSION))
                 published.append(topic)
         previous = self.store.data.get("discovery_topics")
@@ -473,16 +533,16 @@ class App:
         """Look up the amount due of one account and update its sensors."""
 
         account = runtime.account
-        interval = self.config.poll_interval_hours * 3600
+        interval = CHECK_INTERVAL_SECONDS
         _LOGGER.info("Checking Ranhill SAJ account '%s'", account.name)
         try:
             bill = self.client_factory().lookup(account.account_number)
         except AccountNotFoundError as err:
-            self._failed(runtime, STATUS_NOT_FOUND, str(err), interval)
+            self._failed(runtime, STATUS_NOT_FOUND, str(err), PROBLEM_RETRY_SECONDS)
             return
         except ParseError as err:
             self._save_unrecognised(err.page)
-            self._failed(runtime, STATUS_LAYOUT, str(err), interval)
+            self._failed(runtime, STATUS_LAYOUT, str(err), PROBLEM_RETRY_SECONDS)
             return
         except SajError as err:
             self._failed(runtime, STATUS_ERROR, str(err), min(interval, RETRY_SECONDS))
@@ -502,9 +562,17 @@ class App:
                     float(previous),  # type: ignore[arg-type]
                     bill.amount_due,
                 )
-        runtime.values.update({"amount_due": bill.amount_due, "status": STATUS_OK, "last_checked": checked})
+        runtime.values.update(
+            {
+                "amount_due": bill.amount_due,
+                "payment_due": unpaid.is_due(bill.amount_due),
+                "status": STATUS_OK,
+                "last_checked": checked,
+            }
+        )
         runtime.holder = mask_name(bill.holder) if bill.holder else ""
         _LOGGER.info("Account '%s': amount due RM %.2f", account.name, bill.amount_due)
+        self._bill_notice(runtime, previous, bill.amount_due)
         if runtime.failure_notified:
             self.notify(
                 account, "Ranhill SAJ check recovered", f"The water bill for '{account.name}' is checked again."
@@ -515,6 +583,23 @@ class App:
         runtime.next_check = time.monotonic() + interval
         self._save_runtime(runtime)
         self.publish_state(runtime)
+
+    def _bill_notice(self, runtime: AccountRuntime, previous: object, amount: float) -> None:
+        """Tell the phones about a new or still-unpaid bill (and once when it is paid)."""
+
+        now = datetime.now().astimezone()
+        kind = unpaid.unpaid_notice(
+            float(previous) if isinstance(previous, int | float) else None,
+            amount,
+            unpaid.parse_time(runtime.unpaid_notified_at),
+            now,
+        )
+        if kind is None:
+            return
+        _LOGGER.info("Account '%s': %s bill notice", runtime.account.name, kind)
+        title, message = unpaid.notice_text(kind, "Water", runtime.account.name, amount)
+        self.notify(runtime.account, title, message, bill=True)
+        runtime.unpaid_notified_at = "" if kind == unpaid.PAID else now.isoformat(timespec="seconds")
 
     def _failed(self, runtime: AccountRuntime, status: str, reason: str, retry_seconds: int) -> None:
         account = runtime.account
@@ -687,6 +772,9 @@ def main() -> None:
             raw_options, config = result  # type: ignore[assignment]
             _LOGGER.info("Configuration is valid now; starting")
 
+        if config.log_level != "info":
+            _LOGGER.info("Log level set to %s", config.log_level)
+        apply_log_level(config.log_level)
         for account in config.accounts:
             _LOGGER.info("Account '%s': %s", account.name, mask_number(account.account_number))
         store = Store()
@@ -695,6 +783,7 @@ def main() -> None:
         router.target = app
         if stop.is_set():
             return
+        app.migrate_options()
         app.run()
     finally:
         server.stop()

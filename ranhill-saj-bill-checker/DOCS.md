@@ -25,8 +25,8 @@ It uses the public **Quick Payment** page at ranhillsaj.com.my, which needs no l
 ## Configuration
 
 ```yaml
-poll_interval_hours: 6
 notify_on_failure: true
+notify_on_unpaid: true
 mqtt: true
 accounts:
   - name: "Home"
@@ -43,9 +43,12 @@ It is printed on your bill as **No. Akaun**. It has 16 characters: **8 digits, a
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `poll_interval_hours` | `6` | How often to look up each account (1–24 hours). Bills are monthly, so a few times a day is plenty. |
 | `notify_on_failure` | `true` | Notify your phones when checks fail and when they recover. |
+| `notify_on_unpaid` | `true` | Notify when an account has an amount due, again at each weekly check while it stays unpaid, and once when it is paid. |
 | `mqtt` | `true` | Use MQTT discovery when a broker is available. See [MQTT or not](#mqtt-or-not). |
+| `log_level` | `info` | How much is logged: `trace`, `debug`, `info`, `notice`, `warning`, `error` or `fatal`. Use `debug` while troubleshooting. Applies without a restart. |
+
+Each account is checked **once a week**; bills are monthly. Press **Check now** in the panel any time, for example right after paying. After a restart the weekly schedule continues from the last check. An unknown account number or a changed page is retried daily.
 
 ### Account options
 
@@ -64,12 +67,12 @@ The app does not crash. The **SAJ Water** panel shows what is wrong, with an exa
 Open **SAJ Water** from the sidebar.
 
 - **One card per account:**
-  - amount due
+  - amount due, and whether a payment is due or the bill is paid
   - masked account number and holder initials
   - when it was last checked and when the amount last changed
   - a **Check now** button and an on/off switch
   - when a check fails, the reason, shown on the card
-- **Settings:** the check interval, how entities reach Home Assistant, and switches for MQTT and failure notifications.
+- **Settings:** how entities reach Home Assistant, and switches for MQTT, failure notifications and unpaid-bill notifications.
 - **Phones:** every Companion app linked to your Home Assistant, each with its own notification switch. New phones are switched on.
 
 Switches apply immediately and are saved to the app options. Edits in the Configuration tab are picked up within about 30 seconds.
@@ -91,6 +94,7 @@ Switches apply immediately and are saved to the app options. Edits in the Config
 | Entity | Description |
 | --- | --- |
 | `sensor.saj_<id>_amount_due` | Amount due in RM. A credit shows as a negative number. The attributes hold the masked account number and holder initials. |
+| `binary_sensor.saj_<id>_payment_due` | On while an amount is due, off once it is paid (or in credit) |
 | `sensor.saj_<id>_amount_changed` | When the amount due last changed, which is usually when a new bill was issued or a payment was posted |
 | `sensor.saj_<id>_status` | Diagnostic: `ok`, `pending`, `not_found`, `layout_changed` or `error` |
 | `sensor.saj_<id>_last_checked` | Diagnostic: when the last check ran |
@@ -129,7 +133,7 @@ When an account cannot be checked, and again when it recovers, the app notifies 
 - **`not_found` (Account not found):** Ranhill SAJ does not recognise the number.
   - Compare it with the bill. It must be 8 digits, a letter and 7 digits.
   - Try the same number at ranhillsaj.com.my → **Pay Bills** in a browser.
-  - The app checks again after one full interval, or when you press **Check now**.
+  - The app checks again after a day, or when you press **Check now**.
 - **`layout_changed` (Site changed):** the page loaded, but it no longer looks the way the app expects.
   - The app saves that page to `/data/last_unrecognised_page.html` inside the app (it may contain your name and address).
   - Please open an issue so the parser can be updated. Don't attach the page unless you have removed your details from it.

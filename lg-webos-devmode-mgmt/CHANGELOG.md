@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.6
+
+- **Log level** (`log_level`, default `info`): `trace`, `debug`, `info`, `notice`, `warning`, `error` or `fatal`. It applies without a restart.
+
 ## 1.7.5
 
 - **LG maintenance windows** (`maintenance_windows`, default `daily 00:00-06:00`, Home Assistant's timezone). No renewal is attempted inside a window: a renewal due then waits until it ends, and **Renew now** says when that is. The Schedule card shows the windows.

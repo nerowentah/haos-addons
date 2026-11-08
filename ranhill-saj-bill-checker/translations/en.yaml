@@ -1,10 +1,13 @@
 configuration:
-  poll_interval_hours:
-    name: Check interval (hours)
-    description: How often to look up the amount due of each account (1-24). Bills are monthly, so every few hours is plenty. The panel also has a Check now button.
+  log_level:
+    name: Log level
+    description: How much the app writes to its log - trace, debug, info (default), notice, warning, error or fatal. Use debug while troubleshooting, then set it back to info. Applies without a restart.
   notify_on_failure:
     name: Notify on failure
     description: Push a notification when an account cannot be checked (and again when it recovers). An unknown account number notifies at once; site errors after 3 failed checks in a row. Phones are found automatically; switch individual phones on or off in the SAJ Water panel.
+  notify_on_unpaid:
+    name: Notify on unpaid bill
+    description: Push a notification when an account has an amount due, a reminder at each weekly check while it stays unpaid, and one when it is paid. Also a switch in the SAJ Water panel.
   mqtt:
     name: Use MQTT when available
     description: Publish one MQTT device per account when a broker (e.g. the Mosquitto broker app) is found; it is detected automatically while the app runs. Off, or without a broker, entities are created through the Home Assistant states API instead.

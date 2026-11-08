@@ -22,10 +22,12 @@ import panel
 import report
 import stats
 import tariff
-from config import Account, Config, ConfigError, load_config, load_options
+import unpaid
+from config import Account, Config, ConfigError, apply_log_level, load_config, load_options
 from holidays import HolidayCalendar
 from meter import MYT, AccountMeter, billing_period_start, is_peak, to_kwh
 from mytnb import (
+    BillInfo,
     CredentialsError,
     MaintenanceError,
     MeterNotFoundError,
@@ -157,8 +159,12 @@ class App:
             else:
                 runtime.meter = None
 
-            creds = (account.mytnb_username, account.mytnb_password, account.ca_no)
-            old_creds = (previous.mytnb_username, previous.mytnb_password, previous.ca_no) if previous else None
+            creds = (account.mytnb_username, account.mytnb_password, account.ca_no, account.bill_no)
+            old_creds = (
+                (previous.mytnb_username, previous.mytnb_password, previous.ca_no, previous.bill_no)
+                if previous
+                else None
+            )
             if not account.has_portal:
                 runtime.portal = None
             elif runtime.portal is None or creds != old_creds:
@@ -194,6 +200,9 @@ class App:
             self.next_mqtt_check = 0.0
         if old.debug_login != config.debug_login:
             _LOGGER.info("Verbose myTNB login log %s", "on" if config.debug_login else "off")
+        if old.log_level != config.log_level:
+            _LOGGER.info("Log level set to %s", config.log_level)  # before applying: may hide info
+            apply_log_level(config.log_level)
         self.publish_discovery()
         _LOGGER.info("Applied updated options (%d account(s))", len(config.accounts))
 
@@ -331,12 +340,13 @@ class App:
             self.phones[name] = value
             self.store.dirty = True
 
-    def notify(self, account: Account, title: str, message: str) -> None:
-        """Send a notification for an account when enabled."""
+    def notify(self, account: Account, title: str, message: str, *, bill: bool = False) -> None:
+        """Send a notification for an account when enabled (``bill``: an unpaid-bill notice)."""
 
-        if self.config.notify_on_failure:
+        if self.config.notify_on_unpaid if bill else self.config.notify_on_failure:
             targets = effective_targets(self.discovered, self.phones)
-            self.supervisor.notify(targets, title, message, notification_id(account.account_id))
+            suffix = "_bill" if bill else ""
+            self.supervisor.notify(targets, title, message, notification_id(account.account_id) + suffix)
 
     # -- MQTT broker (optional, detected while running) -------------------------
     def mqtt_status(self) -> str:
@@ -440,7 +450,7 @@ class App:
             attributes.update(extra.get(sensor.key) or {})
             value = mqtt_pub.state_value(sensor, runtime.values.get(sensor.key))
             state = value if active[sensor.source] else "unavailable"
-            self._post_state(mqtt_pub.entity_id(account.account_id, sensor.key), state, attributes)
+            self._post_state(mqtt_pub.entity_id(account.account_id, sensor.key, sensor.component), state, attributes)
 
     def _post_holiday(self) -> None:
         today = datetime.now(MYT).date()
@@ -454,7 +464,7 @@ class App:
         """Post every entity through the states API and drop ones that no longer exist."""
 
         current = [
-            mqtt_pub.entity_id(rt.account.account_id, s.key)
+            mqtt_pub.entity_id(rt.account.account_id, s.key, s.component)
             for rt in self.runtimes
             for s in mqtt_pub.sensors_for(rt.account)
         ]
@@ -496,7 +506,7 @@ class App:
         published: list[str] = []
         for runtime in self.runtimes:
             for sensor in mqtt_pub.sensors_for(runtime.account):
-                topic = mqtt_pub.discovery_topic("sensor", f"{runtime.account.account_id}_{sensor.key}")
+                topic = mqtt_pub.discovery_topic(sensor.component, f"{runtime.account.account_id}_{sensor.key}")
                 self.publisher.publish_json(topic, mqtt_pub.sensor_config(runtime.account, sensor, VERSION))
                 published.append(topic)
         holiday_topic = mqtt_pub.discovery_topic("binary_sensor", "holiday_today")
@@ -738,6 +748,8 @@ class App:
             }
         )
         runtime.portal_attributes = {"date": latest_day.isoformat() if latest_day else None}
+        if data.bill is not None:
+            self._bill_succeeded(runtime, data.bill)
         _LOGGER.info(
             "Portal '%s': %d usage / %d cost point(s); cycle %.2f kWh, RM %.2f",
             account.name,
@@ -755,6 +767,39 @@ class App:
         runtime.maintenance_backoff.reset()
         runtime.next_portal = time.monotonic() + interval
         self.publish_state(runtime)
+
+    def _bill_succeeded(self, runtime: AccountRuntime, bill: BillInfo) -> None:
+        """Publish the amount due and tell the phones about a new or still-unpaid bill."""
+
+        account = runtime.account
+        runtime.values.update(
+            {
+                "amount_due": round(bill.amount_due, 2),
+                "payment_due": unpaid.is_due(bill.amount_due),
+                "due_date": bill.due_date.isoformat() if bill.due_date else None,
+            }
+        )
+        _LOGGER.info("Portal '%s': amount due RM %.2f", account.name, bill.amount_due)
+        saved = self.store.section("bills")
+        row = saved.get(account.account_id) if isinstance(saved.get(account.account_id), dict) else {}
+        previous = row.get("amount_due")  # type: ignore[union-attr]
+        now = datetime.now(MYT)
+        kind = unpaid.unpaid_notice(
+            float(previous) if isinstance(previous, int | float) else None,
+            bill.amount_due,
+            unpaid.parse_time(row.get("notified_at")),  # type: ignore[union-attr]
+            now,
+        )
+        notified_at = row.get("notified_at")  # type: ignore[union-attr]
+        if kind is not None:
+            _LOGGER.info("Account '%s': %s bill notice", account.name, kind)
+            title, message = unpaid.notice_text(kind, "TNB", account.name, bill.amount_due, bill.due_date)
+            self.notify(account, title, message, bill=True)
+            notified_at = None if kind == unpaid.PAID else now.isoformat(timespec="seconds")
+        new_row = {"amount_due": round(bill.amount_due, 2), "notified_at": notified_at}
+        if row != new_row:
+            saved[account.account_id] = new_row
+            self.store.dirty = True
 
     def _remember_daily_history(self, account: Account, data: PortalData) -> None:
         """Keep the last complete days (kWh) in /data for the panel's daily chart."""
@@ -996,6 +1041,9 @@ def main() -> None:
             raw_options, config = result  # type: ignore[assignment]
             _LOGGER.info("Configuration is valid now; starting")
 
+        if config.log_level != "info":
+            _LOGGER.info("Log level set to %s", config.log_level)
+        apply_log_level(config.log_level)
         _log_accounts(config)
         store = Store()
         store.load()

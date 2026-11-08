@@ -22,7 +22,7 @@ import urllib.parse
 import urllib.request
 import zlib
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import maintenance
 
@@ -52,6 +52,20 @@ HTML_HEADERS = {
 }
 
 SMARTMETER_PATH = "/AccountManagement/SmartMeter/Index/TRIL?caNo={ca_no}"
+# The bill: the account dashboard shows one account at a time (the one picked in its account list).
+BILL_DASHBOARD_URL = f"{ACCOUNT_BASE}/AccountManagement/IndividualDashboard"
+SELECT_ACCOUNT_URL = f"{BILL_DASHBOARD_URL}/CheckIsPrepaymentCA?selectedAccountID={{account_id}}"
+ACCOUNT_ITEM_RE = re.compile(
+    r'<li\s+id="([0-9a-fA-F-]{36})"\s+class="[^"]*\baccountListItem\b[^"]*"[^>]*>(.*?)</li>', re.DOTALL
+)
+ACCOUNT_ITEM_NUMBER_RE = re.compile(r"-\s*(\d{10,14})\s*<")
+SELECTED_ACCOUNT_RE = re.compile(r"selectedAccountNo=(\d{10,14})")
+# "My Amount Due" / "I've cleared all bills" / "I've paid extra", then the big figure and maybe "Due Date: 23-Nov-2026".
+BILL_HEADLINE_RE = re.compile(r'class="card-text-20-14 darken"[^>]*>\s*(.*?)\s*</span>', re.DOTALL)
+BILL_AMOUNT_RE = re.compile(r'class="card-text-48-24-black"[^>]*>\s*([\d,]+(?:\.\d{1,2})?)\s*</span>')
+BILL_DUE_DATE_RE = re.compile(r"Due Date:\s*(\d{1,2}-[A-Za-z]{3}-\d{4})")
+BILL_SECTION_HEADLINES = {"billing summary", "payment history"}
+BILL_CREDIT_WORDS = ("paid extra", "credit", "lebihan")
 # Links the portal itself renders (e.g. "View Energy Usage"); caNo may be encoded.
 SMARTMETER_LINK_RE = re.compile(r"/AccountManagement/SmartMeter/Index/TRIL\?caNo=([^\"'\s<>&#]+)")
 FORM_FIELD_RE = re.compile(r'name="([^"]+)" value="([^"]*)"')
@@ -112,12 +126,21 @@ class EnergyPoint:
     value: float
 
 
+@dataclass(frozen=True, slots=True)
+class BillInfo:
+    """What the account page says is owed (amount in RM; a credit is negative)."""
+
+    amount_due: float
+    due_date: date | None = None
+
+
 @dataclass(slots=True)
 class PortalData:
-    """Usage (kWh) and cost (RM) timeseries for one meter."""
+    """Usage (kWh) and cost (RM) timeseries for one meter, plus the bill when the account page shows it."""
 
     usage: list[EnergyPoint]
     cost: list[EnergyPoint]
+    bill: BillInfo | None = None
 
 
 @dataclass(slots=True)
@@ -356,6 +379,54 @@ def parse_points(payload: object) -> list[EnergyPoint]:
     return points
 
 
+def parse_bill(body: str) -> BillInfo | None:
+    """The amount due (a credit is negative) and due date from the account dashboard, or None.
+
+    The bill card leads with "My Amount Due", "I've cleared all bills" or
+    "I've paid extra", followed by the large figure and, when something is
+    owed, "Due Date: 23-Nov-2026".
+    """
+
+    for headline in BILL_HEADLINE_RE.finditer(body):
+        title = html.unescape(" ".join(headline.group(1).split())).lower()
+        if title in BILL_SECTION_HEADLINES:
+            continue
+        following = body[headline.end() :]
+        nxt = BILL_HEADLINE_RE.search(following)
+        card = following[: nxt.start()] if nxt else following
+        amount_match = BILL_AMOUNT_RE.search(card)
+        if amount_match is None:
+            continue
+        amount = float(amount_match.group(1).replace(",", ""))
+        if any(word in title for word in BILL_CREDIT_WORDS):
+            amount = -amount
+        due = None
+        if amount > 0 and (due_match := BILL_DUE_DATE_RE.search(card)):
+            try:
+                due = datetime.strptime(due_match.group(1), "%d-%b-%Y").date()
+            except ValueError:
+                due = None
+        return BillInfo(amount_due=amount, due_date=due)
+    return None
+
+
+def parse_account_list(body: str) -> dict[str, str]:
+    """Account number -> the dashboard's account id (GUID), from its account switcher."""
+
+    accounts: dict[str, str] = {}
+    for account_id, inner in ACCOUNT_ITEM_RE.findall(body):
+        if number := ACCOUNT_ITEM_NUMBER_RE.search(inner):
+            accounts.setdefault(number.group(1), account_id)
+    return accounts
+
+
+def selected_account(body: str) -> str | None:
+    """The account number the dashboard is showing."""
+
+    match = SELECTED_ACCOUNT_RE.search(body)
+    return match.group(1) if match else None
+
+
 class MyTnbSession:
     """Logged-in portal session for one TNB account number (own cookie jar).
 
@@ -363,7 +434,7 @@ class MyTnbSession:
     so the smartliving dashboard is always bound to the right meter.
     """
 
-    def __init__(self, username: str, password: str, ca_no: str) -> None:
+    def __init__(self, username: str, password: str, ca_no: str, bill_no: str = "") -> None:
         self._username = username
         self._password = password
         self.ca_no = ca_no
@@ -371,6 +442,9 @@ class MyTnbSession:
         self._jar = http.cookiejar.CookieJar()
         self._client = _KeepAliveClient(self._jar)
         self.sdpudcid: str | None = None
+        # The printed account number picks this account on the bill dashboard (ca_no may be an encoded token).
+        self.bill_no = bill_no or (ca_no if ca_no.isdigit() else "")
+        self._bill_warned = False
 
     # -- HTTP -----------------------------------------------------------------
     def _send(
@@ -512,11 +586,77 @@ class MyTnbSession:
         if self.sdpudcid is None:
             self.login()
         try:
-            return self._fetch_all(start, end)
+            data = self._fetch_all(start, end)
         except AuthError:
             _LOGGER.info("Portal session expired; logging in again")
             self.login()
-            return self._fetch_all(start, end)
+            data = self._fetch_all(start, end)
+        data.bill = self.fetch_bill()
+        return data
+
+    def fetch_bill(self) -> BillInfo | None:
+        """The amount due from the account dashboard (None when unreadable; never fails the sync)."""
+
+        try:
+            page = self.bill_dashboard()
+        except MyTnbError as err:
+            _LOGGER.warning("Could not load the myTNB account dashboard for the bill: %s", err)
+            return None
+        if page is None:
+            return None
+        bill = parse_bill(page)
+        if bill is None:
+            _LOGGER.warning("The myTNB dashboard shows no amount due for account %s", _mask(self.bill_no))
+        return bill
+
+    def _warn_once(self, message: str) -> None:
+        if not self._bill_warned:
+            self._bill_warned = True
+            _LOGGER.warning(message)
+        else:
+            _LOGGER.debug(message)
+
+    def _get_dashboard(self, step: str) -> str:
+        response = self._send(BILL_DASHBOARD_URL, headers=HTML_HEADERS, step=step)
+        if response.status != HTTP_OK or "/Account/Login" in response.url:
+            raise PortalError(f"Account dashboard returned HTTP {response.status} at {_where(response.url)}")
+        return response.body
+
+    def bill_dashboard(self) -> str | None:
+        """The account dashboard showing this account, switching to it in the account list if needed."""
+
+        body = self._get_dashboard("bill dashboard")
+        accounts = parse_account_list(body)
+        target = self.bill_no
+        if not target:
+            if len(accounts) <= 1:
+                return body  # one account on this login: it is the one shown
+            self._warn_once(
+                "This myTNB login has several accounts; add account_number (the number on the bill) "
+                "to read this account's amount due"
+            )
+            return None
+        if selected_account(body) == target:
+            return body
+        return self._switch_dashboard(target, accounts)
+
+    def _switch_dashboard(self, target: str, accounts: dict[str, str]) -> str | None:
+        """Pick ``target`` in the dashboard's account list, then reload the dashboard."""
+
+        account_id = accounts.get(target)
+        if account_id is None:
+            self._warn_once(f"Account {_mask(target)} is not in the myTNB dashboard's account list; no amount due")
+            return None
+        headers = {**HTML_HEADERS, "Accept": "application/json", "X-Requested-With": "XMLHttpRequest"}
+        choice = self._send(SELECT_ACCOUNT_URL.format(account_id=account_id), headers=headers, step="select account")
+        if choice.body.strip().lower() == "true":
+            self._warn_once(f"Account {_mask(target)} is a prepaid account; there is no bill to read")
+            return None
+        body = self._get_dashboard("bill dashboard (switched)")
+        if selected_account(body) != target:
+            self._warn_once(f"The myTNB dashboard did not switch to account {_mask(target)}; no amount due")
+            return None
+        return body
 
     def _fetch_all(self, start: datetime, end: datetime) -> PortalData:
         errors: list[PortalError] = []
@@ -592,7 +732,7 @@ class MyTnbSession:
 
 
 def _cli() -> None:
-    """Smoke test: ``MYTNB_PASSWORD=... [MYTNB_DEBUG=1] python3 -I mytnb.py <email> <account number>``."""
+    """Smoke test: ``MYTNB_PASSWORD=... [MYTNB_DEBUG=1] python3 mytnb.py <email> <account number>``."""
 
     import getpass  # noqa: PLC0415 - CLI only
     import os  # noqa: PLC0415 - CLI only
@@ -601,7 +741,7 @@ def _cli() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     set_debug(os.environ.get("MYTNB_DEBUG", "") not in ("", "0"))
     if len(sys.argv) != 3:  # noqa: PLR2004 - argv layout
-        _LOGGER.error("usage: MYTNB_PASSWORD=... python3 -I mytnb.py <email> <account number>")
+        _LOGGER.error("usage: MYTNB_PASSWORD=... python3 mytnb.py <email> <account number>")
         raise SystemExit(2)
     password = os.environ.get("MYTNB_PASSWORD") or getpass.getpass("myTNB password: ")
     session = MyTnbSession(sys.argv[1], password, sys.argv[2])
@@ -621,6 +761,10 @@ def _cli() -> None:
             )
         else:
             _LOGGER.info("%s: no points", name)
+    if data.bill is None:
+        _LOGGER.info("bill: not readable")
+    else:
+        _LOGGER.info("bill: RM %.2f due %s", data.bill.amount_due, data.bill.due_date or "-")
 
 
 if __name__ == "__main__":

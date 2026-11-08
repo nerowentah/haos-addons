@@ -42,6 +42,7 @@ sessions:
 | `retries` | int | `3` | Retries per TV, with backoff, before a renewal counts as failed (0-10). |
 | `notify_on_failure` | bool | `true` | Notify when a renewal fails after all retries. See [Notifications](#notifications). |
 | `sessions` | list | - | One entry per TV (see below). |
+| `log_level` | string | `info` | How much is logged: `trace`, `debug`, `info`, `notice`, `warning`, `error` or `fatal`. Use `debug` while troubleshooting. Applies without a restart. |
 
 Session fields:
 

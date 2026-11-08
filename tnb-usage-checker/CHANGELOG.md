@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- **Amount due from myTNB.** Every sync reads the bill card on the myTNB account dashboard (*My Amount Due*, *I've cleared all bills*, or *I've paid extra*, which is a credit and shows as a negative amount). With several accounts on one login, the app picks this account in the dashboard's account list first. Prepaid accounts are skipped. New entities per myTNB account: **Amount due** (RM), **Due date** and a **Payment due** binary sensor (`binary_sensor.tnb_<account>_payment_due`). The account card shows the amount and *Due by …* or *Paid*. If the bill can't be read, the sync still succeeds and a warning is logged.
+- **Unpaid bill notifications** (`notify_on_unpaid`, on by default, also a panel switch). You get one notice when a new amount is due, a reminder once a week while it stays unpaid, and one when it is paid. Notices show the account name, amount and due date, never the account number. The reminder clock survives restarts.
+- **Log level** (`log_level`, default `info`): `trace`, `debug`, `info`, `notice`, `warning`, `error` or `fatal`. `debug` also shows the myTNB login trace. It applies without a restart.
+- `portal_interval_hours` now goes up to 168 (7 days).
+- The CLI smoke test also prints the amount due. Its documented `python3 -I` form could not import its own modules; the `-I` flag is dropped.
+
 ## 0.3.5
 
 - **myTNB maintenance windows** (`maintenance_windows`, default `daily 00:00-06:00`, Malaysia time).

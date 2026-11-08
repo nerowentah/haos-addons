@@ -15,7 +15,7 @@ from pathlib import Path
 from types import FrameType
 
 import inventory
-from config import Config, ConfigError, load_config, load_options
+from config import Config, ConfigError, apply_log_level, load_config, load_options
 from ha_ws import HaSocket, WsError
 from inventory import Device
 from store import Store
@@ -102,6 +102,9 @@ class App:
             self.next_scan = min(self.next_scan, time.monotonic() + config.scan_minutes * 60)
         if (old.stale_days, old.ignored_devices) != (config.stale_days, config.ignored_devices):
             self._reflag()
+        if old.log_level != config.log_level:
+            _LOGGER.info("Log level set to %s", config.log_level)  # before applying: may hide info
+            apply_log_level(config.log_level)
         _LOGGER.info("Applied updated options")
 
     def update_options(self, mutate: Callable[[dict[str, object]], None]) -> None:
@@ -586,6 +589,9 @@ def main() -> None:
     except ConfigError:
         _LOGGER.exception("Invalid configuration")
         raise SystemExit(1) from None
+    if config.log_level != "info":
+        _LOGGER.info("Log level set to %s", config.log_level)
+    apply_log_level(config.log_level)
 
     token = load_supervisor_token()
     if not token:

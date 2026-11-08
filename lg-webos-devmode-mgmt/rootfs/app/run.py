@@ -93,6 +93,35 @@ class Config:
     notify_on_failure: bool
     sessions: list[Session]
     maintenance_windows: list[maintenance.Window] = field(default_factory=list)
+    log_level: str = "info"
+
+
+TRACE = 5
+NOTICE = 25
+LOG_LEVELS = {
+    "trace": TRACE,
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "notice": NOTICE,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "fatal": logging.CRITICAL,
+}
+
+
+def parse_log_level(raw: dict[str, object]) -> str:
+    """The ``log_level`` option, lower-cased ("info" when missing or unknown)."""
+
+    value = str(raw.get("log_level") or "info").strip().lower()
+    return value if value in LOG_LEVELS else "info"
+
+
+def apply_log_level(name: str) -> None:
+    """Set the root logger to ``name`` (one of LOG_LEVELS)."""
+
+    logging.addLevelName(TRACE, "TRACE")
+    logging.addLevelName(NOTICE, "NOTICE")
+    logging.getLogger().setLevel(LOG_LEVELS.get(name, logging.INFO))
 
 
 def setup_logging() -> None:
@@ -257,6 +286,7 @@ def load_config(raw_config: dict[str, object]) -> Config:
         notify_on_failure=bool(raw_config.get("notify_on_failure", True)),
         sessions=sessions,
         maintenance_windows=windows,
+        log_level=parse_log_level(raw_config),
     )
 
 
@@ -592,6 +622,9 @@ class App:
     def apply_config(self, raw: dict[str, object], config: Config) -> None:
         """Switch to new options in place (main thread)."""
 
+        if config.log_level != self.config.log_level:
+            _LOGGER.info("Log level set to %s", config.log_level)  # before applying: may hide info
+            apply_log_level(config.log_level)
         if config.interval_hours != self.config.interval_hours and self.last_scheduled is not None:
             self.next_run = self.last_scheduled + config.interval_hours * 3600
         newly_enabled = [
@@ -990,6 +1023,9 @@ def main() -> None:
             raw_options, config = result  # type: ignore[assignment]
             _LOGGER.info("Configuration is valid now; starting")
 
+        if config.log_level != "info":
+            _LOGGER.info("Log level set to %s", config.log_level)
+        apply_log_level(config.log_level)
         _LOGGER.info(
             "Configured %d session(s), interval=%s h, retries=%s, notify=%s",
             len(config.sessions),

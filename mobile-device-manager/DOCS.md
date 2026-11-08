@@ -22,9 +22,10 @@ ignored_devices: []
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `scan_minutes` | `30` | How often to rescan (5-1440). The panel also has **Rescan now**. |
+| `scan_minutes` | `30` | How often to rescan (5-10080 minutes, up to 7 days). The panel also has **Rescan now**. |
 | `stale_days` | `30` | A device that has reported nothing for this many days is flagged **Stale** (1-365). |
 | `notify_on_attention` | `true` | Notify when devices turn stale or scanning fails 3 times in a row (and again when it recovers). |
+| `log_level` | `info` | How much is logged: `trace`, `debug`, `info`, `notice`, `warning`, `error` or `fatal`. Use `debug` while troubleshooting. Applies without a restart. |
 | `ignored_devices` | `[]` | Device ids never flagged stale, for example a tablet you rarely use. The **Ignore** button in the panel fills this in. |
 
 Changes made in the Configuration tab are picked up within about 30 seconds. You don't need to restart the app.

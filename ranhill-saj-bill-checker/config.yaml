@@ -1,5 +1,5 @@
 name: "Ranhill SAJ Bill Checker"
-version: "0.1.0"
+version: "0.2.0"
 slug: "ranhill_saj_bill_checker"
 description: >-
   Checks the amount due on one or more Ranhill SAJ (Johor) water accounts
@@ -23,17 +23,19 @@ hassio_api: true
 services:
   - mqtt:want
 options:
-  poll_interval_hours: 6
   notify_on_failure: true
+  notify_on_unpaid: true
   mqtt: true
   accounts:
     - name: "Home"
       account_number: ""
+  log_level: info
 schema:
-  poll_interval_hours: int(1,24)
   notify_on_failure: bool
+  notify_on_unpaid: bool?
   mqtt: bool
   accounts:
     - name: str
       account_number: match(^(\s*\d{8}[\s-]*[A-Za-z][\s-]*\d{7}\s*)?$)?
       enabled: bool?
+  log_level: list(trace|debug|info|notice|warning|error|fatal)?

@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rootfs" / "app"))
@@ -17,11 +18,12 @@ import panel
 import ranhill
 import store
 import supervisor
+import unpaid
 import webui
 
 
 def options(*accounts: dict[str, object], **extra: object) -> dict[str, object]:
-    return {"poll_interval_hours": 6, "notify_on_failure": True, "mqtt": True, "accounts": list(accounts), **extra}
+    return {"notify_on_failure": True, "mqtt": True, "accounts": list(accounts), **extra}
 
 
 class ConfigTest(unittest.TestCase):
@@ -59,11 +61,18 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(config.ConfigError):
             config.load_config(options())
 
-    def test_interval_is_clamped(self) -> None:
-        cfg = config.load_config(
-            options({"name": "Home", "account_number": "12345678A1234567"}, poll_interval_hours=99)
-        )
-        self.assertEqual(cfg.poll_interval_hours, 24)
+    def test_defaults_and_log_level(self) -> None:
+        home = {"name": "Home", "account_number": "12345678A1234567"}
+        cfg = config.load_config(options(home))
+        self.assertTrue(cfg.notify_on_unpaid)
+        self.assertEqual(cfg.log_level, "info")
+        self.assertEqual(config.load_config(options(home, log_level="DEBUG")).log_level, "debug")
+        self.assertEqual(config.load_config(options(home, log_level="loud")).log_level, "info")
+        self.assertFalse(config.load_config(options(home, notify_on_unpaid=False)).notify_on_unpaid)
+
+    def test_retired_interval_is_ignored(self) -> None:
+        cfg = config.load_config(options({"name": "Home", "account_number": "12345678A1234567"}, poll_interval_hours=6))
+        self.assertFalse(hasattr(cfg, "poll_interval_hours"))
 
     def test_setup_view_waits_for_a_valid_config(self) -> None:
         view = webui.SetupView("Ranhill SAJ Bill Checker", "bad", "fix it")
@@ -83,8 +92,10 @@ class PanelToggleTest(unittest.TestCase):
         raw = options({"name": "Home", "account_number": "12345678A1234567"})
         panel.apply_toggle(raw, "account:home:enabled", False)
         panel.apply_toggle(raw, "mqtt", False)
+        panel.apply_toggle(raw, "notify_on_unpaid", False)
         self.assertIs(raw["accounts"][0]["enabled"], False)  # type: ignore[index]
         self.assertIs(raw["mqtt"], False)
+        self.assertIs(raw["notify_on_unpaid"], False)
 
     def test_unknown_toggles(self) -> None:
         raw = options({"name": "Home", "account_number": "12345678A1234567"})
@@ -100,10 +111,21 @@ class FakeSupervisor(supervisor.Supervisor):
     def __init__(self) -> None:
         super().__init__("token")
         self.notifications: list[tuple[str, str]] = []
+        self.notification_ids: list[str] = []
         self.posts: dict[str, object] = {}
+        self.stored: dict[str, object] = {}
+        self.written: list[dict[str, object]] = []
 
     def notify(self, targets: list[str], title: str, message: str, notification_id: str) -> None:  # noqa: ARG002
         self.notifications.append((title, message))
+        self.notification_ids.append(notification_id)
+
+    def fetch_options(self) -> dict[str, object]:
+        return dict(self.stored)
+
+    def write_options(self, options: dict[str, object]) -> None:
+        self.written.append(options)
+        self.stored = dict(options)
 
     def core_post(self, path: str, body: object) -> object:
         self.posts[path] = body
@@ -211,6 +233,66 @@ class SchedulerTest(unittest.TestCase):
         posted = self.sup.posts[f"/states/{mqtt_pub.entity_id('home', 'amount_due')}"]
         self.assertEqual(posted["state"], "unavailable")  # type: ignore[index]
 
+    def bills(self) -> list[str]:
+        return [title for title, _ in self.sup.notifications if "bill" in title]
+
+    def test_payment_due_sensor_and_unpaid_notices(self) -> None:
+        app = self.app([ranhill.Bill(45.6, "RM 45.60"), ranhill.Bill(45.6, "RM 45.60"), ranhill.Bill(0.0, "RM 0.00")])
+        runtime = app.runtimes[0]
+        app.check_account(runtime)
+        self.assertIs(runtime.values["payment_due"], True)
+        posted = self.sup.posts[f"/states/{mqtt_pub.entity_id('home', 'payment_due', 'binary_sensor')}"]
+        self.assertEqual(posted["state"], "on")  # type: ignore[index]
+        self.assertEqual(self.bills(), ["Water bill due"])
+        self.assertIn("RM 45.60", self.sup.notifications[-1][1])
+        self.assertTrue(self.sup.notification_ids[-1].endswith("_bill"))
+        app.check_account(runtime)  # same bill, reminded less than a week ago: quiet
+        self.assertEqual(self.bills(), ["Water bill due"])
+        app.check_account(runtime)
+        self.assertIs(runtime.values["payment_due"], False)
+        self.assertEqual(self.bills(), ["Water bill due", "Water bill paid"])
+        self.assertEqual(runtime.unpaid_notified_at, "")
+
+    def test_unpaid_reminder_after_a_week_survives_restart(self) -> None:
+        app = self.app([ranhill.Bill(20.0, "RM 20.00")])
+        app.check_account(app.runtimes[0])
+        app.runtimes[0].unpaid_notified_at = "2020-01-01T00:00:00+00:00"
+        app._save_runtime(app.runtimes[0])
+        again = self.app([ranhill.Bill(20.0, "RM 20.00")])
+        again.check_account(again.runtimes[0])
+        self.assertEqual(self.bills(), ["Water bill due", "Water bill still unpaid"])
+
+    def test_unpaid_notices_can_be_switched_off(self) -> None:
+        self.cfg = config.load_config(
+            options({"name": "Home", "account_number": "12345678A1234567"}, notify_on_unpaid=False)
+        )
+        app = self.app([ranhill.Bill(20.0, "RM 20.00")])
+        app.check_account(app.runtimes[0])
+        self.assertEqual(self.sup.notifications, [])
+
+    def test_weekly_schedule_survives_a_restart(self) -> None:
+        app = self.app([ranhill.Bill(20.0, "RM 20.00")])
+        app.check_account(app.runtimes[0])
+        again = self.app([])
+        wait = again.runtimes[0].next_check - main.time.monotonic()
+        self.assertGreater(wait, main.CHECK_INTERVAL_SECONDS - 3600)
+        fresh = main.App(self.cfg, self.sup, store.Store(Path(self.tmp.name) / "other.json"))
+        self.assertLess(fresh.runtimes[0].next_check - main.time.monotonic(), 60)
+
+    def test_unknown_account_retries_daily(self) -> None:
+        app = self.app([ranhill.AccountNotFoundError("unknown")])
+        app.check_account(app.runtimes[0])
+        wait = app.runtimes[0].next_check - main.time.monotonic()
+        self.assertLessEqual(wait, main.PROBLEM_RETRY_SECONDS)
+
+    def test_retired_interval_option_is_removed(self) -> None:
+        self.sup.stored = {**options({"name": "Home", "account_number": "12345678A1234567"}), "poll_interval_hours": 6}
+        app = self.app([])
+        app.migrate_options()
+        self.assertNotIn("poll_interval_hours", self.sup.stored)
+        app.migrate_options()  # nothing left to remove
+        self.assertEqual(len(self.sup.written), 1)
+
     def test_panel_state_builds(self) -> None:
         app = self.app([ranhill.SiteError("boom")])
         app.check_account(app.runtimes[0])
@@ -229,6 +311,29 @@ class DiscoveryTest(unittest.TestCase):
         self.assertEqual(payload["unit_of_measurement"], "MYR")
         self.assertEqual(payload["json_attributes_topic"], "ranhill_saj/home/amount_due/attributes")
         self.assertNotIn("12345678", str(payload))
+
+    def test_payment_due_is_a_binary_sensor(self) -> None:
+        account = config.load_config(options({"name": "Home", "account_number": "12345678A1234567"})).accounts[0]
+        sensor = next(s for s in mqtt_pub.SENSORS if s.key == "payment_due")
+        payload = mqtt_pub.sensor_config(account, sensor, "0.2.0")
+        self.assertEqual(payload["default_entity_id"], "binary_sensor.saj_home_payment_due")
+        self.assertIn("ON", str(payload["value_template"]))
+        self.assertEqual(mqtt_pub.state_value(sensor, False), "off")
+        self.assertEqual(mqtt_pub.state_value(sensor, None), "unknown")
+
+
+class UnpaidTest(unittest.TestCase):
+    def test_notice_rules(self) -> None:
+        now = datetime(2026, 1, 10, tzinfo=UTC)
+        week_ago = now - unpaid.REMIND_EVERY
+        self.assertEqual(unpaid.unpaid_notice(None, 10.0, None, now), unpaid.NEW)
+        self.assertEqual(unpaid.unpaid_notice(10.0, 12.0, now, now), unpaid.NEW)
+        self.assertIsNone(unpaid.unpaid_notice(10.0, 10.0, now, now))
+        self.assertEqual(unpaid.unpaid_notice(10.0, 10.0, week_ago, now), unpaid.REMINDER)
+        self.assertEqual(unpaid.unpaid_notice(10.0, 0.0, now, now), unpaid.PAID)
+        self.assertIsNone(unpaid.unpaid_notice(0.0, 0.0, None, now))
+        self.assertIsNone(unpaid.unpaid_notice(10.0, None, now, now))
+        self.assertIs(unpaid.is_due(-5.0), False)  # a credit is not due
 
 
 if __name__ == "__main__":
