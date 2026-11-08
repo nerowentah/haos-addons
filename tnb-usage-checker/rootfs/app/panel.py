@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
+import report
 from config import Account, mask_email, mask_number, slugify
-from meter import MYT
-from webui import PanelError, action, badge, stat, toggle
+from meter import MYT, billing_period_start, next_period_start
+from webui import PanelError, action, badge, chart, hero_item, progress, stat, toggle
 
 if TYPE_CHECKING:
     from main import AccountRuntime, App
@@ -45,14 +46,46 @@ def _when(value: object) -> str | None:
     return moment.strftime("%d %b %H:%M")
 
 
-def _account_card(runtime: AccountRuntime, account: Account) -> dict[str, object]:
+def _cycle_progress(account: Account, today: date) -> dict[str, object]:
+    """'Day 16 of 30' through the current billing cycle."""
+
+    start = billing_period_start(today, account.billing_start_day)
+    end = next_period_start(start, account.billing_start_day)
+    length = max((end - start).days, 1)
+    day = min((today - start).days + 1, length)
+    left = (end - today).days
+    return progress(
+        day / length,
+        f"Day {day} of {length}",
+        f"{left} day{'s' if left != 1 else ''} left · next cycle {end.day} {end:%b}",
+    )
+
+
+def _daily_chart(history: dict[date, float]) -> dict[str, object] | None:
+    """Bar chart of the saved complete days, captioned with the newest day and its trend."""
+
+    return chart(
+        f"Daily usage · last {len(history)} day{'s' if len(history) != 1 else ''}",
+        [(f"{day.day} {day:%b}", kwh) for day, kwh in history.items()],
+        "kWh",
+        report.latest_day_caption(history),
+    )
+
+
+def _account_card(
+    runtime: AccountRuntime, account: Account, history: dict[date, float] | None = None, today: date | None = None
+) -> dict[str, object]:
     values = dict(runtime.values)
+    today = today or datetime.now(MYT).date()
+    hero: list[dict[str, object]] = []
     stats: list[dict[str, object]] = []
     if account.has_meter:
+        hero = [
+            hero_item("Bill estimate", _money(values.get("bill_estimate"))),
+            hero_item("Used this cycle", _kwh(values.get("cycle_import")), "kWh"),
+        ]
         stats += [
-            stat("Bill estimate", _money(values.get("bill_estimate"))),
             stat("Predicted bill", _money(values.get("predicted_bill"))),
-            stat("Usage this cycle", _kwh(values.get("cycle_import")), "kWh"),
             stat("Usage today", _kwh(values.get("today_import")), "kWh"),
         ]
         if account.tariff == "tou":
@@ -64,14 +97,21 @@ def _account_card(runtime: AccountRuntime, account: Account) -> dict[str, object
                 ),
                 stat("Now", values.get("current_period")),
             ]
-        stats.append(stat("Days left in cycle", values.get("days_remaining")))
     if account.has_portal:
+        if not hero:
+            hero = [
+                hero_item("myTNB cost this cycle", _money(values.get("portal_cost_cycle"))),
+                hero_item("myTNB usage", _kwh(values.get("portal_usage_cycle")), "kWh"),
+            ]
+        else:
+            stats += [
+                stat("myTNB usage (cycle)", _kwh(values.get("portal_usage_cycle")), "kWh"),
+                stat("myTNB cost (cycle)", _money(values.get("portal_cost_cycle"))),
+            ]
         stats += [
-            stat("Account no.", mask_number(account.ca_no)),
-            stat("myTNB usage (cycle)", _kwh(values.get("portal_usage_cycle")), "kWh"),
-            stat("myTNB cost (cycle)", _money(values.get("portal_cost_cycle"))),
             stat("myTNB data up to", _when(values.get("portal_data_as_of"))),
             stat("Last sync", _when(values.get("portal_last_sync"))),
+            stat("Account no.", mask_number(account.ca_no)),
         ]
 
     toggles = [
@@ -127,13 +167,18 @@ def _account_card(runtime: AccountRuntime, account: Account) -> dict[str, object
         name for name, on in (("myTNB", account.has_portal), ("energy sensor", account.has_meter)) if on
     )
     return {
+        "id": f"account:{account.account_id}",
         "title": account.name,
         "icon": "mdi:home-lightning-bolt",
         "subtitle": f"{'Time-of-Use' if account.tariff == 'tou' else 'General'} tariff · cycle from day {account.billing_start_day} · {sources}",
         "badge": status,
         "off": not account.enabled,
+        "hero": hero,
+        "progress": _cycle_progress(account, today),
+        "chart": _daily_chart(history) if account.has_portal and history else None,
         "stats": stats,
         "toggles": toggles,
+        "toggles_label": "Settings",
         "actions": [
             action(
                 "sync",
@@ -153,7 +198,11 @@ def build_state(app: App) -> dict[str, object]:
 
     config = app.view_config()
     runtimes = {rt.account.account_id: rt for rt in app.runtimes}
-    cards = [_account_card(runtimes[a.account_id], a) for a in config.accounts if a.account_id in runtimes]
+    cards = [
+        _account_card(runtimes[a.account_id], a, app.daily_history(a.account_id))
+        for a in config.accounts
+        if a.account_id in runtimes
+    ]
 
     today = datetime.now(MYT).date()
     afa_sen = config.afa_rate * 100

@@ -46,6 +46,7 @@ MIN_SLEEP_SECONDS = 1
 STORE_SAVE_SECONDS = 60
 PORTAL_WINDOW_DAYS = 30
 PORTAL_RETRY_SECONDS = 30 * 60
+CHART_DAYS = 14  # complete days kept for the panel's daily chart
 METER_RETRY_SECONDS = 3 * 3600  # logged in but no meter: retry sooner than a bad password
 PORTAL_STAGGER_SECONDS = 20
 TRANSIENT_FAILURES_BEFORE_NOTIFY = 3
@@ -693,6 +694,7 @@ class App:
             cycle_usage,
             cycle_cost,
         )
+        self._remember_daily_history(account, data)
         self._send_daily_report(account, data)
         if runtime.failure_notified:
             self.notify(account, "TNB portal sync recovered", f"myTNB data for '{account.name}' is syncing again.")
@@ -700,6 +702,28 @@ class App:
         runtime.failure_notified = False
         runtime.next_portal = time.monotonic() + interval
         self.publish_state(runtime)
+
+    def _remember_daily_history(self, account: Account, data: PortalData) -> None:
+        """Keep the last complete days (kWh) in /data for the panel's daily chart."""
+
+        days = report.complete_days(data.usage)
+        recent = {day.isoformat(): round(kwh, 3) for day, kwh in sorted(days.items())[-CHART_DAYS:]}
+        history = self.store.section("daily_history")
+        if recent and history.get(account.account_id) != recent:
+            history[account.account_id] = recent
+            self.store.dirty = True
+
+    def daily_history(self, account_id: str) -> dict[date, float]:
+        """The saved complete days for an account, oldest first (for the panel)."""
+
+        saved = self.store.section("daily_history").get(account_id)
+        result: dict[date, float] = {}
+        for key, value in saved.items() if isinstance(saved, dict) else []:
+            try:
+                result[date.fromisoformat(str(key))] = float(value)
+            except (TypeError, ValueError):
+                continue
+        return dict(sorted(result.items()))
 
     def _send_daily_report(self, account: Account, data: PortalData) -> None:
         """Notify once per account for each newly complete day of portal data."""

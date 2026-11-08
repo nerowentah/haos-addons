@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.4
+
+- **Fixed the Supervisor warning** `Option 'notification_overrides' does not exist in the schema`, logged every 30 seconds. The one-time move of the old per-phone switches into the panel looked for the option in `/data/options.json`, which the Supervisor already filters to the schema, so it never ran. It now reads the stored options, keeps any phone switch you already set in the panel, and removes the option.
+- **Shared panel update:** optional large figures, progress bars, bar charts and a collapsible switch list (used by TNB Usage Checker). This app's panel looks the same.
+
 ## 1.7.3
 
 - The panel stops polling while it is hidden (another tab, or the sidebar panel closed).

@@ -188,11 +188,124 @@ function renderAction(item) {
   return button;
 }
 
+function renderHero(items) {
+  return h(
+    "div",
+    { class: "hero" },
+    items.map((item) =>
+      h(
+        "div",
+        { class: "hero-item" },
+        h("div", { class: "hero-value" }, item.value, item.unit && item.value !== "-" && h("span", { class: "hero-unit" }, item.unit)),
+        h("div", { class: "hero-label" }, item.label),
+      ),
+    ),
+  );
+}
+
+function renderProgress(bar) {
+  const pct = Math.round(Math.min(Math.max(Number(bar.value) || 0, 0), 1) * 100);
+  return h(
+    "div",
+    { class: "progress" },
+    h(
+      "div",
+      { class: "progress-track", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(pct), "aria-label": bar.label },
+      h("div", { class: "progress-fill", style: `width: ${pct}%` }),
+    ),
+    h("div", { class: "progress-text" }, h("span", {}, bar.label), bar.caption && h("span", { class: "muted" }, bar.caption)),
+  );
+}
+
+function renderChart(chart) {
+  // Inline SVG bars, scaled to the largest value; the last bar is highlighted.
+  const bars = chart.bars || [];
+  const width = 100;
+  const height = 40;
+  const gap = 1.5;
+  const max = Math.max(...bars.map((b) => Number(b.value) || 0), 0);
+  const step = bars.length ? width / bars.length : width;
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("class", "chart-svg");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", chart.title || "chart");
+  bars.forEach((bar, index) => {
+    const value = Number(bar.value) || 0;
+    const barHeight = max > 0 ? Math.max((value / max) * (height - 2), value > 0 ? 1 : 0.5) : 0.5;
+    const rect = document.createElementNS(SVG_NS, "rect");
+    rect.setAttribute("x", String(index * step + gap / 2));
+    rect.setAttribute("y", String(height - barHeight));
+    rect.setAttribute("width", String(Math.max(step - gap, 0.5)));
+    rect.setAttribute("height", String(barHeight));
+    rect.setAttribute("rx", "0.8");
+    rect.setAttribute("class", index === bars.length - 1 ? "bar last" : "bar");
+    const title = document.createElementNS(SVG_NS, "title");
+    title.textContent = `${bar.label}: ${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}${chart.unit ? ` ${chart.unit}` : ""}`;
+    rect.append(title);
+    svg.append(rect);
+  });
+  const first = bars[0];
+  const last = bars[bars.length - 1];
+  return h(
+    "div",
+    { class: "chart" },
+    chart.title && h("div", { class: "chart-title" }, chart.title),
+    svg,
+    first && last && h("div", { class: "chart-axis" }, h("span", {}, first.label), h("span", {}, last.label)),
+    chart.caption && h("div", { class: "chart-caption" }, chart.caption),
+  );
+}
+
+function storageGet(key) {
+  try {
+    return window.sessionStorage.getItem(key);
+  } catch (_err) {
+    return null;
+  }
+}
+
+function storageSet(key, value) {
+  try {
+    window.sessionStorage.setItem(key, value);
+  } catch (_err) {
+    // Storage blocked: the section just starts closed again after a reload.
+  }
+}
+
+function renderToggleRows(toggles) {
+  return toggles.map((t) =>
+    h(
+      "div",
+      { class: "row" },
+      mdi(t.icon, "row-icon"),
+      h("div", { class: "row-text" }, h("div", { class: "row-label" }, t.label), t.description && h("div", { class: "row-desc" }, t.description)),
+      renderSwitch(t),
+    ),
+  );
+}
+
+function renderToggles(card, toggles) {
+  if (!card.toggles_label) return h("div", { class: "rows" }, renderToggleRows(toggles));
+  // Collapsible: remember open/closed per card so the 5 s refresh keeps it.
+  const key = `panel-open:${card.id || card.title}`;
+  const details = h(
+    "details",
+    { class: "rows toggles", open: storageGet(key) === "1" },
+    h("summary", {}, mdi("mdi:cog", "row-icon"), h("span", {}, `${card.toggles_label} (${toggles.length} switch${toggles.length === 1 ? "" : "es"})`)),
+    renderToggleRows(toggles),
+  );
+  details.addEventListener("toggle", () => storageSet(key, details.open ? "1" : "0"));
+  return details;
+}
+
 function renderCard(card) {
   const stats = card.stats || [];
   const toggles = card.toggles || [];
   const actions = card.actions || [];
   const links = card.links || [];
+  const hero = card.hero || [];
   return h(
     "section",
     { class: `card${card.off ? " is-off" : ""}` },
@@ -210,6 +323,9 @@ function renderCard(card) {
     h(
       "div",
       { class: "card-body" },
+      hero.length > 0 && renderHero(hero),
+      card.progress && renderProgress(card.progress),
+      card.chart && (card.chart.bars || []).length > 0 && renderChart(card.chart),
       stats.length > 0 &&
         h(
           "div",
@@ -219,20 +335,7 @@ function renderCard(card) {
           ),
         ),
     ),
-    toggles.length > 0 &&
-      h(
-        "div",
-        { class: "rows" },
-        toggles.map((t) =>
-          h(
-            "div",
-            { class: "row" },
-            mdi(t.icon, "row-icon"),
-            h("div", { class: "row-text" }, h("div", { class: "row-label" }, t.label), t.description && h("div", { class: "row-desc" }, t.description)),
-            renderSwitch(t),
-          ),
-        ),
-      ),
+    toggles.length > 0 && renderToggles(card, toggles),
     links.length > 0 &&
       h(
         "div",
