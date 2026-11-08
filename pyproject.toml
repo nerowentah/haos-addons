@@ -40,6 +40,16 @@ ignore = ["E501"]
 "mobile-device-manager/**/*.py" = [
   "TRY003",
 ]
+"ranhill-saj-bill-checker/**/*.py" = [
+  "TRY003",
+]
+"ranhill-saj-bill-checker/tests/*.py" = [
+  "TRY003",
+  "S101",
+  "SLF001",
+  "PLR2004",
+  "PT009",
+]
 "mobile-device-manager/tests/*.py" = [
   "TRY003",
   "S101",
