@@ -1,0 +1,23 @@
+configuration:
+  poll_interval_hours:
+    name: Check interval (hours)
+    description: How often to look up the amount due of each account (1-24). Bills are monthly, so every few hours is plenty. The panel also has a Check now button.
+  notify_on_failure:
+    name: Notify on failure
+    description: Push a notification when an account cannot be checked (and again when it recovers). An unknown account number notifies at once; site errors after 3 failed checks in a row. Phones are found automatically; switch individual phones on or off in the SAJ Water panel.
+  mqtt:
+    name: Use MQTT when available
+    description: Publish one MQTT device per account when a broker (e.g. the Mosquitto broker app) is found; it is detected automatically while the app runs. Off, or without a broker, entities are created through the Home Assistant states API instead.
+  accounts:
+    name: Water accounts
+    description: One entry per Ranhill SAJ account.
+    fields:
+      name:
+        name: Account name
+        description: Friendly name; also used for the device and entity ids (e.g. "Home" gives sensor.saj_home_amount_due).
+      account_number:
+        name: Account number
+        description: The 16-character account number on your Ranhill SAJ bill, 8 digits, a letter and 7 digits (e.g. 12345678-A1234567). Spaces and hyphens are fine.
+      enabled:
+        name: Account enabled
+        description: Switch off to pause checks for this account (entities show as unavailable). Also switchable from the SAJ Water panel; applies without a restart.

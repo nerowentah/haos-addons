@@ -1,0 +1,49 @@
+<!doctype html><html><body><main><div class="column main"><input name="form_key" type="hidden" value="TESTFORMKEY12345" /><div id="tabs">
+    <ul id="tabs-nav">
+        <li class="active"><a href="/expresspayment/checkout/search"><span class="step">01</span><span class="text">My Account</span></a></li>
+        <li><a href="/expresspayment/checkout/verification"><span class="step">02</span><span class="text">Verification</span></a></li>
+        <li><a href="javascript:void(0)"><span class="step">03</span><span class="text">Payment</span></a></li>
+    </ul> <!-- END tabs-nav -->
+    <div id="tabs-content">
+        <div id="tab1" class="tab-content text-center">
+            <h2>Search Bill by Account Number</h2>
+            <p class="font-size-16">Please enter your 16-digit water account number</p>
+            <form method="post" action="/expresspayment/checkout/verification" class="digit-group" data-group-name="digits" data-autosubmit="false" autocomplete="off">
+                <div class="field digit-field">
+                    <div class="group-fields top">
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-1" name="digit-1" data-next="digit-2" />
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-2" name="digit-2" data-next="digit-3" data-previous="digit-1" />
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-3" name="digit-3" data-next="digit-4" data-previous="digit-2" />
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-4" name="digit-4" data-next="digit-5" data-previous="digit-3" />
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-5" name="digit-5" data-next="digit-6" data-previous="digit-4" />
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-6" name="digit-6" data-next="digit-7" data-previous="digit-5" />
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-7" name="digit-7" data-next="digit-8" data-previous="digit-6" />
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-8" name="digit-8" data-next="digit-9" data-previous="digit-7" />
+                    </div>
+                    <span class="text-under"></span>
+                    <div class="group-fields bottom">
+                        <input type="text" value="" class="input-text only-alphabet" id="digit-9" name="digit-10" data-next="digit-10" data-previous="digit-8" />
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-10" name="digit-11" data-next="digit-11" data-previous="digit-9" />
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-11" name="digit-12" data-next="digit-12" data-previous="digit-10" />
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-12" name="digit-13" data-next="digit-13" data-previous="digit-11" />
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-13" name="digit-14" data-next="digit-14" data-previous="digit-12" />
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-14" name="digit-15" data-next="digit-15" data-previous="digit-13" />
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-15" name="digit-16" data-next="digit-16" data-previous="digit-14" />
+                        <input type="number" value="" pattern="[0-9]*" inputmode="numeric" class="input-text" id="digit-16" name="digit-17" data-previous="digit-15" />
+                    </div>
+                </div>
+
+                <div class="actions">
+                    <div class="primary">
+                        <button type="submit" class="action primary action-search">
+                            Next
+                        </button>
+                    </div>
+                </div>
+            </form>
+            <div class="text-minimum-search" style="margin: 20px 0;">
+                <small>The minimum payment of Quick Payment is RM10.00</small><br>
+            </div>
+        </div>
+    </div> <!-- END tabs-content -->
+</div></div></main></body></html>

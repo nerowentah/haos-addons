@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100" width="200" height="100">
+  <circle cx="50" cy="50" r="45" fill="#0077c8"/>
+  <path d="M50,16 C50,16 26,44 26,60 A24,24 0 0,0 74,60 C74,44 50,16 50,16 Z" fill="#ffffff"/>
+  <text x="50" y="69" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#0077c8">RM</text>
+  <text x="106" y="48" font-family="Arial, sans-serif" font-size="26" font-weight="bold" fill="#0077c8">SAJ</text>
+  <text x="106" y="78" font-family="Arial, sans-serif" font-size="26" font-weight="bold" fill="#00a3a1">Bill</text>
+</svg>
