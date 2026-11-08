@@ -2,6 +2,7 @@
 
 ## 0.1.4
 
+- **`!secret` works with live changes.** Options that use `!secret name` are now resolved when you edit them in the Configuration tab or flip a panel switch. Before, the app read the literal `!secret …` text as the value. A panel switch now writes the reference back, never the secret value, and does nothing if Home Assistant can't be reached. A new secret needs an app restart. See *Passwords and secrets* in the docs.
 - **Log level** (`log_level`, default `info`): `trace`, `debug`, `info`, `notice`, `warning`, `error` or `fatal`. It applies without a restart.
 - `scan_minutes` now goes up to 10080 (7 days).
 

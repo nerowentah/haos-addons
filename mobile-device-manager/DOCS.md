@@ -104,6 +104,16 @@ The phone itself is not affected. To use it again, sign in again from the Compan
 - Scan failures are reported after 3 failed scans in a row, and again when scanning recovers.
 - Without any linked phones, the app creates a persistent notification instead.
 
+## Passwords and secrets
+
+- **Where they live:** Home Assistant's Supervisor stores the app options, including its options (it has no passwords). The app keeps no copy: its own file `/data/state.json` never holds a password, token or account number. Home Assistant encrypts its backups.
+- **Masked:** password fields show as dots in the Configuration tab.
+- **Never logged:** passwords, tokens and cookie values never appear in the log or the panel, and numbers are masked.
+- **`!secret`:** to keep a value out of the app options, put it in `/config/secrets.yaml` and reference it, for example `ignored_devices: ["!secret old_tablet"]`.
+  - The panel switches and live edits keep the reference as it is. The app never writes the value back.
+  - A new or changed secret takes effect after you **restart** the app, because the Supervisor reads `secrets.yaml` only at start. Until then the panel keeps the old value and the log says a restart is needed.
+- Anyone who can open the app's Configuration tab, or log in to the host, can still see the values. Give the Home Assistant admin role only to people you trust.
+
 ## Troubleshooting
 
 - **What do the `s6-rc` lines in the log mean?** The app runs as an s6-overlay service, the process supervisor built into Home Assistant app images. Only s6 warnings and errors are logged. Older versions printed `legacy-cont-init`, `legacy-services` and `s6-rc.d is empty` on every start. Those were harmless, and came from running without a proper service definition.

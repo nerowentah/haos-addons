@@ -40,6 +40,6 @@ schema:
   sessions:
     - name: str
       token: password?
-      url: url?
+      url: password?
       enabled: bool?
   log_level: list(trace|debug|info|notice|warning|error|fatal)?

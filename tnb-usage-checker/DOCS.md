@@ -212,6 +212,16 @@ TNB domestic tariff for Peninsular Malaysia, valid 1 July 2025 to 31 December 20
 
 When a myTNB sync fails and when it recovers, the app notifies every phone that is switched on in the **Phones** card. It sends one notification per change, not one per retry. With no linked phones, it creates a persistent notification instead.
 
+## Passwords and secrets
+
+- **Where they live:** Home Assistant's Supervisor stores the app options, including `mytnb_password`, `smartmeter_url` and `calendarific_api_key`. The app keeps no copy: its own file `/data/state.json` never holds a password, token or account number. Home Assistant encrypts its backups.
+- **Masked:** password fields show as dots in the Configuration tab.
+- **Never logged:** passwords, tokens and cookie values never appear in the log or the panel, and numbers are masked.
+- **`!secret`:** to keep a value out of the app options, put it in `/config/secrets.yaml` and reference it, for example `mytnb_password: "!secret mytnb_password"`.
+  - The panel switches and live edits keep the reference as it is. The app never writes the value back.
+  - A new or changed secret takes effect after you **restart** the app, because the Supervisor reads `secrets.yaml` only at start. Until then the panel keeps the old value and the log says a restart is needed.
+- Anyone who can open the app's Configuration tab, or log in to the host, can still see the values. Give the Home Assistant admin role only to people you trust.
+
 ## Troubleshooting
 
 - **`maintenance` status (TNB maintenance):** myTNB answered with a maintenance page or HTTP 503 outside your windows. The app keeps the last data, sends no failure alert, and retries after 30 min, then 1 h, 2 h, 4 h, up to 6 h. It returns to the normal schedule after the next successful sync. If this keeps happening at the same time of day, add that time to `maintenance_windows`.

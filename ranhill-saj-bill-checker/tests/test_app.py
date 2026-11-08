@@ -121,6 +121,8 @@ class FakeSupervisor(supervisor.Supervisor):
         self.notification_ids.append(notification_id)
 
     def fetch_options(self) -> dict[str, object]:
+        if getattr(self, "unreachable", False):
+            raise supervisor.SupervisorError("unreachable")
         return dict(self.stored)
 
     def write_options(self, options: dict[str, object]) -> None:
@@ -292,6 +294,20 @@ class SchedulerTest(unittest.TestCase):
         self.assertNotIn("poll_interval_hours", self.sup.stored)
         app.migrate_options()  # nothing left to remove
         self.assertEqual(len(self.sup.written), 1)
+
+    def test_panel_switch_without_the_supervisor_writes_nothing(self) -> None:
+        app = self.app([])
+        self.sup.unreachable = True  # type: ignore[attr-defined]
+        with self.assertRaises(webui.PanelError):
+            app.panel_toggle("mqtt", False)
+        self.assertEqual(self.sup.written, [])
+
+    def test_panel_switch_writes_secret_references(self) -> None:
+        self.sup.stored = options({"name": "Home", "account_number": "!secret saj_home"})
+        app = self.app([])
+        app.secrets.learn(self.sup.stored, options({"name": "Home", "account_number": "12345678A1234567"}))
+        app.panel_toggle("mqtt", False)
+        self.assertEqual(self.sup.written[-1]["accounts"][0]["account_number"], "!secret saj_home")  # type: ignore[index]
 
     def test_panel_state_builds(self) -> None:
         app = self.app([ranhill.SiteError("boom")])

@@ -27,7 +27,19 @@ from supervisor import (
     merge_discovered,
     merge_s6_environment,
 )
-from webui import PanelError, PanelServer, action, badge, link, notice, stat, toggle
+from webui import (
+    PanelError,
+    PanelServer,
+    SecretError,
+    SecretRefs,
+    action,
+    badge,
+    initial_options,
+    link,
+    notice,
+    stat,
+    toggle,
+)
 
 _LOGGER = logging.getLogger("mobile_device_manager")
 
@@ -65,7 +77,8 @@ class App:
         self, config: Config, supervisor: Supervisor, store: Store, raw_options: dict[str, object] | None = None
     ) -> None:
         self.config = config
-        self.raw_options = raw_options or {}
+        self.raw_options = raw_options or {}  # as stored: !secret references, never their values
+        self.secrets = SecretRefs()
         self.supervisor = supervisor
         self.store = store
         self.version = VERSION
@@ -113,13 +126,14 @@ class App:
         with self.options_lock:
             try:
                 base = self.supervisor.fetch_options()
-            except SupervisorError:
-                base = self.raw_options
+            except SupervisorError as err:
+                # Never fall back to the start-up copy: it holds resolved !secret values.
+                raise PanelError("Home Assistant is not reachable; try again") from err
             raw = copy.deepcopy(base)
             mutate(raw)
             try:
-                config = load_config(raw)
-            except ConfigError as err:
+                config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+            except (ConfigError, SecretError) as err:
                 raise PanelError(str(err)) from err
             try:
                 self.supervisor.write_options(raw)
@@ -135,8 +149,15 @@ class App:
             raw = self.supervisor.fetch_options()
         except SupervisorError:
             return
-        if raw != self.raw_options:
-            self.apply_config(raw, load_config(raw))
+        if raw == self.raw_options:
+            return
+        try:
+            config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+        except (ConfigError, SecretError) as err:
+            _LOGGER.error("Ignoring updated options until they are fixed: %s", err)  # noqa: TRY400 - no traceback needed
+            self.raw_options = raw
+            return
+        self.apply_config(raw, config)
 
     # -- Phones (notification targets for this app) ---------------------------------
     @property
@@ -583,24 +604,27 @@ def main() -> None:
     merge_s6_environment()  # TZ first, so every log line uses local time
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     _LOGGER.info("Starting Mobile Device Manager %s", VERSION)
+    token = load_supervisor_token()
+    if not token:
+        _LOGGER.error("No supervisor token; cannot reach Home Assistant")
+        raise SystemExit(1)
+    supervisor = Supervisor(token)
+
+    secrets = SecretRefs()
+    raw_options = initial_options(load_options, supervisor.fetch_options, secrets)
     try:
-        raw_options = load_options()
-        config = load_config(raw_options)
-    except ConfigError:
+        config = load_config(secrets.resolve(raw_options))  # type: ignore[arg-type]
+    except (ConfigError, SecretError):
         _LOGGER.exception("Invalid configuration")
         raise SystemExit(1) from None
     if config.log_level != "info":
         _LOGGER.info("Log level set to %s", config.log_level)
     apply_log_level(config.log_level)
 
-    token = load_supervisor_token()
-    if not token:
-        _LOGGER.error("No supervisor token; cannot reach Home Assistant")
-        raise SystemExit(1)
-
     store = Store()
     store.load()
-    app = App(config, Supervisor(token), store, raw_options)
+    app = App(config, supervisor, store, raw_options)
+    app.secrets = secrets
 
     def _stop(signum: int, _frame: FrameType | None) -> None:
         _LOGGER.info("Received signal %d; shutting down", signum)

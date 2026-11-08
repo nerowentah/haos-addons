@@ -2,6 +2,7 @@
 
 ## 0.2.0
 
+- **`!secret` works with live changes.** Options that use `!secret name` are now resolved when you edit them in the Configuration tab or flip a panel switch. Before, the app read the literal `!secret …` text as the value. A panel switch now writes the reference back, never the secret value, and does nothing if Home Assistant can't be reached. A new secret needs an app restart. See *Passwords and secrets* in the docs.
 - **Weekly checks.** The `poll_interval_hours` option is gone. Each account is checked once a week, and **Check now** works any time. The schedule continues from the last check after a restart. An unknown account number or a changed page is retried daily. The old option is removed from the saved configuration on start.
 - **Payment due binary sensor** (`binary_sensor.saj_<account>_payment_due`). It is on while an amount is due, and the account card shows *Due* or *Paid*.
 - **Unpaid bill notifications** (`notify_on_unpaid`, on by default, also a panel switch). You get one notice when an amount is due, a reminder at each weekly check while it stays unpaid, and one when it is paid.

@@ -128,6 +128,16 @@ When an account cannot be checked, and again when it recovers, the app notifies 
 - **Unknown account number:** notifies at once.
 - **Site errors:** notify after 3 failed checks in a row. The app retries every 30 minutes until it works.
 
+## Passwords and secrets
+
+- **Where they live:** Home Assistant's Supervisor stores the app options, including your account numbers (no login is needed). The app keeps no copy: its own file `/data/state.json` never holds a password, token or account number. Home Assistant encrypts its backups.
+- **Masked:** password fields show as dots in the Configuration tab.
+- **Never logged:** passwords, tokens and cookie values never appear in the log or the panel, and numbers are masked.
+- **`!secret`:** to keep a value out of the app options, put it in `/config/secrets.yaml` and reference it, for example `account_number: "!secret saj_home_account"`.
+  - The panel switches and live edits keep the reference as it is. The app never writes the value back.
+  - A new or changed secret takes effect after you **restart** the app, because the Supervisor reads `secrets.yaml` only at start. Until then the panel keeps the old value and the log says a restart is needed.
+- Anyone who can open the app's Configuration tab, or log in to the host, can still see the values. Give the Home Assistant admin role only to people you trust.
+
 ## Troubleshooting
 
 - **`not_found` (Account not found):** Ranhill SAJ does not recognise the number.

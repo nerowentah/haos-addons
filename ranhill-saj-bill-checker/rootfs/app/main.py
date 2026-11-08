@@ -40,7 +40,16 @@ from supervisor import (
     merge_s6_environment,
     notification_id,
 )
-from webui import PanelError, PanelRouter, PanelServer, SetupView, wait_for_valid_config
+from webui import (
+    PanelError,
+    PanelRouter,
+    PanelServer,
+    SecretError,
+    SecretRefs,
+    SetupView,
+    initial_options,
+    wait_for_valid_config,
+)
 
 _LOGGER = logging.getLogger("ranhill_saj")
 
@@ -120,7 +129,8 @@ class App:
         client_factory: Callable[[], SajClient] = SajClient,
     ) -> None:
         self.config = config
-        self.raw_options = raw_options or {}
+        self.raw_options = raw_options or {}  # as stored: !secret references, never their values
+        self.secrets = SecretRefs()
         self.version = VERSION
         self.supervisor = supervisor
         self.store = store
@@ -235,13 +245,14 @@ class App:
         with self.options_lock:
             try:
                 base = self.supervisor.fetch_options()
-            except SupervisorError:
-                base = self.raw_options
+            except SupervisorError as err:
+                # Never fall back to the start-up copy: it holds resolved !secret values.
+                raise PanelError("Home Assistant is not reachable; try again") from err
             raw = copy.deepcopy(base)
             mutate(raw)
             try:
-                config = load_config(raw)
-            except ConfigError as err:
+                config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+            except (ConfigError, SecretError) as err:
                 raise PanelError(str(err)) from err
             try:
                 self.supervisor.write_options(raw)
@@ -260,8 +271,8 @@ class App:
         if raw == self.raw_options:
             return
         try:
-            config = load_config(raw)
-        except ConfigError as err:
+            config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+        except (ConfigError, SecretError) as err:
             _LOGGER.error("Ignoring updated options until they are fixed: %s", err)  # noqa: TRY400 - no traceback needed
             self.raw_options = raw
             return
@@ -719,14 +730,28 @@ SETUP_EXAMPLE = """accounts:
     account_number: "12345678-B7654321\""""
 
 
-def _initial_options(supervisor: Supervisor) -> dict[str, object]:
+def _load_config(
+    supervisor: Supervisor, secrets: SecretRefs, router: PanelRouter, stop: threading.Event
+) -> tuple[dict[str, object], Config] | None:
+    """The stored options (!secret references kept) and their config; waits in the panel while invalid."""
+
+    raw_options = initial_options(load_options, supervisor.fetch_options, secrets)
+
+    def validate(raw: dict[str, object]) -> Config:
+        return load_config(secrets.resolve(raw))  # type: ignore[arg-type]
+
     try:
-        return load_options()
-    except ConfigError:
-        try:
-            return supervisor.fetch_options()
-        except SupervisorError:
-            return {}
+        return raw_options, validate(raw_options)
+    except (ConfigError, SecretError) as err:
+        _LOGGER.error("Configuration problem: %s", err)  # noqa: TRY400 - no traceback needed
+        _LOGGER.info("Waiting for a valid configuration; open the SAJ Water panel for details")
+        view = SetupView("Ranhill SAJ Bill Checker", str(err), SETUP_HELP, SETUP_EXAMPLE)
+        router.target = view
+        result = wait_for_valid_config(supervisor.fetch_options, validate, view, stop)
+        if result is None:
+            return None
+        _LOGGER.info("Configuration is valid now; starting")
+        return result  # type: ignore[return-value]
 
 
 def main() -> None:
@@ -758,19 +783,11 @@ def main() -> None:
     server = PanelServer(WEB_DIR, router.get_state, router.on_toggle, router.on_action)
     server.start()
     try:
-        raw_options = _initial_options(supervisor)
-        try:
-            config = load_config(raw_options)
-        except ConfigError as err:
-            _LOGGER.error("Configuration problem: %s", err)  # noqa: TRY400 - no traceback needed
-            _LOGGER.info("Waiting for a valid configuration; open the SAJ Water panel for details")
-            view = SetupView("Ranhill SAJ Bill Checker", str(err), SETUP_HELP, SETUP_EXAMPLE)
-            router.target = view
-            result = wait_for_valid_config(supervisor.fetch_options, load_config, view, stop)
-            if result is None:
-                return
-            raw_options, config = result  # type: ignore[assignment]
-            _LOGGER.info("Configuration is valid now; starting")
+        secrets = SecretRefs()
+        loaded = _load_config(supervisor, secrets, router, stop)
+        if loaded is None:
+            return
+        raw_options, config = loaded
 
         if config.log_level != "info":
             _LOGGER.info("Log level set to %s", config.log_level)
@@ -780,6 +797,7 @@ def main() -> None:
         store = Store()
         store.load()
         app = App(config, supervisor, store, raw_options)
+        app.secrets = secrets
         router.target = app
         if stop.is_set():
             return

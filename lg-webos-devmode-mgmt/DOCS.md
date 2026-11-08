@@ -108,13 +108,23 @@ When a renewal fails after all retries, the app notifies every phone that is swi
 - On start, the app immediately renews every enabled TV, then repeats on the schedule.
 - The **Log** tab shows each renewal by TV name only. It never shows renewal URLs or tokens.
 
+## Passwords and secrets
+
+- **Where they live:** Home Assistant's Supervisor stores the app options, including each TV's `token` or `url`. The app keeps no copy: its own file `/data/state.json` never holds a password, token or account number. Home Assistant encrypts its backups.
+- **Masked:** password fields show as dots in the Configuration tab.
+- **Never logged:** passwords, tokens and cookie values never appear in the log or the panel, and numbers are masked.
+- **`!secret`:** to keep a value out of the app options, put it in `/config/secrets.yaml` and reference it, for example `token: "!secret living_room_tv_token"`.
+  - The panel switches and live edits keep the reference as it is. The app never writes the value back.
+  - A new or changed secret takes effect after you **restart** the app, because the Supervisor reads `secrets.yaml` only at start. Until then the panel keeps the old value and the log says a restart is needed.
+- Anyone who can open the app's Configuration tab, or log in to the host, can still see the values. Give the Home Assistant admin role only to people you trust.
+
 ## Troubleshooting
 
 - **TV shows "LG maintenance":** LG's site answered with a maintenance page or HTTP 503. That doesn't count as a failure and sends no alert. The app retries after 30 min, then 1 h, 2 h, 4 h, up to 6 h, and returns to the normal interval after the next success.
 
 - **Configuration needs attention:** if the options are invalid (for example no TV yet), the app keeps running and the panel shows exactly what to fix. It starts within 15 seconds of saving valid options.
 - **What do the `s6-rc` lines in the log mean?** The app runs as an s6-overlay service, the process supervisor built into Home Assistant app images. Only s6 warnings and errors are logged. Older versions printed `legacy-cont-init`, `legacy-services` and `s6-rc.d is empty` on every start. Those were harmless, and came from running without a proper service definition.
-- **Invalid URL:** a session's `url` must start with `http://` or `https://`.
+- **Invalid URL:** a session's `url` must be an `https://` address, because it carries the session token. It is masked in the Configuration tab.
 - **Network errors:** make sure the Home Assistant host can reach `developer.lge.com`.
 - **LG answers "not success" / `ERR_005`:** the token is stale. Read a fresh one from the TV and update the session.
 - **No notifications:**
