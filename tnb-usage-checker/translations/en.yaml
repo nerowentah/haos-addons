@@ -20,6 +20,12 @@ configuration:
   mqtt:
     name: Use MQTT when available
     description: Publish one MQTT device per account when a broker (e.g. the Mosquitto broker app) is found; it is detected automatically while the app runs. Off, or without a broker, entities are created through the Home Assistant states API instead.
+  daily_report:
+    name: Daily usage report
+    description: Once a day, when myTNB publishes a new complete day, notify the phones with that day's kWh and RM, the change from the day before, and the billing cycle so far. Also a switch in the TNB Usage panel.
+  debug_login:
+    name: Verbose login log
+    description: Log every myTNB login step (redirects, HTTP status, cookie and form field names, page titles) to debug login and meter errors. Passwords, cookie values and account numbers are never logged. Also a switch in the TNB Usage panel.
   mytnb_username:
     name: myTNB email (shared)
     description: The email you log in to myTNB with. Used by every account below that has an account number, so one login covers all your TNB accounts. Needs a smart meter (AMI).
@@ -50,7 +56,7 @@ configuration:
         description: Password for the different login above. Masked in the UI and never logged.
       smartmeter_url:
         name: Smart meter URL (legacy, optional)
-        description: Older way to identify the account. Prefer account_number; if set, the caNo in this link is used.
+        description: The address of View Energy Usage for this account on the myTNB website. Only needed if sync reports meter_error; when set, it is used instead of account_number.
       import_entity:
         name: Grid import energy sensor (optional)
         description: Cumulative kWh/Wh sensor of energy drawn from TNB (e.g. a Shelly EM channel) for the live bill estimate.

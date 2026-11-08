@@ -11,7 +11,7 @@ from pathlib import Path
 import tariff
 
 CONFIG_PATH = Path("/data/options.json")
-SMARTMETER_PATH_RE = re.compile(r"/AccountManagement/SmartMeter/Index/TRIL\?caNo=(\d+)")
+SMARTMETER_PATH_RE = re.compile(r"/AccountManagement/SmartMeter/Index/TRIL\?caNo=([^\"'\s<>&#]+)")
 ACCOUNT_NUMBER_RE = re.compile(r"^\d{10,14}$")
 SMARTMETER_PATH = "/AccountManagement/SmartMeter/Index/TRIL?caNo={ca_no}"
 ENTITY_ID_RE = re.compile(r"^sensor\.[a-z0-9_]+$")
@@ -83,6 +83,8 @@ class Config:
     notify_on_failure: bool
     accounts: list[Account]
     mqtt: bool = True
+    debug_login: bool = False
+    daily_report: bool = True
 
 
 def slugify(value: str) -> str:
@@ -122,25 +124,25 @@ def _int(raw: dict[str, object], key: str, default: int, low: int, high: int) ->
 
 
 def _account_number(name: str, entry: dict[str, object]) -> str:
-    """The TNB account number (caNo), from ``account_number`` or the legacy ``smartmeter_url``."""
+    """The portal's caNo: from ``smartmeter_url`` when pasted, else ``account_number``.
+
+    A pasted View Energy Usage link wins, verbatim: it is the portal's own
+    spelling of the account, which is not always the number on the bill.
+    """
 
     number = re.sub(r"[\s-]", "", _str(entry, "account_number"))
-    if number:
-        if not ACCOUNT_NUMBER_RE.match(number):
-            raise ConfigError(
-                f"Account '{name}': account_number must be the 10-14 digit number printed on your TNB bill"
-            )
-        return number
+    if number and not ACCOUNT_NUMBER_RE.match(number):
+        raise ConfigError(f"Account '{name}': account_number must be the 10-14 digit number printed on your TNB bill")
     url = _str(entry, "smartmeter_url")
     if url:
         match = SMARTMETER_PATH_RE.search(url)
         if not match:
             raise ConfigError(
                 f"Account '{name}': smartmeter_url must contain /AccountManagement/SmartMeter/Index/TRIL?caNo=...; "
-                "easier: remove it and set account_number to the number on your bill"
+                "copy it from View Energy Usage on the myTNB website, or remove it and set account_number"
             )
         return match.group(1)
-    return ""
+    return number
 
 
 def build_account(index: int, entry: object, default_login: tuple[str, str] = ("", "")) -> Account:
@@ -238,6 +240,8 @@ def load_config(raw: dict[str, object]) -> Config:
         notify_on_failure=bool(raw.get("notify_on_failure", True)),
         accounts=accounts,
         mqtt=_bool(raw, "mqtt"),
+        debug_login=_bool(raw, "debug_login", default=False),
+        daily_report=_bool(raw, "daily_report"),
     )
 
 

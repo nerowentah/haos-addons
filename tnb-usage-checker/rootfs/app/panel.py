@@ -22,6 +22,7 @@ PORTAL_STATUS = {
     "ok": badge("Synced", "ok"),
     "pending": badge("Waiting for first sync"),
     "auth_error": badge("Login failed", "error"),
+    "meter_error": badge("Smart meter not found", "error"),
     "error": badge("Portal error", "warn"),
 }
 
@@ -187,6 +188,22 @@ def build_state(app: App) -> dict[str, object]:
                 "Notify the phones below when myTNB sync fails or recovers",
                 icon="mdi:bell",
             ),
+            toggle(
+                "daily_report",
+                "Daily usage report",
+                config.daily_report,
+                "Notify the phones below once a day, when myTNB publishes a new complete day: "
+                "that day's kWh and RM, the change from the day before, and the cycle so far",
+                icon="mdi:chart-bar",
+            ),
+            toggle(
+                "debug_login",
+                "Verbose login log",
+                config.debug_login,
+                "Log every myTNB login step (redirects, status, cookie and form field names) to find login "
+                "problems. Passwords, cookie values and account numbers are never logged",
+                icon="mdi:script-text",
+            ),
         ],
     }
 
@@ -223,7 +240,7 @@ def apply_toggle(options: dict[str, object], toggle_id: str, value: bool) -> Non
     """Write one toggle into a raw options dict (mutates ``options``)."""
 
     kind, _, rest = toggle_id.partition(":")
-    if kind in ("notify_on_failure", "mqtt") and not rest:
+    if kind in ("notify_on_failure", "mqtt", "debug_login", "daily_report") and not rest:
         options[kind] = value
         return
     if kind == "account":

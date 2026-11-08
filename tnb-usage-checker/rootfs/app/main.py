@@ -18,12 +18,13 @@ from types import FrameType
 
 import mqtt_pub
 import panel
+import report
 import stats
 import tariff
 from config import Account, Config, ConfigError, load_config, load_options
 from holidays import HolidayCalendar
 from meter import MYT, AccountMeter, billing_period_start, is_peak, to_kwh
-from mytnb import AuthError, MyTnbError, MyTnbSession, PortalData
+from mytnb import AuthError, CredentialsError, MeterNotFoundError, MyTnbError, MyTnbSession, PortalData, set_debug
 from store import Store
 from supervisor import (
     Supervisor,
@@ -45,6 +46,7 @@ MIN_SLEEP_SECONDS = 1
 STORE_SAVE_SECONDS = 60
 PORTAL_WINDOW_DAYS = 30
 PORTAL_RETRY_SECONDS = 30 * 60
+METER_RETRY_SECONDS = 3 * 3600  # logged in but no meter: retry sooner than a bad password
 PORTAL_STAGGER_SECONDS = 20
 TRANSIENT_FAILURES_BEFORE_NOTIFY = 3
 OPTIONS_CHECK_SECONDS = 30
@@ -57,6 +59,11 @@ UNAVAILABLE_STATES = {"unknown", "unavailable", "none", ""}
 STATUS_OK = "ok"
 STATUS_AUTH = "auth_error"
 STATUS_ERROR = "error"
+STATUS_METER = "meter_error"
+FAILURE_HINTS = {
+    STATUS_AUTH: "Check the myTNB email and password.",
+    STATUS_METER: "Login worked but no smart meter was found: paste the account's View Energy Usage link as smartmeter_url.",
+}
 
 
 def cycle_start_iso(account: Account, now: datetime) -> str:
@@ -153,6 +160,7 @@ class App:
             runtimes.append(runtime)
         self.runtimes = runtimes
         self.config = config
+        set_debug(config.debug_login)
 
     # -- Options (panel toggles + Configuration tab, applied without a restart) --
     def view_config(self) -> Config:
@@ -172,6 +180,8 @@ class App:
             self.holidays.refresh(datetime.now(MYT).year)
         if old.mqtt != config.mqtt:
             self.next_mqtt_check = 0.0
+        if old.debug_login != config.debug_login:
+            _LOGGER.info("Verbose myTNB login log %s", "on" if config.debug_login else "off")
         self.publish_discovery()
         _LOGGER.info("Applied updated options (%d account(s))", len(config.accounts))
 
@@ -618,8 +628,14 @@ class App:
         _LOGGER.info("Syncing myTNB portal for '%s'", account.name)
         try:
             data = session.fetch(window_start, now + timedelta(days=1))
-        except AuthError as err:
+        except CredentialsError as err:
             self._portal_failed(runtime, STATUS_AUTH, str(err), retry_seconds=interval)
+            return
+        except AuthError as err:  # smartliving session flakiness (redirect loops), not the password
+            self._portal_failed(runtime, STATUS_ERROR, str(err), retry_seconds=min(interval, PORTAL_RETRY_SECONDS))
+            return
+        except MeterNotFoundError as err:
+            self._portal_failed(runtime, STATUS_METER, str(err), retry_seconds=min(interval, METER_RETRY_SECONDS))
             return
         except MyTnbError as err:
             self._portal_failed(runtime, STATUS_ERROR, str(err), retry_seconds=min(interval, PORTAL_RETRY_SECONDS))
@@ -677,12 +693,36 @@ class App:
             cycle_usage,
             cycle_cost,
         )
+        self._send_daily_report(account, data)
         if runtime.failure_notified:
             self.notify(account, "TNB portal sync recovered", f"myTNB data for '{account.name}' is syncing again.")
         runtime.portal_failures = 0
         runtime.failure_notified = False
         runtime.next_portal = time.monotonic() + interval
         self.publish_state(runtime)
+
+    def _send_daily_report(self, account: Account, data: PortalData) -> None:
+        """Notify once per account for each newly complete day of portal data."""
+
+        if not self.config.daily_report:
+            return
+        sent = self.store.section("daily_reports")
+        try:
+            last = date.fromisoformat(str(sent.get(account.account_id))) if sent.get(account.account_id) else None
+        except ValueError:
+            last = None
+        daily = report.build_report(
+            data.usage, data.cost, lambda day: billing_period_start(day, account.billing_start_day), last
+        )
+        if daily is None:
+            return
+        targets = effective_targets(self.discovered, self.phones)
+        self.supervisor.notify(
+            targets, daily.title, daily.message(account.name), notification_id(account.account_id) + "_daily"
+        )
+        _LOGGER.info("Daily report for '%s' (%s): %.2f kWh", account.name, daily.day.isoformat(), daily.usage_kwh)
+        sent[account.account_id] = daily.day.isoformat()
+        self.store.dirty = True
 
     def _portal_failed(self, runtime: AccountRuntime, status: str, reason: str, retry_seconds: int) -> None:
         account = runtime.account
@@ -697,10 +737,10 @@ class App:
             retry_seconds // 60,
         )
         self.publish_state(runtime)
-        should_notify = status == STATUS_AUTH or runtime.portal_failures >= TRANSIENT_FAILURES_BEFORE_NOTIFY
+        should_notify = status != STATUS_ERROR or runtime.portal_failures >= TRANSIENT_FAILURES_BEFORE_NOTIFY
         if should_notify and not runtime.failure_notified:
             runtime.failure_notified = True
-            hint = "Check the myTNB email and password." if status == STATUS_AUTH else "The portal may be down."
+            hint = FAILURE_HINTS.get(status, "The portal may be down.")
             self.notify(account, "TNB portal sync failed", f"Could not fetch myTNB data for '{account.name}'. {hint}")
 
     # -- Loop -------------------------------------------------------------------
