@@ -4,6 +4,7 @@ Home Assistant OS apps (formerly called add-ons) covering:
 - LG webOS Developer Mode management
 - Malaysian utility checkers
 - a manager for your Companion app devices
+- an API key (long-lived access token) reviewer
 
 ## Add this repository
 
@@ -19,10 +20,11 @@ https://github.com/nerowentah/haos-addons
 
 | | App | Version | Arch | What it does |
 | --- | --- | --- | --- | --- |
-| <img src="tnb-usage-checker/icon.png" width="32" alt=""> | [TNB Usage Checker](tnb-usage-checker/) | 0.3.2 | aarch64, amd64 | Imports myTNB usage and cost into the Energy dashboard and estimates your TNB bill live, for multiple accounts under one myTNB login. |
-| <img src="lg-webos-devmode-mgmt/icon.png" width="32" alt=""> | [LG webOS DevMode Mgmt](lg-webos-devmode-mgmt/) | 1.7.3 | aarch64, amd64 | Renews LG webOS Developer Mode sessions on a schedule so they never expire. |
-| <img src="mobile-device-manager/icon.png" width="32" alt=""> | [Mobile Device Manager](mobile-device-manager/) | 0.1.2 | aarch64, amd64 | Lists your Companion app devices with last seen, battery and every automation, script and notify call that uses them. Flags stale and duplicate devices and removes them safely. |
-| <img src="ranhill-saj-bill-checker/icon.png" width="32" alt=""> | [Ranhill SAJ Bill Checker](ranhill-saj-bill-checker/) | 0.1.0 | aarch64, amd64 | Shows the amount due on your Ranhill SAJ (Johor) water accounts, read from the public Quick Payment page with no login. |
+| <img src="tnb-usage-checker/icon.png" width="32" alt=""> | [TNB Usage Checker](tnb-usage-checker/) | 0.4.1 | aarch64, amd64 | Imports myTNB usage and cost into the Energy dashboard and estimates your TNB bill live, for multiple accounts under one myTNB login. |
+| <img src="lg-webos-devmode-mgmt/icon.png" width="32" alt=""> | [LG webOS DevMode Mgmt](lg-webos-devmode-mgmt/) | 1.7.7 | aarch64, amd64 | Renews LG webOS Developer Mode sessions on a schedule so they never expire. |
+| <img src="mobile-device-manager/icon.png" width="32" alt=""> | [Mobile Device Manager](mobile-device-manager/) | 0.1.5 | aarch64, amd64 | Lists your Companion app devices with last seen, battery and every automation, script and notify call that uses them. Flags stale and duplicate devices and removes them safely. |
+| <img src="ranhill-saj-bill-checker/icon.png" width="32" alt=""> | [Ranhill SAJ Bill Checker](ranhill-saj-bill-checker/) | 0.2.1 | aarch64, amd64 | Shows the amount due on your Ranhill SAJ (Johor) water accounts, read from the public Quick Payment page with no login. |
+| <img src="api-key-manager/icon.png" width="32" alt=""> | [API Key Manager](api-key-manager/) | 0.1.0 | aarch64, amd64 | Lists every user's long-lived access tokens (API keys) with description, owner, last used and IP. Flags unused, vague and admin keys, and lets you approve, mark suspicious and annotate each one. Read-only. |
 
 **Planned:** TM Unifi Bill Checker (`tm-unifi-bill-checker/`).
 
@@ -49,6 +51,7 @@ tnb-usage-checker/         one folder per app: config.yaml, Dockerfile, docs, ic
 lg-webos-devmode-mgmt/
 mobile-device-manager/
 ranhill-saj-bill-checker/
+api-key-manager/
 .github/workflows/         builder.yaml (finds changed apps), build-app.yaml (builds, signs, verifies one app),
                            retry-signing.yaml (re-runs builds that failed only because Sigstore was down)
 pyproject.toml             ruff settings for every app

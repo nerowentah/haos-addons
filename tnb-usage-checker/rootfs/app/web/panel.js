@@ -172,10 +172,16 @@ function renderAction(item) {
   );
   button.addEventListener("click", async () => {
     if (item.confirm && !window.confirm(item.confirm)) return;
+    const args = { ...(item.args || {}) };
+    if (item.prompt) {
+      const text = window.prompt(item.prompt, item.prompt_value || "");
+      if (text === null) return;
+      args.text = text;
+    }
     button.disabled = true;
     pending += 1;
     try {
-      const data = await post("api/action", { id: item.id, args: item.args || {} });
+      const data = await post("api/action", { id: item.id, args });
       toast(data.message || `${item.label}: started`);
     } catch (err) {
       toast(err.message, true);
@@ -346,7 +352,7 @@ function renderCard(card) {
             { class: "row" },
             mdi(l.icon, "row-icon"),
             h("div", { class: "row-text" }, h("div", { class: "row-label" }, l.label), l.description && h("div", { class: "row-desc" }, l.description)),
-            renderLinkButton(l),
+            l.path && renderLinkButton(l),
           ),
         ),
       ),

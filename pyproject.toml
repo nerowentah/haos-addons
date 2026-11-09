@@ -51,6 +51,15 @@ ignore = ["E501"]
   "PLR2004",
   "PT009",
 ]
+"api-key-manager/**/*.py" = [
+  "TRY003",
+]
+"api-key-manager/tests/*.py" = [
+  "TRY003",
+  "S101",
+  "PLR2004",
+  "PT009",
+]
 "mobile-device-manager/tests/*.py" = [
   "TRY003",
   "S101",

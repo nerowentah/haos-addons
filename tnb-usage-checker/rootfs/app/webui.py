@@ -378,8 +378,13 @@ def action(  # noqa: PLR0913 - view-model fields
     danger: bool = False,
     reason: str = "",
     icon: str = "",
+    prompt: str = "",
+    prompt_value: str = "",
 ) -> dict[str, object]:
-    """A button; ``confirm`` asks first, ``reason`` explains why it is disabled."""
+    """A button; ``confirm`` asks first, ``reason`` explains why it is disabled.
+
+    ``prompt`` asks for a line of text first (pre-filled with ``prompt_value``); it arrives as ``args["text"]``.
+    """
 
     return {
         "id": action_id,
@@ -390,6 +395,8 @@ def action(  # noqa: PLR0913 - view-model fields
         "danger": danger,
         "reason": reason,
         "icon": icon,
+        "prompt": prompt,
+        "prompt_value": prompt_value,
     }
 
 
@@ -399,6 +406,12 @@ def link(label: str, path: str, description: str = "", *, button: str = "Edit", 
     if not path.startswith(HA_PATH_PREFIX):
         raise ValueError(f"panel links must point into {HA_PATH_PREFIX}")
     return {"label": label, "path": path, "description": description, "button": button, "icon": icon}
+
+
+def row(label: str, description: str = "", *, icon: str = "") -> dict[str, object]:
+    """A plain row (in ``links``) without a button, e.g. a note or a list entry."""
+
+    return {"label": label, "path": "", "description": description, "button": "", "icon": icon}
 
 
 def notice(text: str, tone: str = "warn") -> dict[str, str]:
