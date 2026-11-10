@@ -1,5 +1,7 @@
 # Ranhill SAJ Bill Checker
 
+> **Deprecated:** this app is replaced by [Malaysia Utility Bills](../malaysia-utility-bills/), which handles TNB and Ranhill SAJ together and keeps this app's entities and their history. Install it, press **Import from Ranhill SAJ Bill Checker** in its panel, then stop this app. See *Moving from the old apps* in its documentation.
+
 Ranhill SAJ Bill Checker shows the **amount due** on one or more Ranhill SAJ (Johor) water accounts in Home Assistant.
 
 It uses the public **Quick Payment** page at ranhillsaj.com.my, which needs no login. You enter an account number there and it shows the holder's name and the amount due before you pay. The app does the same lookup on a schedule. It never goes past that step, so **it never starts a payment**.
