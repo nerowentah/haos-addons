@@ -1,5 +1,5 @@
 name: "Mobile Device Manager"
-version: "0.1.4"
+version: "0.1.5"
 slug: "mobile_device_manager"
 description: >-
   Inventory and safe cleanup of Home Assistant Companion app devices: last

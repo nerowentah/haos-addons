@@ -1,0 +1,13 @@
+configuration:
+  log_level:
+    name: Log level
+    description: How much the app writes to its log - trace, debug, info (default), notice, warning, error or fatal. Use debug while troubleshooting, then set it back to info. Applies without a restart.
+  unused_days:
+    name: Unused after (days)
+    description: A key that has not been used for this many days is flagged Unused (7-3650).
+  notify_on_new_keys:
+    name: Notifications
+    description: Notify when a new API key is created or the keys can't be read. Phones are found automatically; switch individual phones on or off in the API Keys panel.
+  vague_words:
+    name: Extra vague words
+    description: Words that, on top of the built-in list (test, token, key, api, temp...), make a description count as vague when it contains nothing else.
