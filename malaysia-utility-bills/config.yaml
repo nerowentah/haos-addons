@@ -1,0 +1,79 @@
+name: "Malaysia Utility Bills"
+version: "0.1.0"
+slug: "malaysia_utility_bills"
+description: >-
+  TNB electricity and Ranhill SAJ water in one app: imports myTNB smart meter
+  usage and cost into the Energy dashboard, estimates the running TNB bill and
+  checks the amount due on each account, published as MQTT devices when a
+  broker is available. Replaces TNB Usage Checker and Ranhill SAJ Bill Checker
+  and keeps their entities.
+url: "https://github.com/nerowentah/haos-addons/tree/main/malaysia-utility-bills"
+image: "ghcr.io/nerowentah/malaysia-utility-bills"
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:receipt-text
+panel_title: Utility Bills
+panel_admin: true
+homeassistant_api: true
+hassio_api: true
+services:
+  - mqtt:want
+options:
+  notify_on_failure: true
+  notify_on_unpaid: true
+  mqtt: true
+  tnb_mytnb_username: ""
+  tnb_mytnb_password: ""
+  tnb_accounts: []
+  tnb_portal_interval_hours: 6
+  tnb_meter_poll_seconds: 60
+  tnb_afa_rate: 0.0
+  tnb_calendarific_api_key: ""
+  tnb_extra_holidays: []
+  tnb_daily_report: true
+  tnb_maintenance_windows:
+    - "daily 00:00-06:00"
+  tnb_debug_login: false
+  saj_accounts: []
+  log_level: info
+schema:
+  notify_on_failure: bool
+  notify_on_unpaid: bool?
+  mqtt: bool
+  tnb_mytnb_username: str?
+  tnb_mytnb_password: password?
+  tnb_accounts:
+    - name: str
+      account_number: match(^(\d{10,14})?$)?
+      tariff: list(general|tou)
+      billing_start_day: int(1,31)
+      mytnb_username: email?
+      mytnb_password: password?
+      smartmeter_url: password?
+      import_entity: str?
+      export_entity: str?
+      enabled: bool?
+      portal_enabled: bool?
+      meter_enabled: bool?
+      statistics_enabled: bool?
+  tnb_portal_interval_hours: int(1,168)
+  tnb_meter_poll_seconds: int(10,600)
+  tnb_afa_rate: float(-1,1)
+  tnb_calendarific_api_key: password?
+  tnb_extra_holidays:
+    - match(^\d{4}-\d{2}-\d{2}$)
+  tnb_daily_report: bool?
+  tnb_maintenance_windows:
+    - str
+  tnb_debug_login: bool?
+  saj_accounts:
+    - name: str
+      account_number: match(^(\s*\d{8}[\s-]*[A-Za-z][\s-]*\d{7}\s*)?$)?
+      enabled: bool?
+  log_level: list(trace|debug|info|notice|warning|error|fatal)?

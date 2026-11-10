@@ -1,5 +1,7 @@
 # TNB Usage Checker
 
+> **Deprecated:** this app is replaced by [Malaysia Utility Bills](../malaysia-utility-bills/), which handles TNB and Ranhill SAJ together and keeps this app's entities, history and Energy dashboard statistics. Install it, press **Import from TNB Usage Checker** in its panel, then stop this app. See *Moving from the old apps* in its documentation.
+
 TNB Usage Checker tracks Malaysian **TNB** electricity for one or more accounts. For each account it can:
 
 - **Import myTNB smart meter data.** It logs in to the myTNB portal and pulls hourly usage (kWh) and cost (RM). These become long-term statistics you can pick in the **Energy dashboard**.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2
+
+- **Replaced by Malaysia Utility Bills.** The new app handles TNB and Ranhill SAJ together and keeps this app's entities, history and Energy dashboard statistics. Install it, press **Import from TNB Usage Checker** in its panel, then stop this app. This app keeps working but gets no new features. It logs a reminder on start and shows one notification.
+
 ## 0.4.1
 
 - Shared panel update: buttons can ask for a line of text, and cards can list plain rows without a button (used by API Key Manager). This app's panel looks the same.
