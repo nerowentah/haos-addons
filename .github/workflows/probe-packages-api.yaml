@@ -1,9 +1,7 @@
 name: Probe packages API
 
-# Round 2: can GITHUB_TOKEN delete packages, and how can we discover them?
-# Read-only except deleting one of the three approved orphan packages
-# (aarch64-malaysia-utility-bills), which this whole task exists to delete
-# anyway - and which stays restorable for 30 days.
+# Round 3: version-level DELETE + RESTORE with GITHUB_TOKEN, on an orphan
+# package this task exists to delete anyway. Net effect of the pair: none.
 
 on:
   pull_request:
@@ -21,60 +19,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Round 2 - discovery and deletion
+      - name: Round 3 - version delete and restore
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          b64url() {
-            local s="$1"
-            while (( ${#s} % 4 != 0 )); do s+="="; done
-            printf '%s' "$s"
-          }
-
-          echo "=== undocumented: GET /repositories/1385020592/packages ==="
-          gh api -i "/repositories/1385020592/packages?package_type=container&per_page=100" 2>&1 | head -c 3000
-          echo
-          echo "=== undocumented: GET /repos/nerowentah/haos-addons/packages ==="
-          gh api -i "/repos/nerowentah/haos-addons/packages?package_type=container&per_page=100" 2>&1 | head -c 3000
-          echo
-          echo "=== ghcr catalog token (registry:catalog:*) ==="
-          tok=$(curl -sS -u "nerowentah:${GH_TOKEN}" "https://ghcr.io/token?service=ghcr.io&scope=registry:catalog:*" | jq -r .token)
-          if [[ -n "${tok}" && "${tok}" != "null" ]]; then
-            echo "granted scopes:"
-            b64url "$(printf '%s' "${tok}" | cut -d. -f2)" | tr '_-' '/+' | jq -Rr '@base64d | fromjson | .access' || echo "(decode failed)"
-            echo "--- GET /v2/_catalog ---"
-            curl -sS -H "Authorization: Bearer ${tok}" "https://ghcr.io/v2/_catalog" | head -c 3000
+          pkg=amd64-malaysia-utility-bills
+          echo "=== before ==="
+          gh api "/user/packages/container/${pkg}" | jq -c '{name, version_count}'
+          vid=$(gh api "/user/packages/container/${pkg}/versions?per_page=100" | jq -r '.[0].id')
+          echo "=== DELETE version ${vid} ==="
+          if gh api --silent --method DELETE "/user/packages/container/${pkg}/versions/${vid}"; then
+            echo "VERSION DELETE: SUCCESS"
           else
-            echo "no catalog token granted"
+            echo "VERSION DELETE: FAILED"
           fi
-          echo
-          echo "=== ghcr token scopes available for one repository ==="
-          tok2=$(curl -sS -u "nerowentah:${GH_TOKEN}" "https://ghcr.io/token?service=ghcr.io&scope=repository:nerowentah/power-tnb:pull,push,delete" | jq -r .token)
-          if [[ -n "${tok2}" && "${tok2}" != "null" ]]; then
-            b64url "$(printf '%s' "${tok2}" | cut -d. -f2)" | tr '_-' '/+' | jq -Rr '@base64d | fromjson | .access' || echo "(decode failed)"
-          fi
-          echo
-          echo "=== orphan target before: aarch64-malaysia-utility-bills ==="
-          gh api "/user/packages/container/aarch64-malaysia-utility-bills" 2>&1 | jq -c '{name, version_count, repository: .repository.full_name}' || true
-          echo
-          echo "=== live package multi-page version listing: untagged versions of power-tnb ==="
-          gh api --paginate --slurp "/user/packages/container/power-tnb/versions?per_page=100" \
-            | jq -c '{pages: length, versions: ([.[][]] | length), untagged: ([.[][] | select((.metadata.container.tags // []) | length == 0)] | length)}'
-          echo
-          echo "=== DELETE whole package aarch64-malaysia-utility-bills ==="
-          if gh api --silent --method DELETE "/user/packages/container/aarch64-malaysia-utility-bills"; then
-            echo "PACKAGE-LEVEL DELETE: SUCCESS"
-            echo "--- verify: GET after delete ---"
-            gh api -i "/user/packages/container/aarch64-malaysia-utility-bills" 2>&1 | grep -m1 "^HTTP" || echo "(no HTTP status line)"
+          echo "=== after delete ==="
+          gh api "/user/packages/container/${pkg}" | jq -c '{name, version_count}'
+          echo "=== RESTORE version ${vid} ==="
+          if gh api --silent --method POST "/user/packages/container/${pkg}/versions/${vid}/restore"; then
+            echo "VERSION RESTORE: SUCCESS"
           else
-            echo "PACKAGE-LEVEL DELETE: FAILED"
-            echo "=== fallback: DELETE one version of amd64-malaysia-utility-bills ==="
-            vid=$(gh api "/user/packages/container/amd64-malaysia-utility-bills/versions?per_page=1" | jq -r '.[0].id')
-            echo "version id: ${vid}"
-            if gh api --silent --method DELETE "/user/packages/container/amd64-malaysia-utility-bills/versions/${vid}"; then
-              echo "VERSION-LEVEL DELETE: SUCCESS"
-              gh api "/user/packages/container/amd64-malaysia-utility-bills" | jq -c '{name, version_count, repository: .repository.full_name}'
-            else
-              echo "VERSION-LEVEL DELETE: FAILED TOO"
-            fi
+            echo "VERSION RESTORE: FAILED"
           fi
+          echo "=== after restore ==="
+          gh api "/user/packages/container/${pkg}" | jq -c '{name, version_count}'
+          echo "=== active versions with tags ==="
+          gh api "/user/packages/container/${pkg}/versions?per_page=100&state=active" | jq -c '[.[] | {id, tags: (.metadata.container.tags // [])}]'
