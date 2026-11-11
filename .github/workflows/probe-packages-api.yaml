@@ -1,0 +1,59 @@
+name: Probe packages API
+
+# Read-only probe: which packages-API calls work with the installation token
+# (GITHUB_TOKEN)? Never merged; delete the branch after reading the results.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/probe-packages-api.yaml
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  probe:
+    name: Probe
+    if: github.repository == 'nerowentah/haos-addons'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe REST and GraphQL with GITHUB_TOKEN
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== sanity: /rate_limit ==="
+          gh api -i /rate_limit 2>&1 | head -25
+          echo
+          echo "=== GET /user ==="
+          gh api -i /user 2>&1 | head -40
+          echo
+          echo "=== GET /user/packages?package_type=container ==="
+          gh api -i "/user/packages?package_type=container&per_page=5" 2>&1 | head -50
+          echo
+          echo "=== GET /user/packages/container/power-tnb ==="
+          gh api -i "/user/packages/container/power-tnb" 2>&1 | head -50
+          echo
+          echo "=== GET /user/packages/container/power-tnb/versions ==="
+          gh api -i "/user/packages/container/power-tnb/versions?per_page=2" 2>&1 | head -c 6000
+          echo
+          echo "=== GET /users/nerowentah/packages?package_type=container ==="
+          gh api -i "/users/nerowentah/packages?package_type=container&per_page=100" 2>&1 | head -c 8000
+          echo
+          echo "=== GraphQL repository.packages (no filter) ==="
+          gh api graphql -f query='query { repository(owner: "nerowentah", name: "haos-addons") { packages(first: 100) { totalCount nodes { name packageType versions { totalCount } } } } }' 2>&1 | head -c 8000
+          echo
+          echo "=== GraphQL repository.packages (packageType: DOCKER) ==="
+          gh api graphql -f query='query { repository(owner: "nerowentah", name: "haos-addons") { packages(first: 100, packageType: DOCKER) { totalCount nodes { name } } } }' 2>&1 | head -c 4000
+          echo
+          echo "=== GraphQL user.packages (no filter) ==="
+          gh api graphql -f query='query { user(login: "nerowentah") { packages(first: 100) { totalCount nodes { name packageType versions { totalCount } } } } }' 2>&1 | head -c 8000
+          echo
+          echo "=== ghcr.io token exchange with GITHUB_TOKEN (pull scope) ==="
+          tok=$(curl -sS -u "nerowentah:${GH_TOKEN}" "https://ghcr.io/token?service=ghcr.io&scope=repository:nerowentah/power-tnb:pull" | jq -r .token)
+          echo "token length: ${#tok}"
+          if [[ -n "${tok}" && "${tok}" != "null" ]]; then
+            echo "--- tags/list via registry API (read-only) ---"
+            curl -sS -H "Authorization: Bearer ${tok}" "https://ghcr.io/v2/nerowentah/power-tnb/tags/list" | head -c 2000
+          fi
