@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.3
+
+- **Deprecation withdrawn — this app stays.** Malaysia Utility Bills is retired after a short trial; one app per utility provider is back, since not every user has the same providers. This app continues as the TNB app with no functional changes from 0.4.1. If you had moved to Malaysia Utility Bills, uninstall it and reinstall this app: entity ids, history and Energy dashboard statistics are identical, so nothing is lost.
+
+## 0.4.2
+
+- **Replaced by Malaysia Utility Bills.** The new app handles TNB and Ranhill SAJ together and keeps this app's entities, history and Energy dashboard statistics. Install it, press **Import from TNB Usage Checker** in its panel, then stop this app. This app keeps working but gets no new features. It logs a reminder on start and shows one notification.
+- *Withdrawn:* the successor app was retired in 0.4.3; this app is the TNB app again.
+
 ## 0.4.1
 
 - Shared panel update: buttons can ask for a line of text, and cards can list plain rows without a button (used by API Key Manager). This app's panel looks the same.
