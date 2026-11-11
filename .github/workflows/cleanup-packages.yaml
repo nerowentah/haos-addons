@@ -9,10 +9,19 @@ name: Cleanup ghcr packages
 #   versions - releases, latest and the cosign sha256-* signature tags - are
 #   always kept, so pinned installs and signature verification keep working.
 #
-# Safety: only packages whose repository link is exactly this repository are
-# ever considered; packages belonging to other repositories, or with no link
-# at all, are never touched. Deletions can be undone for 30 days (package
-# settings -> Deleted Packages, or the /restore API).
+# How packages are found: the packages REST API cannot list packages for the
+# GITHUB_TOKEN this workflow runs with (GitHub App installation tokens are
+# rejected by the listing endpoints), but fetching a package, listing its
+# versions and deleting it by name all work. So discovery runs the other way
+# around: the candidate names come from this repository itself - every image
+# name that any config.yaml has ever named in the history of this branch,
+# plus the names the current apps expect - and each candidate is looked up
+# directly. A package that no config.yaml in this repository's history ever
+# named is never considered, and only packages whose repository link is
+# exactly this repository are ever deleted.
+#
+# Deletions can be undone for 30 days (package settings -> Deleted Packages,
+# or the versions restore API).
 #
 # The weekly run deletes for real; manual runs default to a dry run.
 
@@ -40,11 +49,12 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Publishing from a workflow grants the repository the admin role on the
-  # packages it creates, so GITHUB_TOKEN may delete anything this repository
-  # published - no PAT needed. GHCR_CLEANUP_TOKEN is an optional escape
-  # hatch: a classic PAT with read:packages and delete:packages, used instead
-  # of GITHUB_TOKEN when set.
+  # GITHUB_TOKEN can fetch and delete the packages this repository published:
+  # publishing grants the repository the admin role on them. GHCR_CLEANUP_TOKEN
+  # is an optional escape hatch - a classic PAT with read:packages and
+  # delete:packages, used instead of GITHUB_TOKEN when set. Such a token also
+  # sees packages beyond this repository; the repository link check below
+  # keeps those out of scope.
   GH_TOKEN: ${{ secrets.GHCR_CLEANUP_TOKEN || github.token }}
   REPO: ${{ github.repository }}
   # The scheduled run deletes for real and prunes; manual runs follow the inputs.
@@ -59,8 +69,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out the repository
+        # Full history: the candidate package names are read from it.
         uses: actions/checkout@v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Find app directories
@@ -99,28 +111,86 @@ jobs:
           mapfile -t unique < <(printf '%s\n' "${names[@]}" | sort -u)
           echo "names=$(jq -nc '$ARGS.positional' --args "${unique[@]}")" >> "$GITHUB_OUTPUT"
 
-      - name: List the packages linked to this repository
-        id: packages
+      - name: Collect every package name this repository ever had
+        id: candidates
+        env:
+          APPS: ${{ steps.apps.outputs.addons }}
+          EXPECTED: ${{ steps.expected.outputs.names }}
         run: |
-          # --paginate --slurp returns one JSON array per page; .[][] flattens them.
-          gh api --paginate --slurp "/user/packages?package_type=container&per_page=100" \
-            | jq '[.[][] | select(.repository.full_name == env.REPO)]' > packages.json
-          echo "Found $(jq 'length' packages.json) container package(s) linked to ${REPO}."
+          # One line per config.yaml blob ever committed to this branch.
+          git rev-list --objects HEAD \
+            | awk '$2 ~ /^[^/]+\/config\.yaml$/ {print $1}' | sort -u > blobs.txt
+          # Guard the history scan: every current app's config.yaml must be
+          # reachable, otherwise the candidate list is broken and the run
+          # must stop rather than miss orphaned packages silently.
+          for app in ${APPS}; do
+            sha=$(git ls-tree HEAD "${app}/config.yaml" | awk '{print $3}')
+            if [[ -z "${sha}" ]] || ! grep -qx "${sha}" blobs.txt; then
+              echo "::error file=${app}/config.yaml::Not reachable in history; refusing to work with an incomplete candidate list."
+              exit 1
+            fi
+          done
+          names=()
+          while read -r blob; do
+            cfg=$(git cat-file blob "${blob}")
+            image=$(sed -n 's/^image:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' <<< "${cfg}")
+            # A historical config.yaml with no parsable image: line has no
+            # package name to contribute; the apps it built are covered by
+            # whichever of its later revisions named an image.
+            [[ -n "${image}" ]] || continue
+            name=${image##*/}
+            names+=("${name}")
+            while read -r arch; do
+              names+=("${arch}-${name}")
+            done < <(awk '/^arch:/{f=1; next} f && /^[[:space:]]*-[[:space:]]*[^[:space:]]/{sub(/^[[:space:]]*-[[:space:]]*/, ""); gsub(/[[:space:]]/, ""); print; next} f && /^[^[:space:]]/{f=0}' <<< "${cfg}")
+          done < blobs.txt
+          # The current expected names join the candidates so that the live
+          # packages are probed as well.
+          while read -r name; do
+            names+=("${name}")
+          done <<< "$(jq -r '.[]' <<< "${EXPECTED}")"
+          mapfile -t unique < <(printf '%s\n' "${names[@]}" | sort -u)
+          if [[ ${#unique[@]} -eq 0 ]]; then
+            echo "::error::No candidate package names found; refusing to continue."
+            exit 1
+          fi
+          echo "names=$(jq -nc '$ARGS.positional' --args "${unique[@]}")" >> "$GITHUB_OUTPUT"
+
+      - name: Look up the candidate packages
+        env:
+          CANDIDATES: ${{ steps.candidates.outputs.names }}
+        run: |
+          # A package that does not come back for its name either does not
+          # exist or is not visible to this token; either way it is not this
+          # repository's business.
+          : > found.jsonl
+          for name in $(jq -r '.[]' <<< "${CANDIDATES}"); do
+            encoded=$(jq -rn --arg n "${name}" '$n | @uri')
+            resp=$(gh api "/user/packages/container/${encoded}" 2>&1) || true
+            if jq -e . >/dev/null 2>&1 <<< "${resp}"; then
+              jq -c '{name, version_count, html_url, repository: .repository.full_name}' <<< "${resp}" >> found.jsonl
+            else
+              echo "  ${name}: ${resp}"
+            fi
+          done
+          jq -s . found.jsonl > packages.json
+          echo "Probed $(jq 'length' <<< "${CANDIDATES}") name(s) from this repository's history; found $(jq 'length' packages.json) container package(s)."
 
       - name: Find the orphaned packages
         env:
           EXPECTED: ${{ steps.expected.outputs.names }}
+          CANDIDATES: ${{ steps.candidates.outputs.names }}
         run: |
           jq -n --argjson expected "${EXPECTED}" \
                 --argjson packages "$(cat packages.json)" \
-                '[$packages[] | select(.name as $n | ($expected | index($n)) | not)]' > orphans.json
+                '[$packages[] | select(.repository == env.REPO) | select(.name as $n | ($expected | index($n)) | not)]' > orphans.json
           jq -r -n --argjson expected "${EXPECTED}" \
                 --argjson packages "$(cat packages.json)" \
-                '$packages[] | select(.name as $n | ($expected | index($n))) | .name' | sort > live.txt
+                '$packages[] | select(.repository == env.REPO) | select(.name as $n | ($expected | index($n))) | .name' | sort > live.txt
           {
             echo "### Package cleanup"
             echo
-            echo "Found $(jq 'length' packages.json) container package(s) linked to ${REPO}; the apps on this branch expect $(jq 'length' <<<"${EXPECTED}")."
+            echo "Probed $(jq 'length' <<< "${CANDIDATES}") package name(s) from this repository's history; found $(jq 'length' packages.json) package(s); the apps on this branch expect $(jq 'length' <<< "${EXPECTED}")."
             echo
             echo "#### Orphaned packages (no app in this repository anymore)"
             echo
@@ -169,8 +239,6 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Prune old untagged versions of the live packages
-        env:
-          EXPECTED: ${{ steps.expected.outputs.names }}
         run: |
           if [[ "${PRUNE_UNTAGGED}" != "true" ]]; then
             echo "Pruning untagged versions is switched off."
