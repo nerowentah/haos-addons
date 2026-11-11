@@ -1,4 +1,0 @@
-#!/command/with-contenv sh
-# Start the app as an s6-overlay service; with-contenv passes the Supervisor
-# environment (SUPERVISOR_TOKEN, TZ) to the process.
-exec python3 /app/main.py

@@ -77,12 +77,6 @@ STATUS_LAYOUT = "layout_changed"
 STATUS_ERROR = "error"
 RETIRED_OPTIONS = ("poll_interval_hours",)
 PERSISTED_KEYS = ("amount_due", "payment_due", "amount_changed", "status", "last_checked")
-SUCCESSOR_TITLE = "Ranhill SAJ Bill Checker is replaced by Malaysia Utility Bills"
-SUCCESSOR_MESSAGE = (
-    "Malaysia Utility Bills (same app store) handles Ranhill SAJ and TNB in one app and keeps your entities "
-    "and their history. Install it, press Import from Ranhill SAJ Bill Checker in its panel, then stop this "
-    "app. This app gets no new features."
-)
 
 
 def now_iso() -> str:
@@ -320,23 +314,6 @@ class App:
         """Per-phone switches kept in /data (phone name -> notify)."""
 
         return self.store.section("phones")
-
-    def announce_successor(self) -> None:
-        """Say that Malaysia Utility Bills replaces this app: in the log on every start, as a notification once."""
-
-        _LOGGER.warning("%s; this app keeps working until you move", SUCCESSOR_TITLE)
-        if self.store.data.get("successor_notified"):
-            return
-        try:
-            self.supervisor.core_post(
-                "/services/persistent_notification/create",
-                {"notification_id": "ranhill_saj_successor", "title": SUCCESSOR_TITLE, "message": SUCCESSOR_MESSAGE},
-            )
-        except SupervisorError as err:
-            _LOGGER.debug("Could not create the successor notification: %s", err)
-            return
-        self.store.data["successor_notified"] = True
-        self.store.dirty = True
 
     def refresh_phones(self) -> None:
         """Re-list the phones linked to Home Assistant (new phones are notified by default)."""
@@ -825,7 +802,6 @@ def main() -> None:
         if stop.is_set():
             return
         app.migrate_options()
-        app.announce_successor()
         app.run()
     finally:
         server.stop()

@@ -20,19 +20,13 @@ https://github.com/nerowentah/haos-addons
 
 | | App | Version | Arch | What it does |
 | --- | --- | --- | --- | --- |
-| <img src="malaysia-utility-bills/icon.png" width="32" alt=""> | [Malaysia Utility Bills](malaysia-utility-bills/) | 0.1.0 | aarch64, amd64 | TNB electricity and Ranhill SAJ water in one app: imports myTNB usage and cost into the Energy dashboard, estimates your TNB bill live and checks the amount due on every account. Replaces the two apps below and keeps their entities. |
+| <img src="tnb-usage-checker/icon.png" width="32" alt=""> | [TNB Usage Checker](tnb-usage-checker/) | 0.4.1 | aarch64, amd64 | Imports myTNB usage and cost into the Energy dashboard and estimates your TNB bill live, for multiple accounts under one myTNB login. |
 | <img src="lg-webos-devmode-mgmt/icon.png" width="32" alt=""> | [LG webOS DevMode Mgmt](lg-webos-devmode-mgmt/) | 1.7.7 | aarch64, amd64 | Renews LG webOS Developer Mode sessions on a schedule so they never expire. |
 | <img src="mobile-device-manager/icon.png" width="32" alt=""> | [Mobile Device Manager](mobile-device-manager/) | 0.1.5 | aarch64, amd64 | Lists your Companion app devices with last seen, battery and every automation, script and notify call that uses them. Flags stale and duplicate devices and removes them safely. |
+| <img src="ranhill-saj-bill-checker/icon.png" width="32" alt=""> | [Ranhill SAJ Bill Checker](ranhill-saj-bill-checker/) | 0.2.1 | aarch64, amd64 | Shows the amount due on your Ranhill SAJ (Johor) water accounts, read from the public Quick Payment page with no login. |
 | <img src="api-key-manager/icon.png" width="32" alt=""> | [API Key Manager](api-key-manager/) | 0.1.0 | aarch64, amd64 | Lists every user's long-lived access tokens (API keys) with description, owner, last used and IP. Flags unused, vague and admin keys, and lets you approve, mark suspicious and annotate each one. Read-only. |
 
-**Deprecated** (still working, no new features; move to Malaysia Utility Bills with the **Import** button in its panel):
-
-| | App | Version | Replaced by |
-| --- | --- | --- | --- |
-| <img src="tnb-usage-checker/icon.png" width="32" alt=""> | [TNB Usage Checker](tnb-usage-checker/) | 0.4.2 | Malaysia Utility Bills |
-| <img src="ranhill-saj-bill-checker/icon.png" width="32" alt=""> | [Ranhill SAJ Bill Checker](ranhill-saj-bill-checker/) | 0.2.2 | Malaysia Utility Bills |
-
-**Planned:** TM Unifi, as another provider inside Malaysia Utility Bills.
+**Planned:** TM Unifi Bill Checker (`tm-unifi-bill-checker/`).
 
 Each app folder contains:
 - a short `README.md` (the store's Info tab)
@@ -52,14 +46,12 @@ Each app folder contains:
 
 ```
 repository.json            store metadata
-malaysia-utility-bills/    one folder per app: config.yaml, Dockerfile, docs, icons, and
+tnb-usage-checker/         one folder per app: config.yaml, Dockerfile, docs, icons, and
                            rootfs/app/ (code + panel) + rootfs/etc/s6-overlay/ (the s6 service)
-                           here rootfs/app/ holds core/ (shared plumbing) and providers/tnb, providers/saj
 lg-webos-devmode-mgmt/
 mobile-device-manager/
+ranhill-saj-bill-checker/
 api-key-manager/
-tnb-usage-checker/         deprecated, replaced by malaysia-utility-bills
-ranhill-saj-bill-checker/  deprecated, replaced by malaysia-utility-bills
 .github/workflows/         builder.yaml (finds changed apps), build-app.yaml (builds, signs, verifies one app),
                            retry-signing.yaml (re-runs builds that failed only because Sigstore was down)
 pyproject.toml             ruff settings for every app
@@ -69,16 +61,15 @@ pyproject.toml             ruff settings for every app
   - The store name matches the folder name.
   - The `slug` and `image` never change after release, because changing them would make Home Assistant treat the app as new.
 - **Folder depth:** keep apps exactly one level below the root. The CI app finder only looks two levels deep.
-- **Shared panel files:** `webui.py` and `web/` (`index.html`, `panel.css`, `panel.js`) are **identical copies** in every app, because each image is built from its own folder only. Malaysia Utility Bills keeps its copy at `rootfs/app/core/webui.py`. Edit one copy, copy it to the others, then check with `cmp`.
-- **Utility providers** (TNB, Ranhill SAJ, and later TM Unifi) live in Malaysia Utility Bills as `rootfs/app/providers/<key>/`, each with its own `<key>_` options. Don't add a separate app for a new utility.
+- **Shared panel files:** `webui.py` and `web/` (`index.html`, `panel.css`, `panel.js`) are **identical copies** in every app, because each image is built from its own folder only. Edit one copy, copy it to the others, then check with `cmp`.
 
 ## Development
 
 ```bash
 ruff check . && ruff format --check .
-(cd malaysia-utility-bills && python -m unittest discover -s tests -t .)
+python -m unittest discover -s tnb-usage-checker/tests       # needs paho-mqtt and websocket-client
 python -m unittest discover -s mobile-device-manager/tests
-python -m unittest discover -s api-key-manager/tests
+python -m unittest discover -s ranhill-saj-bill-checker/tests
 ```
 
 **Pull requests:** CI builds every changed app for aarch64 and amd64.
@@ -103,5 +94,5 @@ cosign verify ghcr.io/nerowentah/power-tnb:0.3.2 \
 ## Disclaimer
 
 - These are community projects. They are not affiliated with LG Electronics, Tenaga Nasional Berhad, TM or Ranhill SAJ.
-- The myTNB portal has no public API. Malaysia Utility Bills uses it unofficially, so it may break if TNB changes its website.
-- Malaysia Utility Bills reads Ranhill SAJ's public Quick Payment page unofficially, so it may break if Ranhill SAJ changes its website.
+- The myTNB portal has no public API. TNB Usage Checker uses it unofficially, so it may break if TNB changes its website.
+- Ranhill SAJ Bill Checker reads the public Quick Payment page unofficially, so it may break if Ranhill SAJ changes its website.

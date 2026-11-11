@@ -66,15 +66,3 @@ ignore = ["E501"]
   "PLR2004",
   "PT009",
 ]
-"malaysia-utility-bills/**/*.py" = [
-  "TRY003",
-]
-"malaysia-utility-bills/tests/**/*.py" = [
-  "TRY003",
-  "S101",
-  "S105",
-  "S106",
-  "SLF001",
-  "PLR2004",
-  "PT009",
-]

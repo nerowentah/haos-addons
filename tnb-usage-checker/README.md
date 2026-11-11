@@ -1,7 +1,5 @@
 # TNB Usage Checker
 
-> **Deprecated:** this app is replaced by [Malaysia Utility Bills](../malaysia-utility-bills/), which handles TNB and Ranhill SAJ together and keeps this app's entities, history and Energy dashboard statistics. Install it, press **Import from TNB Usage Checker** in its panel, then stop this app. See *Moving from the old apps* in its documentation.
-
 ![Supports aarch64 Architecture](https://img.shields.io/badge/aarch64-yes-green.svg)
 ![Supports amd64 Architecture](https://img.shields.io/badge/amd64-yes-green.svg)
 

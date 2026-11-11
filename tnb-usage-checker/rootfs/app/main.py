@@ -82,12 +82,6 @@ STATUS_AUTH = "auth_error"
 STATUS_ERROR = "error"
 STATUS_METER = "meter_error"
 STATUS_MAINTENANCE = "maintenance"
-SUCCESSOR_TITLE = "TNB Usage Checker is replaced by Malaysia Utility Bills"
-SUCCESSOR_MESSAGE = (
-    "Malaysia Utility Bills (same app store) handles TNB and Ranhill SAJ in one app and keeps your entities, "
-    "history and Energy dashboard statistics. Install it, press Import from TNB Usage Checker in its panel, "
-    "then stop this app. This app gets no new features."
-)
 FAILURE_HINTS = {
     STATUS_AUTH: "Check the myTNB email and password.",
     STATUS_METER: "Login worked but no smart meter was found: paste the account's View Energy Usage link as smartmeter_url.",
@@ -328,23 +322,6 @@ class App:
             _LOGGER.info("Moved %d phone switch(es) out of the Configuration tab", len(old))
         except SupervisorError:
             _LOGGER.warning("Could not remove notification_overrides from the options; it is ignored")
-
-    def announce_successor(self) -> None:
-        """Say that Malaysia Utility Bills replaces this app: in the log on every start, as a notification once."""
-
-        _LOGGER.warning("%s; this app keeps working until you move", SUCCESSOR_TITLE)
-        if self.store.data.get("successor_notified"):
-            return
-        try:
-            self.supervisor.core_post(
-                "/services/persistent_notification/create",
-                {"notification_id": "power_tnb_successor", "title": SUCCESSOR_TITLE, "message": SUCCESSOR_MESSAGE},
-            )
-        except SupervisorError as err:
-            _LOGGER.debug("Could not create the successor notification: %s", err)
-            return
-        self.store.data["successor_notified"] = True
-        self.store.dirty = True
 
     def refresh_phones(self) -> None:
         """Re-list the phones linked to Home Assistant (new phones are notified by default)."""
@@ -1098,7 +1075,6 @@ def main() -> None:
         if stop.is_set():
             return
         app.migrate_overrides()
-        app.announce_successor()
         app.run()
     finally:
         server.stop()
