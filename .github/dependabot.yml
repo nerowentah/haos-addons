@@ -1,0 +1,47 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # One entry per app: each image is built from its own folder only.
+  - package-ecosystem: "docker"
+    directory: "/api-key-manager"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: "docker"
+    directory: "/cloudflare-tunnel"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: "docker"
+    directory: "/lg-webos-devmode-mgmt"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: "docker"
+    directory: "/mobile-device-manager"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: "docker"
+    directory: "/ranhill-saj-bill-checker"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: "docker"
+    directory: "/tnb-usage-checker"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3

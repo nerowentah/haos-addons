@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6
+
+- **Startup warning removed.** The service is now registered in the `user` bundle under `/etc/s6-overlay/user-bundles.d` instead of the deprecated `/etc/s6-overlay/s6-rc.d/user`, so s6-overlay no longer prints `defining user bundles in /etc/s6-overlay/s6-rc.d is deprecated`. No functional change.
+- **Config cleanup.** Removed options that already match Home Assistant defaults, so the app passes the community app config linter. No behaviour change.
+
 ## 0.1.5
 
 - Shared panel update: buttons can ask for a line of text, and cards can list plain rows without a button (used by API Key Manager). This app's panel looks the same.

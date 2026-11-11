@@ -1,0 +1,101 @@
+name: Lint
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  find:
+    name: Find apps
+    runs-on: ubuntu-latest
+    outputs:
+      apps: ${{ steps.apps.outputs.addons_list }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Find app directories
+        id: apps
+        uses: home-assistant/actions/helpers/find-addons@master
+
+  app-config:
+    name: App config ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    needs: find
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.find.outputs.apps) }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Lint the app configuration
+        uses: frenck/action-app-linter@v2.21.2
+        with:
+          path: "./${{ matrix.app }}"
+
+  python:
+    name: Python
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version: "3.13"  # matches target-version = py313 in pyproject.toml
+
+      - name: Install linters and test dependencies
+        run: pip install ruff paho-mqtt websocket-client
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Ruff format
+        run: ruff format --check .
+
+      - name: Unit tests
+        run: |
+          set -e
+          for app in */; do
+            app=${app%/}
+            [ -d "$app/tests" ] || continue
+            echo "::group::$app"
+            python -m unittest discover -s "$app/tests"
+            echo "::endgroup::"
+          done
+
+  s6-layout:
+    name: s6 layout
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.1
+
+      - name: No deprecated s6-rc.d/user bundle
+        run: |
+          if git ls-files | grep -q 'rootfs/etc/s6-overlay/s6-rc.d/user/'; then
+            echo "::error::Register services in rootfs/etc/s6-overlay/user-bundles.d/user/contents.d/, not s6-rc.d/user/"
+            git ls-files | grep 'rootfs/etc/s6-overlay/s6-rc.d/user/'
+            exit 1
+          fi
+
+      - name: Every app registers its service in the user bundle
+        run: |
+          for dir in */; do
+            app=${dir%/}
+            [ -f "$app/config.yaml" ] || continue
+            test -f "$app/rootfs/etc/s6-overlay/user-bundles.d/user/contents.d/$app" || {
+              echo "::error::$app does not register its service in rootfs/etc/s6-overlay/user-bundles.d/user/contents.d/"
+              exit 1
+            }
+          done

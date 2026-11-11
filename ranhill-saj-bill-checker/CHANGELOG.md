@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4
+
+- **Startup warning removed.** The service is now registered in the `user` bundle under `/etc/s6-overlay/user-bundles.d` instead of the deprecated `/etc/s6-overlay/s6-rc.d/user`, so s6-overlay no longer prints `defining user bundles in /etc/s6-overlay/s6-rc.d is deprecated`. No functional change.
+- **Config cleanup.** Removed options that already match Home Assistant defaults, so the app passes the community app config linter. No behaviour change.
+
 ## 0.2.3
 
 - **Deprecation withdrawn — this app stays.** Malaysia Utility Bills is retired after a short trial; one app per utility provider is back, since not every user has the same providers. This app continues as the Ranhill SAJ app with no functional changes from 0.2.1. If you had moved to Malaysia Utility Bills, uninstall it and reinstall this app: entity ids and history are identical, so nothing is lost.

@@ -8,7 +8,8 @@ Reach your Home Assistant from anywhere through a **Cloudflare Tunnel** — no o
 ## Features
 
 - **Remote-managed tunnels.** Create the tunnel in Cloudflare Zero Trust, paste its token, done: public hostnames and routing stay managed from the Cloudflare dashboard.
-- **Watched connector.** The app restarts `cloudflared` automatically if it exits, with increasing back-off, and shows its state, edge connections, restarts and version in a sidebar panel.
+- **Watched connector.** The app restarts `cloudflared` automatically if it exits, with increasing back-off, and shows its state, edge connections, restarts and version in a sidebar panel, with a **Restart connector** button.
+- **Safe run parameters.** Optional flags such as `--protocol`, `--region`, `--retries` and `--tag` are passed to `cloudflared`; anything else is rejected.
 - **Failure notifications.** Your phones are told when the tunnel has been down for about 30 seconds, and when it recovers.
 - **Token safety.** The tunnel token is passed to `cloudflared` through its environment — it never appears in the command line, the log or the panel. `!secret` works.
 - **Pinned and verified binary.** `cloudflared` is pinned to a current release and its download is checked against the SHA-256 digest published by the release, so the image can't be tampered with in transit. Auto-update inside the container is disabled.

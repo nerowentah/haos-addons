@@ -154,6 +154,7 @@ Account and settings switches are saved into the app options, so they also show 
 | `sensor.tnb_<id>_due_date` | When the amount is due, if myTNB shows it |
 | `binary_sensor.tnb_<id>_payment_due` | On while an amount is due, off once it is paid |
 | `sensor.tnb_<id>_portal_data_as_of`, `_portal_last_sync`, `_portal_status` | Diagnostics |
+| `sensor.tnb_<id>_stats_status`, `_stats_last_import` | Energy dashboard import status and its last run (diagnostics) |
 
 **From the energy sensor** (if `import_entity` is set):
 
@@ -186,6 +187,19 @@ There is also one shared entity: `binary_sensor.tnb_holiday_today`.
 3. Under cost, choose **Use an entity tracking the total costs** and select **TNB &lt;name&gt; cost** (`power_tnb:cost_<id>`).
 
 The statistics appear after the first successful sync. Every sync re-imports the last 30 days, so hours TNB publishes late are filled in rather than skipped.
+
+**Checking that the import works:** the account card in the app's sidebar panel shows **Energy import** and **Last import**. The same state is on the diagnostic entities `sensor.tnb_<id>_stats_status` and `sensor.tnb_<id>_stats_last_import`:
+
+| Status | Meaning |
+| --- | --- |
+| `ok` | The last sync imported usage and cost. |
+| `error` | The myTNB sync worked but the statistics import failed. The app log has the reason. |
+| `off` | **Energy dashboard import** is switched off for this account. |
+| `pending` | No sync has finished since the app started. |
+
+The panel also lists the two statistic ids and has a button that opens **Settings → Dashboards → Energy**. Importing statistics is independent of MQTT and of the live bill estimate: either can be used on its own.
+
+**Cost is daily.** myTNB publishes usage hourly but cost only per day, so each cost row is dated at local midnight. The Energy dashboard's cost total is exact; only the hourly cost graph puts a whole day's cost on its first hour.
 
 ## Tariff used
 
@@ -226,7 +240,7 @@ When a myTNB sync fails and when it recovers, the app notifies every phone that 
 
 - **`maintenance` status (TNB maintenance):** myTNB answered with a maintenance page or HTTP 503 outside your windows. The app keeps the last data, sends no failure alert, and retries after 30 min, then 1 h, 2 h, 4 h, up to 6 h. It returns to the normal schedule after the next successful sync. If this keeps happening at the same time of day, add that time to `maintenance_windows`.
 
-- **What do the `s6-rc` lines in the log mean?** The app runs as an s6-overlay service, the process supervisor built into Home Assistant app images. Only s6 warnings and errors are logged. Older versions printed `legacy-cont-init`, `legacy-services` and `s6-rc.d is empty` on every start. Those came from running without a proper service definition and were harmless.
+- **What do the `s6-rc` lines in the log mean?** The app runs as an s6-overlay service, the process supervisor built into Home Assistant app images. Only s6 warnings and errors are logged. Older versions printed `legacy-cont-init`, `legacy-services` and `s6-rc.d is empty` on every start. Those came from running without a proper service definition and were harmless. The service is registered in the `user` bundle under `/etc/s6-overlay/user-bundles.d`, so the old `defining user bundles ... is deprecated` line no longer appears.
 - **Icons missing in the app store:** open **⋮ → Check for updates** in the app store. Home Assistant caches app icons per repository refresh.
 
 - **`auth_error` status:**

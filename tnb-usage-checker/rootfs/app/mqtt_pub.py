@@ -80,6 +80,20 @@ SENSORS: tuple[SensorDef, ...] = (
     SensorDef("portal_data_as_of", "Portal data as of", SOURCE_PORTAL, device_class="timestamp", diagnostic=True),
     SensorDef("portal_status", "Portal status", SOURCE_PORTAL, icon="mdi:cloud-check-outline", diagnostic=True),
     SensorDef("portal_last_sync", "Portal last sync", SOURCE_PORTAL, device_class="timestamp", diagnostic=True),
+    SensorDef(
+        "stats_status",
+        "Energy import status",
+        SOURCE_PORTAL,
+        icon="mdi:chart-box-outline",
+        diagnostic=True,
+    ),
+    SensorDef(
+        "stats_last_import",
+        "Energy import last run",
+        SOURCE_PORTAL,
+        device_class="timestamp",
+        diagnostic=True,
+    ),
     # Live estimate from the local energy sensor
     SensorDef(
         "bill_estimate",

@@ -48,6 +48,47 @@ class AccountCardTest(unittest.TestCase):
         labels = [s["label"] for s in card["stats"]]
         self.assertIn("Account no.", labels)
         self.assertNotIn("myTNB cost (cycle)", labels)  # already the hero
+        self.assertIn("Energy import", labels)
+        self.assertIn("Last import", labels)
+        self.assertEqual([item["label"] for item in card["links"]], ["Energy statistics", "Open Energy dashboard"])
+        self.assertIn("power_tnb:usage_home", card["links"][0]["description"])
+        self.assertEqual(card["links"][1]["path"], "/config/energy")
+
+    def test_a_failed_statistics_import_is_visible(self) -> None:
+        acct = account(account_number="123456789012")
+        runtime = AccountRuntime(
+            account=acct,
+            values={
+                "stats_status": "error",
+                "stats_error": "recorder/import_statistics: unknown_error",
+                "stats_last_import": "2026-11-08T09:00:00+08:00",
+            },
+        )
+        card = panel._account_card(runtime, acct, {}, TODAY)
+        tiles = {s["label"]: s["value"] for s in card["stats"]}
+        self.assertEqual(tiles["Energy import"], "Failed")
+        self.assertEqual(tiles["Last import"], "08 Nov 09:00")
+        self.assertEqual(card["notice"]["tone"], "error")
+        self.assertIn("Energy import failed", card["notice"]["text"])
+        self.assertIn("unknown_error", card["notice"]["text"])
+
+    def test_a_healthy_import_has_no_notice(self) -> None:
+        acct = account(account_number="123456789012")
+        card = panel._account_card(AccountRuntime(account=acct, values={"stats_status": "ok"}), acct, {}, TODAY)
+        self.assertIsNone(card["notice"])
+
+    def test_switched_off_statistics_are_visible(self) -> None:
+        acct = account(account_number="123456789012", statistics_enabled=False)
+        card = panel._account_card(AccountRuntime(account=acct, values={}), acct, {}, TODAY)
+        tiles = {s["label"]: s["value"] for s in card["stats"]}
+        self.assertEqual(tiles["Energy import"], "Off")
+        self.assertIn("Import is off", card["links"][0]["description"])
+
+    def test_a_meter_only_account_has_no_energy_links(self) -> None:
+        acct = account(import_entity="sensor.grid_energy")
+        card = panel._account_card(AccountRuntime(account=acct, values={}), acct, {}, TODAY)
+        self.assertEqual(card["links"], [])
+        self.assertNotIn("Energy import", [s["label"] for s in card["stats"]])
 
     def test_sensor_account_leads_with_the_bill_estimate(self) -> None:
         acct = account(import_entity="sensor.grid_energy")

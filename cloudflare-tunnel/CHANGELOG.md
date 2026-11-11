@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- **Startup warning removed.** The service is now registered in the `user` bundle under `/etc/s6-overlay/user-bundles.d` instead of the deprecated `/etc/s6-overlay/s6-rc.d/user`, so s6-overlay no longer prints `defining user bundles in /etc/s6-overlay/s6-rc.d is deprecated`. No functional change.
+- **Config cleanup.** Removed options that already match Home Assistant defaults, so the app passes the community app config linter. No behaviour change.
+
 ## 0.1.0
 
 - First release. Runs the `cloudflared` connector for a remotely managed Cloudflare Tunnel: paste the tunnel's token from Cloudflare Zero Trust and the app keeps the connector running.

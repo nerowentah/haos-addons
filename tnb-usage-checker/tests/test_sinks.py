@@ -93,6 +93,16 @@ class StatesApiTest(unittest.TestCase):
         self.assertTrue(config.load_config(raw).mqtt)
         self.assertFalse(config.load_config({**raw, "mqtt": False}).mqtt)
 
+    def test_statistics_import_diagnostics(self) -> None:
+        status = next(s for s in mqtt_pub.SENSORS if s.key == "stats_status")
+        last = next(s for s in mqtt_pub.SENSORS if s.key == "stats_last_import")
+
+        self.assertEqual(status.source, mqtt_pub.SOURCE_PORTAL)
+        self.assertTrue(status.diagnostic)
+        self.assertTrue(last.diagnostic)
+        self.assertEqual(last.device_class, "timestamp")
+        self.assertEqual(mqtt_pub.entity_id("home", "stats_last_import"), "sensor.tnb_home_stats_last_import")
+
 
 if __name__ == "__main__":
     unittest.main()

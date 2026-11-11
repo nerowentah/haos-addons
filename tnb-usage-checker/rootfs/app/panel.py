@@ -9,7 +9,8 @@ import maintenance
 import report
 from config import Account, Config, mask_email, mask_number, slugify
 from meter import MYT, billing_period_start, next_period_start
-from webui import PanelError, action, badge, chart, hero_item, progress, stat, toggle
+from stats import statistic_ids
+from webui import PanelError, action, badge, chart, hero_item, link, notice, progress, row, stat, toggle
 
 if TYPE_CHECKING:
     from main import AccountRuntime, App
@@ -27,6 +28,12 @@ PORTAL_STATUS = {
     "meter_error": badge("Smart meter not found", "error"),
     "error": badge("Portal error", "warn"),
     "maintenance": badge("TNB maintenance", "warn"),
+}
+STATS_STATUS = {
+    "ok": "OK",
+    "error": "Failed",
+    "off": "Off",
+    "pending": "Waiting for first sync",
 }
 
 
@@ -83,6 +90,49 @@ def _day(value: object) -> str:
         return str(value)
 
 
+def _statistics_stats(account: Account, values: dict[str, object]) -> list[dict[str, object]]:
+    """Energy-dashboard import status tiles for a portal account."""
+
+    if not account.statistics_enabled:
+        return [stat("Energy import", "Off")]
+    rows = [
+        stat("Energy import", STATS_STATUS.get(str(values.get("stats_status")), "Not run yet")),
+        stat("Last import", _when(values.get("stats_last_import"))),
+    ]
+    if values.get("stats_status") == "ok":
+        rows.append(stat("Rows last import", values.get("stats_rows")))
+    return rows
+
+
+def _statistics_links(account: Account) -> list[dict[str, object]]:
+    """The statistic ids to pick in the Energy dashboard, and a shortcut to it."""
+
+    usage_id, cost_id = statistic_ids(account.account_id)
+    description = (
+        f"{usage_id} · {cost_id}"
+        if account.statistics_enabled
+        else "Import is off — switch on 'Energy dashboard import'"
+    )
+    return [
+        row("Energy statistics", description, icon="mdi:chart-timeline-variant"),
+        link(
+            "Open Energy dashboard",
+            "/config/energy",
+            "Add the usage statistic as consumption and the cost statistic as its cost",
+            icon="mdi:lightning-bolt",
+        ),
+    ]
+
+
+def _statistics_notice(account: Account, values: dict[str, object]) -> dict[str, str] | None:
+    """A highlighted error when the myTNB sync worked but the Energy import did not."""
+
+    if not (account.has_portal and account.statistics_enabled and values.get("stats_status") == "error"):
+        return None
+    reason = str(values.get("stats_error") or "see the app log")
+    return notice(f"Energy import failed: {reason}", "error")
+
+
 def _account_card(
     runtime: AccountRuntime, account: Account, history: dict[date, float] | None = None, today: date | None = None
 ) -> dict[str, object]:
@@ -130,6 +180,10 @@ def _account_card(
             stat("Last sync", _when(values.get("portal_last_sync"))),
             stat("Account no.", mask_number(account.ca_no)),
         ]
+        stats += _statistics_stats(account, values)
+
+    links = _statistics_links(account) if account.has_portal else []
+    notice_item = _statistics_notice(account, values)
 
     toggles = [
         toggle(
@@ -194,6 +248,8 @@ def _account_card(
         "progress": _cycle_progress(account, today),
         "chart": _daily_chart(history) if account.has_portal and history else None,
         "stats": stats,
+        "links": links,
+        "notice": notice_item,
         "toggles": toggles,
         "toggles_label": "Settings",
         "actions": [

@@ -13,6 +13,7 @@ See every **long-lived access token** (API key) of every Home Assistant user in 
   - **Vague description** ("test", "token", "API key 2").
   - **Duplicate description** for the same user.
   - **Deactivated owner:** the key is still stored.
+  - **Expired:** the key's expiry date has passed.
   - **Admin rights:** the key can do anything.
 - **Review each key:** mark it **Approved** or **Suspicious** and add a note (who uses it and why). Approved keys can be hidden.
 - **New-key notifications:** you hear about a key as soon as someone creates it.

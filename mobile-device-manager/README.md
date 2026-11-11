@@ -13,6 +13,7 @@ Keep the phones and tablets registered through the Home Assistant **Companion ap
   - **Stale:** not seen for a number of days you choose.
   - **Duplicate:** an older registration of the same phone.
   - **Not loaded:** the registration is broken.
+- **Ignore** a device you rarely use so it is not flagged stale.
 - **Safe removal.** **Remove** only works when nothing uses the device. The app re-checks right before removing and asks you to confirm. It never force-removes.
 - **Attention notifications** when devices turn stale or scanning keeps failing. Each phone has its own switch.
 

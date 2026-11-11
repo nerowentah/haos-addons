@@ -11,7 +11,8 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Self
 
 from mytnb import EnergyPoint
@@ -26,10 +27,27 @@ SOURCE = "power_tnb"
 WS_TIMEOUT = 60
 BASELINE_LOOKBACK_HOURS = 72
 BASELINE_EPOCH = datetime(2015, 1, 1, tzinfo=UTC)
+MYT = timezone(timedelta(hours=8), "MYT")  # Malaysia has no DST
 
 
 class StatsError(RuntimeError):
     """Raised when the websocket API rejects a request."""
+
+
+@dataclass(frozen=True, slots=True)
+class ImportResult:
+    """What one sync sent to Home Assistant, for the panel and diagnostics."""
+
+    usage_rows: int = 0
+    cost_rows: int = 0
+    first_hour: datetime | None = None
+    last_hour: datetime | None = None
+
+
+def statistic_ids(account_id: str) -> tuple[str, str]:
+    """The (usage, cost) long-term statistic ids for one account."""
+
+    return f"{SOURCE}:usage_{account_id}", f"{SOURCE}:cost_{account_id}"
 
 
 def hourly_buckets(points: Iterable[EnergyPoint]) -> dict[datetime, float]:
@@ -97,6 +115,8 @@ class StatsClient:
             return reply.get("result")
 
     def _last_sum(self, statistic_id: str, start: datetime, end: datetime, period: str) -> float | None:
+        """The last stored cumulative ``sum`` before ``end`` (Home Assistant excludes ``end`` itself)."""
+
         result = self.call(
             "recorder/statistics_during_period",
             start_time=start.isoformat(),
@@ -105,17 +125,45 @@ class StatsClient:
             period=period,
             types=["sum"],
         )
-        rows = result.get(statistic_id) if isinstance(result, dict) else None
-        sums = [row.get("sum") for row in rows or [] if isinstance(row, dict) and row.get("sum") is not None]
-        return float(sums[-1]) if sums else None
+        if not isinstance(result, dict):
+            raise StatsError(f"statistics_during_period returned {type(result).__name__} for {statistic_id}")
+        rows = result.get(statistic_id)
+        if rows is None:
+            return None
+        if not isinstance(rows, list):
+            raise StatsError(f"statistics_during_period returned malformed rows for {statistic_id}")
+        sums: list[float] = []
+        for row in rows:
+            value = row.get("sum") if isinstance(row, dict) else None
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise StatsError(f"statistics_during_period returned a non-numeric sum for {statistic_id}")
+            sums.append(float(value))
+        return sums[-1] if sums else None
+
+    def has_statistic(self, statistic_id: str) -> bool:
+        """Whether Home Assistant already has metadata for this statistic."""
+
+        result = self.call("recorder/get_statistics_metadata", statistic_ids=[statistic_id])
+        if not isinstance(result, list):
+            raise StatsError(f"get_statistics_metadata returned {type(result).__name__} for {statistic_id}")
+        return any(isinstance(row, dict) and row.get("statistic_id") == statistic_id for row in result)
 
     def baseline_sum(self, statistic_id: str, before: datetime) -> float:
         """Cumulative sum stored for the hours before ``before`` (0 for a new statistic)."""
 
+        if not self.has_statistic(statistic_id):
+            return 0.0
         recent = self._last_sum(statistic_id, before - timedelta(hours=BASELINE_LOOKBACK_HOURS), before, "hour")
         if recent is not None:
             return recent
-        older = self._last_sum(statistic_id, BASELINE_EPOCH, before, "day")
+        # Home Assistant aligns a daily query's end *up* to the next local midnight,
+        # so stop one second before the local midnight of ``before``. Passing
+        # ``before`` itself would include the first day of the window and
+        # ``build_rows`` would then add that day a second time.
+        day_start = before.astimezone(MYT).replace(hour=0, minute=0, second=0, microsecond=0)
+        older = self._last_sum(statistic_id, BASELINE_EPOCH, day_start - timedelta(seconds=1), "day")
         return older or 0.0
 
     def import_statistics(
@@ -154,19 +202,31 @@ def sync_statistics(  # noqa: PLR0913 - keyword-only payload
     window_start: datetime,
     usage: list[EnergyPoint],
     cost: list[EnergyPoint],
-) -> None:
+) -> ImportResult:
     """Import usage (kWh) and cost (MYR) for one account."""
 
+    usage_id, cost_id = statistic_ids(account_id)
     series = (
-        (f"{SOURCE}:usage_{account_id}", f"TNB {account_name} usage", "kWh", "energy", usage),
-        (f"{SOURCE}:cost_{account_id}", f"TNB {account_name} cost", "MYR", None, cost),
+        (usage_id, f"TNB {account_name} usage", "kWh", "energy", usage),
+        (cost_id, f"TNB {account_name} cost", "MYR", None, cost),
     )
+    rows_imported: list[int] = []
+    starts: list[datetime] = []
     with StatsClient(token) as client:
         for statistic_id, name, unit, unit_class, points in series:
             buckets = {hour: value for hour, value in hourly_buckets(points).items() if hour >= window_start}
             if not buckets:
+                rows_imported.append(0)
                 continue
-            first_hour = min(buckets)
-            rows = build_rows(buckets, client.baseline_sum(statistic_id, first_hour))
+            start = min(buckets)
+            rows = build_rows(buckets, client.baseline_sum(statistic_id, start))
             client.import_statistics(statistic_id, name, unit, unit_class, rows)
             _LOGGER.info("Imported %d hourly %s row(s) for '%s'", len(rows), unit, account_name)
+            rows_imported.append(len(rows))
+            starts.extend(buckets)
+    return ImportResult(
+        usage_rows=rows_imported[0],
+        cost_rows=rows_imported[1],
+        first_hour=min(starts) if starts else None,
+        last_hour=max(starts) if starts else None,
+    )

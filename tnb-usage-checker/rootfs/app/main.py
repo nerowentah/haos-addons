@@ -70,6 +70,7 @@ CHART_DAYS = 14  # complete days kept for the panel's daily chart
 METER_RETRY_SECONDS = 3 * 3600  # logged in but no meter: retry sooner than a bad password
 PORTAL_STAGGER_SECONDS = 20
 TRANSIENT_FAILURES_BEFORE_NOTIFY = 3
+STATS_ERROR_MAX_CHARS = 160
 OPTIONS_CHECK_SECONDS = 30
 MQTT_CHECK_SECONDS = 60
 PHONE_CHECK_SECONDS = 300
@@ -291,6 +292,7 @@ class App:
         values["period_start"] = cycle_start_iso(account, datetime.now(MYT))
         if account.has_portal:
             values["portal_status"] = "pending"
+            values["stats_status"] = "pending" if account.statistics_enabled else "off"
         return values
 
     # -- Notifications ----------------------------------------------------------
@@ -678,8 +680,9 @@ class App:
             return
 
         if account.statistics_enabled:
-            self._import_statistics(account, window_start, data)
+            self._import_statistics(runtime, window_start, data)
         else:
+            runtime.values["stats_status"] = "off"
             _LOGGER.info("Energy dashboard import is switched off for '%s'", account.name)
         self._portal_succeeded(runtime, data, now, interval)
 
@@ -726,9 +729,13 @@ class App:
         _LOGGER.warning("%s; '%s' retries in %d min", reason, runtime.account.name, delay // 60)
         self.publish_state(runtime)
 
-    def _import_statistics(self, account: Account, window_start: datetime, data: PortalData) -> None:
+    def _import_statistics(self, runtime: AccountRuntime, window_start: datetime, data: PortalData) -> None:
+        """Import the fetched window and record the outcome for the panel and the diagnostics."""
+
+        account = runtime.account
+        now = datetime.now(MYT)
         try:
-            stats.sync_statistics(
+            result = stats.sync_statistics(
                 self.supervisor.token,
                 account_id=account.account_id,
                 account_name=account.name,
@@ -738,8 +745,31 @@ class App:
             )
         except (stats.StatsError, OSError, ValueError) as err:
             _LOGGER.warning("Could not import statistics for '%s': %s", account.name, err)
-        except Exception:  # websocket-client raises its own exception tree
+            self._statistics_failed(runtime, str(err), now)
+        except Exception as err:  # websocket-client raises its own exception tree
             _LOGGER.exception("Could not import statistics for '%s'", account.name)
+            self._statistics_failed(runtime, str(err) or type(err).__name__, now)
+        else:
+            runtime.values.update(
+                {
+                    "stats_status": "ok",
+                    "stats_last_import": now.isoformat(timespec="seconds"),
+                    "stats_rows": result.usage_rows + result.cost_rows,
+                    "stats_error": None,
+                }
+            )
+
+    def _statistics_failed(self, runtime: AccountRuntime, reason: str, now: datetime) -> None:
+        """Keep the failure visible in the panel (the log has the full traceback)."""
+
+        runtime.values.update(
+            {
+                "stats_status": "error",
+                "stats_last_import": now.isoformat(timespec="seconds"),
+                "stats_rows": None,
+                "stats_error": reason[:STATS_ERROR_MAX_CHARS],
+            }
+        )
 
     def _portal_succeeded(self, runtime: AccountRuntime, data: PortalData, now: datetime, interval: int) -> None:
         account = runtime.account

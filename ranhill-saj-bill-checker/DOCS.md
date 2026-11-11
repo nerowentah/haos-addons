@@ -152,7 +152,7 @@ When an account cannot be checked, and again when it recovers, the app notifies 
   - Check **Entities via** in the panel.
   - **With MQTT:** make sure the Mosquitto broker and the MQTT integration are running.
   - **Without MQTT:** the entities come back within 5 minutes of a Home Assistant restart.
-- **What do the `s6-rc` lines in the log mean?** The app runs as an s6-overlay service. Only s6 warnings and errors are logged.
+- **What do the `s6-rc` lines in the log mean?** The app runs as an s6-overlay service. Only s6 warnings and errors are logged. The service is registered in the `user` bundle under `/etc/s6-overlay/user-bundles.d`, so the old `defining user bundles ... is deprecated` line no longer appears.
 - **Icons missing in the app store:** open **⋮ → Check for updates** in the app store. Home Assistant caches app icons per repository refresh.
 - **Privacy:**
   - The panel, logs and entities show the account number masked (first and last 4 characters) and only the initials of the holder's name.

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+- **The Energy dashboard import is now visible.** Each account card shows **Energy import** (`ok`, `failed`, `off` or waiting for the first sync) and **Last import**, lists the two statistic ids to pick in the dashboard, and has a button that opens **Settings → Dashboards → Energy**. Two new diagnostic entities carry the same state: `sensor.tnb_<id>_stats_status` and `sensor.tnb_<id>_stats_last_import`. Nothing needs reconfiguring: the statistic ids and the existing entities are unchanged.
+- **Safer re-imports.** The baseline lookup now checks that the statistic exists before querying (no more "day since 2015" query for a new account), rejects a malformed recorder reply instead of silently restarting the cumulative sum at zero, and stops one second before the local midnight when it falls back to daily statistics, so the first day of a re-imported window is no longer counted twice.
+- **The statistics import has tests.** Baseline lookup, metadata fallbacks, the websocket handshake and the statistic ids are covered, along with the panel and diagnostic entities.
+- **Startup warning removed.** The service is now registered in the `user` bundle under `/etc/s6-overlay/user-bundles.d` instead of the deprecated `/etc/s6-overlay/s6-rc.d/user`, so s6-overlay no longer prints `defining user bundles in /etc/s6-overlay/s6-rc.d is deprecated`. No functional change.
+- **Config cleanup.** Removed options that already match Home Assistant defaults, so the app passes the community app config linter. No behaviour change.
+
 ## 0.4.3
 
 - **Deprecation withdrawn — this app stays.** Malaysia Utility Bills is retired after a short trial; one app per utility provider is back, since not every user has the same providers. This app continues as the TNB app with no functional changes from 0.4.1. If you had moved to Malaysia Utility Bills, uninstall it and reinstall this app: entity ids, history and Energy dashboard statistics are identical, so nothing is lost.

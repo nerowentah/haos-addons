@@ -8,11 +8,14 @@ Track Malaysian **TNB** electricity for one or more accounts. TNB Usage Checker 
 ## Features
 
 - **Multiple accounts, one login.** Enter your myTNB login once and list your account numbers from the bill. Each account can also use a local energy sensor, or a different login.
-- **Energy dashboard statistics.** Hourly kWh and RM from myTNB. Each sync re-imports 30 days, so late TNB data is filled in.
+- **Energy dashboard statistics.** Hourly kWh and RM from myTNB. Each sync re-imports 30 days, so late TNB data is filled in. The panel shows whether the last import worked and the statistic ids to pick.
 - **Live bill estimate** covering General and Time-of-Use, AFA, EEI, KWTBB, SST and NEM. It includes a full breakdown and a prediction for the end of the cycle.
-- **Sidebar panel.** Account cards, switches that apply immediately, and a **Sync myTNB now** button. It follows your HA theme.
+- **Amount due and payment reminders.** Every sync reads the amount due and due date from myTNB, adds a **Payment due** binary sensor, and notifies you when a new bill arrives, once a week while it stays unpaid, and when it is paid.
+- **Daily usage report.** When a sync brings in a new complete day, each account sends one notification with that day's kWh, RM, the change from the day before and the cycle so far.
+- **Sidebar panel.** Account cards show the cycle's cost and kWh, a 14-day usage chart, the bill estimate and the amount due, with switches that apply immediately and a **Sync myTNB now** button. It follows your HA theme.
+- **Maintenance-aware.** Syncs pause during configurable myTNB maintenance windows and back off automatically while TNB is down.
 - **MQTT optional.** With the Mosquitto broker app you get one device per account. Without it, you get plain entities with the same ids. A broker installed later is detected automatically.
-- **Phone notifications** when a sync fails or recovers. Phones are found automatically, and each has its own switch.
+- **Phone notifications** when a sync fails or recovers, a bill is due or paid, or the daily report is ready. Phones are found automatically, and each has its own switch.
 - **Private.** Passwords, tokens and smart meter URLs are never logged.
 
 ## Install

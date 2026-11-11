@@ -1,0 +1,7 @@
+name: HAOS Add-ons
+url: https://github.com/nerowentah/haos-addons
+maintainer: CWT <cwt@clgx.org>
+description: >-
+  Home Assistant OS apps: TNB and Ranhill SAJ bill checkers, LG webOS
+  Developer Mode renewal, Companion app device cleanup, API key review,
+  and Cloudflare Tunnel (TM Unifi bill checker planned).
