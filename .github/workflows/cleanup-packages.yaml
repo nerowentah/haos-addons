@@ -1,0 +1,214 @@
+name: Cleanup ghcr packages
+
+# Keeps ghcr.io/nerowentah tidy after apps are removed or change shape:
+#
+# - deletes container packages that are linked to this repository but no
+#   longer belong to any app here (its folder, image or an arch is gone);
+# - prunes versions of live packages that carry no tags at all (superseded
+#   re-pushes of the same tag) once they are older than 30 days. Tagged
+#   versions - releases, latest and the cosign sha256-* signature tags - are
+#   always kept, so pinned installs and signature verification keep working.
+#
+# Safety: only packages whose repository link is exactly this repository are
+# ever considered; packages belonging to other repositories, or with no link
+# at all, are never touched. Deletions can be undone for 30 days (package
+# settings -> Deleted Packages, or the /restore API).
+#
+# The weekly run deletes for real; manual runs default to a dry run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Only log what would be deleted
+        type: boolean
+        default: true
+      prune-untagged:
+        description: Also delete untagged versions of live packages older than 30 days
+        type: boolean
+        default: true
+  schedule:
+    # Weekly, off the hour to stay clear of GitHub's busiest minutes.
+    - cron: "23 3 * * 1"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: cleanup-packages
+  cancel-in-progress: false
+
+env:
+  # Publishing from a workflow grants the repository the admin role on the
+  # packages it creates, so GITHUB_TOKEN may delete anything this repository
+  # published - no PAT needed. GHCR_CLEANUP_TOKEN is an optional escape
+  # hatch: a classic PAT with read:packages and delete:packages, used instead
+  # of GITHUB_TOKEN when set.
+  GH_TOKEN: ${{ secrets.GHCR_CLEANUP_TOKEN || github.token }}
+  REPO: ${{ github.repository }}
+  # The scheduled run deletes for real and prunes; manual runs follow the inputs.
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
+  PRUNE_UNTAGGED: ${{ github.event_name == 'schedule' || inputs.prune-untagged }}
+
+jobs:
+  cleanup:
+    name: Cleanup packages
+    if: github.repository == 'nerowentah/haos-addons'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Find app directories
+        id: apps
+        uses: home-assistant/actions/helpers/find-addons@master
+
+      - name: Compute the package names this repository should have
+        id: expected
+        env:
+          APPS: ${{ steps.apps.outputs.addons }}
+        run: |
+          names=()
+          for app in ${APPS}; do
+            cfg="${app}/config.yaml"
+            image=$(sed -n 's/^image:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "${cfg}")
+            if [[ -z "${image}" ]]; then
+              echo "::error file=${cfg}::Cannot read the image: entry. Aborting so that no live package is treated as orphaned."
+              exit 1
+            fi
+            name=${image##*/}
+            # Every arch an app builds for gets its own per-arch package.
+            archs=$(awk '/^arch:/{f=1; next} f && /^[[:space:]]*-[[:space:]]*[^[:space:]]/{sub(/^[[:space:]]*-[[:space:]]*/, ""); gsub(/[[:space:]]/, ""); print; next} f && /^[^[:space:]]/{f=0}' "${cfg}")
+            if [[ -z "${archs}" ]]; then
+              echo "::error file=${cfg}::Cannot read the arch: list. Aborting so that no live package is treated as orphaned."
+              exit 1
+            fi
+            names+=("${name}")
+            while read -r arch; do
+              names+=("${arch}-${name}")
+            done <<< "${archs}"
+          done
+          if [[ ${#names[@]} -eq 0 ]]; then
+            echo "::error::No apps found; refusing to treat every package as orphaned."
+            exit 1
+          fi
+          mapfile -t unique < <(printf '%s\n' "${names[@]}" | sort -u)
+          echo "names=$(jq -nc '$ARGS.positional' --args "${unique[@]}")" >> "$GITHUB_OUTPUT"
+
+      - name: List the packages linked to this repository
+        id: packages
+        run: |
+          # --paginate --slurp returns one JSON array per page; .[][] flattens them.
+          gh api --paginate --slurp "/user/packages?package_type=container&per_page=100" \
+            | jq '[.[][] | select(.repository.full_name == env.REPO)]' > packages.json
+          echo "Found $(jq 'length' packages.json) container package(s) linked to ${REPO}."
+
+      - name: Find the orphaned packages
+        env:
+          EXPECTED: ${{ steps.expected.outputs.names }}
+        run: |
+          jq -n --argjson expected "${EXPECTED}" \
+                --argjson packages "$(cat packages.json)" \
+                '[$packages[] | select(.name as $n | ($expected | index($n)) | not)]' > orphans.json
+          jq -r -n --argjson expected "${EXPECTED}" \
+                --argjson packages "$(cat packages.json)" \
+                '$packages[] | select(.name as $n | ($expected | index($n))) | .name' | sort > live.txt
+          {
+            echo "### Package cleanup"
+            echo
+            echo "Found $(jq 'length' packages.json) container package(s) linked to ${REPO}; the apps on this branch expect $(jq 'length' <<<"${EXPECTED}")."
+            echo
+            echo "#### Orphaned packages (no app in this repository anymore)"
+            echo
+            if [[ "$(jq 'length' orphans.json)" == "0" ]]; then
+              echo "None."
+            else
+              echo "| Package | Versions | Link |"
+              echo "| --- | --- | --- |"
+              jq -r '.[] | "| \(.name) | \(.version_count) | [\(.html_url)](\(.html_url)) |"' orphans.json
+            fi
+            echo
+            echo "#### Live packages (kept)"
+            echo
+            if [[ ! -s live.txt ]]; then
+              echo "None."
+            else
+              sed 's/^/- /' live.txt
+            fi
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete the orphaned packages
+        run: |
+          count=$(jq 'length' orphans.json)
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            jq -r '.[] | "Dry run: would delete \(.name) (\(.version_count) versions)"' orphans.json
+            {
+              echo
+              echo "Dry run: ${count} orphaned package(s) would be deleted."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [[ "${count}" == "0" ]]; then
+            echo "No orphaned packages to delete."
+            exit 0
+          fi
+          while read -r name; do
+            encoded=$(jq -rn --arg n "${name}" '$n | @uri')
+            echo "Deleting ${name} ..."
+            gh api --silent --method DELETE "/user/packages/container/${encoded}"
+          done < <(jq -r '.[].name' orphans.json)
+          {
+            echo
+            echo "Deleted ${count} orphaned package(s):"
+            jq -r '.[] | "- \(.name)"' orphans.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prune old untagged versions of the live packages
+        env:
+          EXPECTED: ${{ steps.expected.outputs.names }}
+        run: |
+          if [[ "${PRUNE_UNTAGGED}" != "true" ]]; then
+            echo "Pruning untagged versions is switched off."
+            exit 0
+          fi
+          # Untagged = superseded re-pushes: every release tag, latest and the
+          # cosign sha256-* signature tags carry tags and are always kept.
+          cutoff=$(date -u -d "30 days ago" +%s)
+          : > untagged.tsv
+          while read -r name; do
+            encoded=$(jq -rn --arg n "${name}" '$n | @uri')
+            gh api --paginate --slurp "/user/packages/container/${encoded}/versions?per_page=100" \
+              | jq -r --arg name "${name}" \
+                  '.[][] | select((.metadata.container.tags // []) | length == 0) | [$name, (.id | tostring), (.created_at | fromdateiso8601 | tostring)] | @tsv' >> untagged.tsv
+          done < live.txt
+          candidates=$(wc -l < untagged.tsv)
+          if [[ "${candidates}" == "0" ]]; then
+            echo "No untagged versions in the live packages."
+            exit 0
+          fi
+          pruned=0
+          skipped=0
+          while IFS=$'\t' read -r name id created; do
+            if (( created < cutoff )); then
+              if [[ "${DRY_RUN}" == "true" ]]; then
+                echo "Dry run: would delete untagged version ${id} of ${name} (created $(date -u -d "@${created}" +%Y-%m-%d))"
+              else
+                encoded=$(jq -rn --arg n "${name}" '$n | @uri')
+                gh api --silent --method DELETE "/user/packages/container/${encoded}/versions/${id}"
+                echo "Deleted untagged version ${id} of ${name} (created $(date -u -d "@${created}" +%Y-%m-%d))"
+              fi
+              pruned=$((pruned + 1))
+            else
+              skipped=$((skipped + 1))
+            fi
+          done < untagged.tsv
+          if [[ "${DRY_RUN}" == "true" ]]; then word="would be deleted"; else word="deleted"; fi
+          {
+            echo
+            echo "Untagged versions older than $(date -u -d "@${cutoff}" +%Y-%m-%d): ${pruned} ${word}, ${skipped} kept (younger than 30 days)."
+          } >> "$GITHUB_STEP_SUMMARY"
