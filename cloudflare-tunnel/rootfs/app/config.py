@@ -35,6 +35,11 @@ ALLOWED_RUN_PARAMETERS = (
     "--tag",
 )
 _RUN_PARAMETER_RE = re.compile(r"^(--[a-z-]+)=.*$")
+# A public DNS name such as home.example.com: no scheme, port or path.
+_HOSTNAME_RE = re.compile(r"^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$")
+
+MODE_TOKEN = "token"  # noqa: S105 - a mode name, not a secret
+MODE_LOGIN = "login"
 
 # cloudflared's own log levels; ours are close but not identical.
 CLOUDFLARED_LOGLEVELS = {
@@ -72,9 +77,16 @@ class Config:
     """Parsed app options."""
 
     tunnel_token: str = ""
+    external_hostname: str = ""
     notify_on_failure: bool = True
     run_parameters: tuple[str, ...] = ()
     log_level: str = "info"
+
+    @property
+    def mode(self) -> str:
+        """``token`` (a tunnel made in Zero Trust) or ``login`` (the app signs in and makes the tunnel)."""
+
+        return MODE_TOKEN if self.tunnel_token else MODE_LOGIN
 
     @property
     def cloudflared_loglevel(self) -> str:
@@ -86,10 +98,12 @@ class Config:
         """The part of the connector command that the options control.
 
         Two specs being equal means a restart is not needed; a different token
-        or parameters is applied by restarting the connector.
+        or parameters is applied by restarting the connector. A new
+        ``external_hostname`` in login mode is applied by the app itself (DNS
+        route, then a connector restart), so it is not part of the spec.
         """
 
-        return (self.tunnel_token, self.cloudflared_loglevel, self.run_parameters)
+        return (self.mode, self.tunnel_token, self.cloudflared_loglevel, self.run_parameters)
 
 
 def load_options(path: Path = CONFIG_PATH) -> dict[str, object]:
@@ -126,18 +140,32 @@ def _run_parameters(raw: dict[str, object]) -> tuple[str, ...]:
     return tuple(kept)
 
 
+def parse_hostname(value: object) -> str:
+    """A public hostname, lower-cased ("" when empty); raises ConfigError when it is not one."""
+
+    text = str(value or "").strip().lower().rstrip(".")
+    if not text:
+        return ""
+    if not _HOSTNAME_RE.match(text):
+        raise ConfigError(
+            f"external_hostname '{text}' is not a hostname. Use just the name, e.g. home.example.com "
+            "(no https://, port or path)."
+        )
+    return text
+
+
 def load_config(raw: dict[str, object]) -> Config:
-    """Validate raw options and produce a Config."""
+    """Validate raw options and produce a Config.
+
+    An empty ``tunnel_token`` is valid: the app then runs in login mode and
+    the panel walks through signing in to Cloudflare.
+    """
 
     token = str(raw.get("tunnel_token") or "").strip()
-    if not token:
-        raise ConfigError(
-            "tunnel_token is empty. Create the tunnel in Cloudflare Zero Trust "
-            "(Networks → Tunnels → Create a tunnel) and paste its token here."
-        )
     notify = raw.get("notify_on_failure", True)
     return Config(
         tunnel_token=token,
+        external_hostname=parse_hostname(raw.get("external_hostname")),
         notify_on_failure=notify if isinstance(notify, bool) else True,
         run_parameters=_run_parameters(raw),
         log_level=parse_log_level(raw),

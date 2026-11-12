@@ -3,8 +3,11 @@ configuration:
     name: Log level
     description: How much the app writes to its log - trace, debug, info (default), notice, warning, error or fatal. Use debug while troubleshooting, then set it back to info. Applies without a restart.
   tunnel_token:
-    name: Tunnel token
-    description: The token of a remotely managed Cloudflare Tunnel. Create the tunnel in Cloudflare Zero Trust (Networks -> Tunnels -> Create a tunnel), copy the token it shows, and paste it here. A !secret works too. The token is passed to cloudflared through its environment, never on the command line or in the log.
+    name: Tunnel token (optional)
+    description: Leave empty to sign in to Cloudflare from the Cloudflare Tunnel panel - the app then creates the tunnel and its DNS record itself. Or paste the token of a tunnel you created in Cloudflare Zero Trust (Networks -> Tunnels -> Create a tunnel). A !secret works too. The token is passed to cloudflared through its environment, never on the command line or in the log.
+  external_hostname:
+    name: Public hostname
+    description: The address Home Assistant gets on the Internet, e.g. home.example.com (no https://). Normally set from the panel after signing in. With a Zero Trust token it is only used for the reachability check and the link in the panel.
   notify_on_failure:
     name: Notifications
     description: Notify when the tunnel has been down for about 30 seconds, and when it recovers. Phones are found automatically; switch individual phones on or off in the Cloudflare Tunnel panel.

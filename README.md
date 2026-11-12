@@ -21,12 +21,12 @@ https://github.com/nerowentah/haos-addons
 
 | | App | Version | Arch | What it does |
 | --- | --- | --- | --- | --- |
-| <img src="tnb-usage-checker/icon.png" width="32" alt=""> | [TNB Usage Checker](tnb-usage-checker/) | 0.5.0 | aarch64, amd64 | Imports myTNB usage and cost into the Energy dashboard and estimates your TNB bill live, for multiple accounts under one myTNB login. |
-| <img src="lg-webos-devmode-mgmt/icon.png" width="32" alt=""> | [LG webOS DevMode Mgmt](lg-webos-devmode-mgmt/) | 1.7.8 | aarch64, amd64 | Renews LG webOS Developer Mode sessions on a schedule so they never expire. |
-| <img src="mobile-device-manager/icon.png" width="32" alt=""> | [Mobile Device Manager](mobile-device-manager/) | 0.1.6 | aarch64, amd64 | Lists your Companion app devices with last seen, battery and every automation, script and notify call that uses them. Flags stale and duplicate devices and removes them safely. |
-| <img src="ranhill-saj-bill-checker/icon.png" width="32" alt=""> | [Ranhill SAJ Bill Checker](ranhill-saj-bill-checker/) | 0.2.4 | aarch64, amd64 | Shows the amount due on your Ranhill SAJ (Johor) water accounts, read from the public Quick Payment page with no login. |
-| <img src="api-key-manager/icon.png" width="32" alt=""> | [API Key Manager](api-key-manager/) | 0.1.1 | aarch64, amd64 | Lists every user's long-lived access tokens (API keys) with description, owner, last used and IP. Flags unused, vague, expired, deactivated-owner and admin keys, and lets you approve, mark suspicious and annotate each one. Read-only. |
-| <img src="cloudflare-tunnel/icon.png" width="32" alt=""> | [Cloudflare Tunnel](cloudflare-tunnel/) | 0.1.1 | aarch64, amd64 | Runs the cloudflared connector for a remotely managed Cloudflare Tunnel: no open ports, watched and restarted for you, with status in a sidebar panel and failure notifications. |
+| <img src="tnb-usage-checker/icon.png" width="32" alt=""> | [TNB Usage Checker](tnb-usage-checker/) | 0.5.1 | aarch64, amd64 | Imports myTNB usage and cost into the Energy dashboard and estimates your TNB bill live, for multiple accounts under one myTNB login. |
+| <img src="lg-webos-devmode-mgmt/icon.png" width="32" alt=""> | [LG webOS DevMode Mgmt](lg-webos-devmode-mgmt/) | 1.7.9 | aarch64, amd64 | Renews LG webOS Developer Mode sessions on a schedule so they never expire. |
+| <img src="mobile-device-manager/icon.png" width="32" alt=""> | [Mobile Device Manager](mobile-device-manager/) | 0.1.7 | aarch64, amd64 | Lists your Companion app devices with last seen, battery and every automation, script and notify call that uses them. Flags stale and duplicate devices and removes them safely. |
+| <img src="ranhill-saj-bill-checker/icon.png" width="32" alt=""> | [Ranhill SAJ Bill Checker](ranhill-saj-bill-checker/) | 0.2.5 | aarch64, amd64 | Shows the amount due on your Ranhill SAJ (Johor) water accounts, read from the public Quick Payment page with no login. |
+| <img src="api-key-manager/icon.png" width="32" alt=""> | [API Key Manager](api-key-manager/) | 0.1.2 | aarch64, amd64 | Lists every user's long-lived access tokens (API keys) with description, owner, last used and IP. Flags unused, vague, expired, deactivated-owner and admin keys, and lets you approve, mark suspicious and annotate each one. Read-only. |
+| <img src="cloudflare-tunnel/icon.png" width="32" alt=""> | [Cloudflare Tunnel](cloudflare-tunnel/) | 0.2.0 | aarch64, amd64 | Puts Home Assistant on the Internet through a Cloudflare Tunnel with no open ports: sign in to Cloudflare from the panel and it creates the tunnel, DNS record and proxy settings (or use a Zero Trust token), then keeps the connector watched with failure notifications. |
 
 **Planned:** TM Unifi Bill Checker.
 
@@ -102,7 +102,7 @@ python -m unittest discover -s cloudflare-tunnel/tests
 **Checking an image signature yourself:**
 
 ```bash
-cosign verify ghcr.io/nerowentah/power-tnb:0.5.0 \
+cosign verify ghcr.io/nerowentah/power-tnb:0.5.1 \
   --certificate-identity-regexp '^https://github.com/nerowentah/haos-addons/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

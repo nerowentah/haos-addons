@@ -408,6 +408,16 @@ def link(label: str, path: str, description: str = "", *, button: str = "Edit", 
     return {"label": label, "path": path, "description": description, "button": button, "icon": icon}
 
 
+def external(
+    label: str, url: str, description: str = "", *, button: str = "Open", icon: str = "mdi:open-in-new"
+) -> dict[str, object]:
+    """A row (in ``links``) or button (in ``actions``) that opens an https:// page in a new browser tab."""
+
+    if not url.startswith("https://"):
+        raise ValueError("external links must use https://")
+    return {"label": label, "url": url, "path": "", "description": description, "button": button, "icon": icon}
+
+
 def row(label: str, description: str = "", *, icon: str = "") -> dict[str, object]:
     """A plain row (in ``links``) without a button, e.g. a note or a list entry."""
 

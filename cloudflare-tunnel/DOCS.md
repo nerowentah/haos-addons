@@ -2,7 +2,12 @@
 
 A **Cloudflare Tunnel** connects your Home Assistant to the Internet through Cloudflare's network: the connector (`cloudflared`) makes outbound-only connections to Cloudflare's edge, and your traffic arrives through Cloudflare with TLS, your firewall untouched. No open ports, no port forwarding, no dynamic DNS.
 
-This app runs the connector for a **remotely managed** tunnel: you create the tunnel and its public hostnames in Cloudflare Zero Trust, and the app only needs the tunnel's token. It is derived from [homeassistant-apps/app-cloudflared](https://github.com/homeassistant-apps/app-cloudflared) (MIT), rebuilt for this repository's app design.
+There are two ways to set it up:
+
+- **Sign in with Cloudflare** (easiest): you sign in once from the app's panel and pick your domain; the app creates the tunnel, its DNS record, the route to Home Assistant and Home Assistant's proxy settings.
+- **Zero Trust token:** you create a tunnel and its public hostname in Cloudflare Zero Trust yourself and paste the tunnel's token.
+
+The app is derived from [homeassistant-apps/app-cloudflared](https://github.com/homeassistant-apps/app-cloudflared) (MIT), rebuilt for this repository's app design.
 
 ## Installation
 
@@ -11,29 +16,64 @@ This app runs the connector for a **remotely managed** tunnel: you create the tu
    https://github.com/nerowentah/haos-addons
    ```
 2. Install **Cloudflare Tunnel** and **Start** it.
-3. Create the tunnel and paste its token (next section).
-4. Open **Cloudflare Tunnel** from the sidebar. Only administrators see it.
+3. Open **Cloudflare Tunnel** from the sidebar (only administrators see it) and follow one of the two setups below.
 
-## Create the tunnel
+You need a Cloudflare account (the free plan is enough) with your domain added to it.
 
-1. Open [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) (a free plan is enough) with the Cloudflare account that holds your domain.
-2. Go to **Networks → Tunnels** and click **Create a tunnel**.
-3. Choose **Cloudflared** as the tunnel type and give the tunnel a name.
-4. Cloudflare shows a connector installation command with a long token, for example:
+## Sign in with Cloudflare
+
+1. In the panel, click **Sign in with Cloudflare**, then **Open Cloudflare sign-in**. Cloudflare opens in a new tab.
+2. Log in, pick the domain to use for Home Assistant and click **Authorize**. You can close that tab; the panel continues by itself.
+3. Click **Choose hostname** and confirm the suggested name (e.g. `home.example.com`) or type another one under your domain.
+
+The app then:
+
+- creates a tunnel named `home-assistant` in your Cloudflare account,
+- adds a `CNAME` record for the hostname that points to the tunnel (if the name already has a DNS record, the panel asks before replacing it),
+- sends that hostname to Home Assistant (`http://homeassistant:8123`, or `https://` if Home Assistant uses SSL) and everything else to a 404,
+- starts the connector, and once it is connected, makes Home Assistant trust it (next section).
+
+To change the hostname later, use **Change hostname** in the panel (or edit `external_hostname`); the app adds the new DNS record and updates the route. **Sign out** stops the connector, deletes the tunnel at Cloudflare and removes the saved sign-in; the DNS record stays, so delete it in the Cloudflare dashboard if you no longer need it.
+
+## Home Assistant proxy settings
+
+Home Assistant rejects requests that come through a proxy (it answers **400 Bad Request**) unless `configuration.yaml` trusts the proxy:
+
+```yaml
+http:
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - 172.30.33.0/24
+```
+
+When the tunnel first connects, the app adds this for you, in either setup:
+
+- If there is no `http:` block, it appends the one above. If there is a plain `http:` block, it adds only what is missing, at that block's indentation. If the network is already trusted (also through a wider entry such as `172.30.32.0/23`), nothing changes.
+- It saves a backup as `configuration.yaml.cloudflare-tunnel.bak` first, then runs Home Assistant's configuration check. If the check fails, the original file is put back.
+- It **never restarts Home Assistant by itself**: the panel shows **Restart Home Assistant**, which applies the change after you confirm.
+- An `http:` block it cannot edit safely (`http: !include ...`, flow style, `use_x_forwarded_for: false`) is left alone; the panel shows the snippet to add yourself.
+
+This happens once per install; if you later remove the block, the app does not add it again (use **Check again** in the panel to re-run it).
+
+## Use a Zero Trust token instead
+
+1. Open [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) with the Cloudflare account that holds your domain.
+2. Go to **Networks → Tunnels** and click **Create a tunnel**, choose **Cloudflared** and name it.
+3. Cloudflare shows a connector installation command with a long token, for example:
    ```
    cloudflared service install eyJhIjoi...
    ```
    Copy just the token — the `eyJhIjoi...` part — into this app's **tunnel_token** option (Configuration tab) and save. You can skip the rest of Cloudflare's instructions; this app is the connector.
-5. Still in Zero Trust, open the tunnel's **Public Hostname** tab and add how you reach Home Assistant, for example `home.example.com` → `http://homeassistant.local:8123`.
+4. In the tunnel's **Public Hostname** tab, add how you reach Home Assistant, for example `home.example.com` → `http://homeassistant:8123`.
+5. Optionally set `external_hostname` to that hostname, so the panel links to it and checks that it answers.
 
-If Home Assistant runs on the same machine as this app, the service URL is `http://homeassistant.local:8123` (or your Home Assistant's host or IP).
-
-The app's panel shows **Connected** within a few seconds of saving the token.
+The panel shows **Connected** within a few seconds of saving the token.
 
 ## Configuration
 
 ```yaml
 tunnel_token: ""
+external_hostname: ""
 notify_on_failure: true
 run_parameters: []
 log_level: info
@@ -41,12 +81,13 @@ log_level: info
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `tunnel_token` | `""` | The token of a remotely managed Cloudflare Tunnel. Required. `!secret` works. |
+| `tunnel_token` | `""` | Empty: sign in from the panel. Otherwise the token of a tunnel made in Zero Trust. `!secret` works. |
+| `external_hostname` | `""` | The public hostname, e.g. `home.example.com` (no `https://`). Normally set from the panel. |
 | `notify_on_failure` | `true` | Notify when the tunnel has been down for about 30 seconds, and when it recovers. |
 | `run_parameters` | `[]` | Extra `cloudflared` flags, e.g. `--protocol=quic` or `--region=us`. Only connection flags are allowed (below); anything else is rejected. |
 | `log_level` | `info` | How much is logged: `trace`, `debug`, `info`, `notice`, `warning`, `error` or `fatal`. Applies without a restart. |
 
-Changes made in the Configuration tab are picked up within about 30 seconds. Changing the token, the log level or the run parameters restarts the connector for you; you don't need to restart the app.
+Changes made in the Configuration tab are picked up within about 30 seconds. Changing the token, the log level or the run parameters restarts the connector for you; a new `external_hostname` is routed and applied too. You don't need to restart the app.
 
 ### Passwords and secrets
 
@@ -70,25 +111,30 @@ Only these `cloudflared` flags are accepted, each as `--flag=value`:
 
 `--edge-bind-address`, `--edge-ip-version`, `--grace-period`, `--ha-connections`, `--protocol`, `--region`, `--retries`, `--tag`
 
-Anything else is rejected, so a typo can never break the connector. The app already sets `--no-autoupdate`, `--metrics` and `--loglevel` itself. Logging-related flags (`--logfile`, `--loglevel`) are not allowed because they would take `cloudflared`'s output out of the app's log, where the app watches it.
+Anything else is rejected, so a typo can never break the connector. The app already sets `--no-autoupdate`, `--metrics`, `--loglevel` and (when signed in) `--config` itself. Logging-related flags (`--logfile`, `--loglevel`) are not allowed because they would take `cloudflared`'s output out of the app's log, where the app watches it.
 
 ## Panel
 
-The panel shows one card for the connector:
+Until the tunnel runs (sign-in setup), the **Set up** card walks through the three steps — sign in, hostname, tunnel and DNS record — with the button for the next one, and shows any error with **Try again**.
 
-- **Badge:** the state — **Connected**, **Starting**, **Degraded**, **Restarting** or **Error**.
+Then the **Connector** card shows:
+
+- **Badge:** the state — **Connected**, **Starting**, **Degraded**, **Restarting**, **Error** or **Not set up**.
 - **Edge connections:** how many connections to Cloudflare's edge are live (normally 4).
 - **Restarts**, **Started** and **Last change.**
-- **Restart connector** restarts `cloudflared` immediately.
+- The **public URL** with the result of the last check: the app requests `https://<hostname>/api/` every 10 minutes from outside; Home Assistant answering (even with "login required") means **Reachable**.
+- **Restart connector**, **Check public URL**, and when signed in **Change hostname** and **Sign out**.
 
-The **Settings** card shows the active log level and run parameters, with a **Notifications** switch. The **Phones** card has one switch per Companion app linked to this Home Assistant; phones are found automatically every 5 minutes, and new phones are switched on.
+The **Home Assistant proxy settings** card appears while there is something to do: a restart to apply the change, or a snippet to add yourself.
+
+The **Settings** card shows the setup type, log level and run parameters, with a **Notifications** switch. The **Phones** card has one switch per Companion app linked to this Home Assistant; phones are found automatically every 5 minutes, and new phones are switched on.
 
 ## How it works
 
-- The app starts `cloudflared` as a child process: `cloudflared tunnel --no-autoupdate --metrics=127.0.0.1:36500 --loglevel=<level> <run_parameters> run`.
-- **The token is passed through the `TUNNEL_TOKEN` environment variable**, never on the command line. Command lines are visible in process listings, so the token never is. The app's log shows `cloudflared`'s output; its lines never contain the token.
+- **Sign-in setup:** the app runs Cloudflare's own commands for a locally managed tunnel. `cloudflared tunnel login` gives the sign-in link and, once you authorize a domain, saves a certificate for that domain; `cloudflared tunnel create` makes the tunnel and its credentials; `cloudflared tunnel route dns` adds the CNAME. The app writes `config.yml` with the route to Home Assistant and runs `cloudflared tunnel --config /data/cloudflared/config.yml run <tunnel id>`. All of it lives in `/data/cloudflared` (folder mode 0700).
+- **Token setup:** the app runs `cloudflared tunnel --no-autoupdate --metrics=127.0.0.1:36500 --loglevel=<level> <run_parameters> run`, and **the token is passed through the `TUNNEL_TOKEN` environment variable**, never on the command line. Command lines are visible in process listings, so the token never is.
 - The connector's Prometheus metrics are served on **localhost only** (`127.0.0.1:36500`), inside the container. No ports are published to your network.
-- The app watches the connector: it reads its log, counts edge connections from its metrics, and restarts it if it exits, waiting 1, 2, 5, 10, 30 and then 60 seconds between tries. A rejected token is retried every 5 minutes instead of crash-looping.
+- The app watches the connector: it reads its log, counts edge connections from its metrics, and restarts it if it exits, waiting 1, 2, 5, 10, 30 and then 60 seconds between tries. Rejected credentials are retried every 5 minutes instead of crash-looping.
 - `--no-autoupdate` keeps the container's binary the one that was verified at build time (below).
 
 ## Security
@@ -96,7 +142,7 @@ The **Settings** card shows the active log level and run parameters, with a **No
 - **Pinned, verified binary.** The Dockerfile downloads a fixed `cloudflared` release and fails the build unless its SHA-256 matches the digest GitHub publishes for that release asset. Updating means changing the pin here, in the open.
 - **2026.10.2 or later.** Following Cloudflare's advisory about the compromised eMudhra intermediate CA, connectors must run `cloudflared` 2026.10.2 or later; this app pins a newer release and never auto-updates to an unvetted one.
 - **Post-quantum encryption** between the connector and Cloudflare's edge is on by default (it has been since cloudflared 2024.1); there is no option to weaken it.
-- **Least privilege.** The app needs no port mappings, no device access and no USB; it talks to the Supervisor and Home Assistant APIs only for its panel and notifications, and to Cloudflare's edge.
+- **Least privilege.** The app needs no port mappings, no device access and no USB. It talks to the Supervisor and Home Assistant APIs for its panel, notifications and the configuration check, and to Cloudflare. It writes to your Home Assistant configuration folder only to add the proxy settings described above, with a backup and Home Assistant's own check.
 
 ## Notifications
 
@@ -105,13 +151,19 @@ The **Settings** card shows the active log level and run parameters, with a **No
 
 ## Privacy
 
-- **The panel and the log never show the tunnel token.** The log shows connector output, states and counts.
-- **`/data/state.json`** holds only the phone notification switches.
+- **The panel and the log never show the tunnel token, the sign-in certificate or the tunnel credentials.** The log shows connector output, states, counts and setup steps.
+- **`/data/cloudflared`** holds the sign-in certificate (it contains an API token for the domain you picked), the tunnel credentials and `config.yml`, readable by the app only. **Sign out** deletes them.
+- **`/data/state.json`** holds the phone notification switches, the routed hostname and the outcome of the proxy-settings step.
 - `cloudflared`'s metrics endpoint answers on localhost inside the container only.
 
 ## Troubleshooting
 
 - **"Cloudflare rejected the tunnel token":** the token is wrong or was rotated. Copy the token from Zero Trust (**Networks → Tunnels → your tunnel → …**) again and save it in the Configuration tab.
+- **"Cloudflare rejected the tunnel credentials"** (sign-in setup): the tunnel was deleted in the dashboard. **Sign out** and sign in again.
+- **The sign-in link expired:** it is valid for about 10 minutes; click **Sign in with Cloudflare** again.
+- **"already has a DNS record":** the hostname is used by another record. **Replace DNS record** points it at this tunnel, or choose another name.
+- **Public URL shows HTTP 400:** Home Assistant does not trust the tunnel yet. Restart Home Assistant if the panel asks for it, or add the snippet from **Home Assistant proxy settings**.
+- **Public URL shows HTTP 502 or 530:** Cloudflare reached the tunnel but not Home Assistant; check that Home Assistant runs and look at the app's log.
 - **Panel stuck on Starting:** check the app's log; set `log_level: debug` for `cloudflared`'s debug output. A firewall blocking outbound UDP 7844 (QUIC) is the usual cause — `--protocol=http` in `run_parameters` works as a fallback.
 - **Edge connections 0 but the process runs:** the connector lost its edge connections; the panel shows **Degraded** and `cloudflared` keeps retrying on its own.
 - **Wrong version warning from Cloudflare:** Zero Trust flags connectors older than 2026.10.2. Update this app to get the pinned release.

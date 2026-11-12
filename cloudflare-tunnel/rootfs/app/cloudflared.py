@@ -1,5 +1,8 @@
 """Run and watch the cloudflared tunnel connector.
 
+Token mode runs a tunnel made in Zero Trust; login mode runs the tunnel the
+app created itself (``account.py``) from its credentials and ``config.yml``.
+
 The token is passed to cloudflared through the ``TUNNEL_TOKEN`` environment
 variable (documented in Cloudflare's "Tunnel run parameters"): it never
 appears in the command line, in the app log or in the panel.
@@ -38,6 +41,11 @@ STATE_CONNECTED = "connected"
 STATE_DEGRADED = "degraded"  # running, but every edge connection is gone
 STATE_STOPPED = "stopped"  # exited; waiting to restart
 STATE_ERROR = "error"  # rejected token or missing binary; slow retry
+STATE_SETUP = "setup"  # login mode before the tunnel exists: nothing to run yet
+
+INGRESS_PATH = "/data/cloudflared/config.yml"  # login mode: written by account.Account
+BAD_TOKEN_MESSAGE = "Cloudflare rejected the tunnel token. Check it in the Configuration tab."  # noqa: S105 - a message
+BAD_CREDENTIALS_MESSAGE = "Cloudflare rejected the tunnel credentials. Sign out in the panel and sign in again."
 
 _VERSION_RE = re.compile(r"cloudflared version ([0-9A-Za-z.\-]+)", re.IGNORECASE)
 _REGISTERED_RE = re.compile(r"Registered tunnel connection\b")
@@ -160,6 +168,8 @@ class Cloudflared:
         metrics: MetricsFn = _metrics_page,
     ) -> None:
         self.config = cfg
+        self.tunnel_id: str | None = None  # login mode: set once the app has created the tunnel
+        self.ingress_path = INGRESS_PATH
         self.status = TunnelStatus()
         self._spawn = spawn
         self._clock = clock
@@ -173,32 +183,50 @@ class Cloudflared:
         self._restart_at = 0.0
 
     # -- Process lifecycle -----------------------------------------------------
+    @property
+    def ready(self) -> bool:
+        """Whether there is something to run: a token, or (login mode) a created tunnel."""
+
+        return self.config.mode == app_config.MODE_TOKEN or bool(self.tunnel_id)
+
     def _argv(self) -> list[str]:
-        return [
+        argv = [
             CLOUDFLARED,
             "tunnel",
             "--no-autoupdate",
             f"--metrics={METRICS_ADDRESS}",
             f"--loglevel={self.config.cloudflared_loglevel}",
-            *self.config.run_parameters,
-            "run",
         ]
+        if self.config.mode == app_config.MODE_TOKEN:
+            return [*argv, *self.config.run_parameters, "run"]
+        return [*argv, "--config", self.ingress_path, *self.config.run_parameters, "run", str(self.tunnel_id)]
 
     def _env(self) -> dict[str, str]:
         env = dict(os.environ)
-        # The token is not in argv: ps output and crash dumps never contain it.
-        env[TOKEN_ENV] = self.config.tunnel_token
+        env.pop(TOKEN_ENV, None)
+        if self.config.mode == app_config.MODE_TOKEN:
+            # The token is not in argv: ps output and crash dumps never contain it.
+            env[TOKEN_ENV] = self.config.tunnel_token
         return env
+
+    def _rejected_message(self) -> str:
+        return BAD_TOKEN_MESSAGE if self.config.mode == app_config.MODE_TOKEN else BAD_CREDENTIALS_MESSAGE
 
     def start(self) -> None:
         """Start the connector (also the way to apply changed options)."""
 
         self.stop()
+        if not self.ready:
+            self.status.set(STATE_SETUP)
+            return
         self._bad_token = False
         self._conn_count = 0
         self._ever_connected = False
         argv = self._argv()
-        _LOGGER.info("Starting cloudflared (token passed via %s)", TOKEN_ENV)
+        if self.config.mode == app_config.MODE_TOKEN:
+            _LOGGER.info("Starting cloudflared (token passed via %s)", TOKEN_ENV)
+        else:
+            _LOGGER.info("Starting cloudflared for tunnel %s", self.tunnel_id)
         try:
             process = self._spawn(argv, self._env())
         except OSError as err:
@@ -282,7 +310,7 @@ class Cloudflared:
         with self._lock:
             process, self._process = self._process, None
         if self._bad_token:
-            self.status.set(STATE_ERROR, "Cloudflare rejected the tunnel token. Check it in the Configuration tab.")
+            self.status.set(STATE_ERROR, self._rejected_message())
             self._schedule_restart(BAD_TOKEN_RETRY_SECONDS)
             return
         code = "unknown" if process is None else str(process.returncode)
@@ -295,6 +323,8 @@ class Cloudflared:
     def poll(self) -> None:
         """One monitoring pass: check the process, read the connection count, restart if due."""
 
+        if not self.ready:
+            return
         if not self._alive():
             if self._process is not None:
                 self._handle_exit()
@@ -304,7 +334,7 @@ class Cloudflared:
             return
         if self._bad_token:
             # Keep the process running (it retries registration itself) but say so.
-            self.status.set(STATE_ERROR, "Cloudflare rejected the tunnel token. Check it in the Configuration tab.")
+            self.status.set(STATE_ERROR, self._rejected_message())
             return
         measured = self._metrics_connections()
         if measured is not None:

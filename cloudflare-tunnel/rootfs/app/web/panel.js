@@ -154,7 +154,20 @@ function navigate(path) {
   window.top.location.href = path;
 }
 
+function renderExternal(item, iconName) {
+  // An https:// page (e.g. a sign-in) in a new tab; anything else renders nothing.
+  if (typeof item.url !== "string" || !item.url.startsWith("https://")) return null;
+  const label = item.button || item.label;
+  return h(
+    "a",
+    { class: "btn", href: item.url, target: "_blank", rel: "noopener noreferrer", title: item.url },
+    mdi(iconName || "mdi:open-in-new", "btn-icon"),
+    label,
+  );
+}
+
 function renderLinkButton(item, iconName) {
+  if (item.url) return renderExternal(item, iconName || item.icon);
   const label = item.button || item.label;
   const glyph = iconName || (label === "Edit" ? "mdi:pencil" : "mdi:open-in-new");
   const button = h("button", { class: "btn", type: "button", title: item.path }, mdi(glyph, "btn-icon"), label);
@@ -163,7 +176,7 @@ function renderLinkButton(item, iconName) {
 }
 
 function renderAction(item) {
-  if (item.path) return renderLinkButton({ ...item, button: item.label }, item.icon);
+  if (item.path || item.url) return renderLinkButton({ ...item, button: item.label }, item.icon);
   const button = h(
     "button",
     { class: `btn${item.danger ? " danger" : ""}`, type: "button", disabled: item.disabled, title: item.disabled ? item.reason : null },
@@ -352,7 +365,7 @@ function renderCard(card) {
             { class: "row" },
             mdi(l.icon, "row-icon"),
             h("div", { class: "row-text" }, h("div", { class: "row-label" }, l.label), l.description && h("div", { class: "row-desc" }, l.description)),
-            l.path && renderLinkButton(l),
+            (l.path || l.url) && renderLinkButton(l),
           ),
         ),
       ),

@@ -296,6 +296,11 @@ h2.section-title {
   opacity: 0.6;
 }
 
+a.btn {
+  text-decoration: none;
+  box-sizing: border-box;
+}
+
 .btn.danger {
   color: var(--error);
 }

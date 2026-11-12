@@ -170,6 +170,37 @@ class Supervisor:
 
         self._request(f"{SUPERVISOR_API}/addons/self/options", "POST", {"options": options})
 
+    def _data(self, path: str) -> dict[str, object]:
+        reply = self._request(f"{SUPERVISOR_API}{path}")
+        data = reply.get("data") if isinstance(reply, dict) else None
+        if not isinstance(data, dict):
+            raise SupervisorError(f"Supervisor returned no data for {path}")
+        return data
+
+    def self_ip(self) -> str | None:
+        """This app's address on the internal hassio network (e.g. 172.30.33.4), or None."""
+
+        value = self._data("/addons/self/info").get("ip_address")
+        return str(value) if value else None
+
+    def core_info(self) -> dict[str, object]:
+        """Home Assistant Core's port and SSL setting (``/core/info``)."""
+
+        return self._data("/core/info")
+
+    def check_core_config(self) -> tuple[bool, str]:
+        """Run Home Assistant's configuration check: (valid, errors)."""
+
+        reply = self.core_post("/config/core/check_config", {})
+        if not isinstance(reply, dict):
+            raise SupervisorError("Unexpected reply from the configuration check")
+        return reply.get("result") == "valid", str(reply.get("errors") or "")
+
+    def restart_core(self) -> None:
+        """Restart Home Assistant Core (the caller has asked the user first)."""
+
+        self.core_post("/services/homeassistant/restart", {})
+
     def save_options(self, updates: dict[str, object]) -> None:
         """Merge ``updates`` into the saved options."""
 
