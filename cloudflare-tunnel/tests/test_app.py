@@ -9,11 +9,14 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rootfs" / "app"))
 
+import account as acc
 import cloudflared as cf
 import config
+import ha_proxy
 import main
 import store
 import supervisor
@@ -32,6 +35,9 @@ class FakeSupervisor(supervisor.Supervisor):
         self.written: list[dict[str, object]] = []
         self.sent: list[tuple[list[str], str, str]] = []
         self.targets: list[str] | None = []
+        self.config_valid = True
+        self.restarted = 0
+        self.checks = 0
 
     def fetch_options(self) -> dict[str, object]:
         if not self.reachable:
@@ -50,14 +56,76 @@ class FakeSupervisor(supervisor.Supervisor):
     def notify(self, targets: list[str], title: str, message: str, notification_id: str) -> None:  # noqa: ARG002
         self.sent.append((list(targets), title, message))
 
+    def self_ip(self) -> str | None:
+        return "172.30.33.5"
+
+    def core_info(self) -> dict[str, object]:
+        return {"port": 8123, "ssl": False}
+
+    def check_core_config(self) -> tuple[bool, str]:
+        self.checks += 1
+        return self.config_valid, "" if self.config_valid else "Invalid config for [http]"
+
+    def restart_core(self) -> None:
+        self.restarted += 1
+
+
+class FakeAccount:
+    """Stands in for account.Account: records the cloudflared steps the app asks for."""
+
+    def __init__(self) -> None:
+        self.signed = False
+        self.id: str | None = None
+        self.zone = "example.com"
+        self.route_result = acc.ROUTE_OK
+        self.fail: str | None = None
+        self.calls: list[object] = []
+        self.login = SimpleNamespace(
+            state=acc.LOGIN_IDLE, url=None, error=None, start=lambda: self.calls.append("login")
+        )
+
+    def signed_in(self) -> bool:
+        return self.signed
+
+    def tunnel_id(self) -> str | None:
+        return self.id
+
+    def zone_name(self) -> str | None:
+        return self.zone
+
+    def create_tunnel(self) -> tuple[str, str]:
+        self.calls.append("create")
+        if self.fail:
+            raise acc.AccountError(self.fail)
+        self.id = "6ff42ae2-765d-4adf-8112-31c55c1551ef"
+        return self.id, "home-assistant"
+
+    def route_dns(self, tunnel_id: str, hostname: str, *, overwrite: bool = False) -> str:  # noqa: ARG002
+        self.calls.append(("route", hostname, overwrite))
+        return acc.ROUTE_OK if overwrite else self.route_result
+
+    def write_ingress(self, tunnel_id: str, hostname: str, service: str, *, no_tls_verify: bool = False) -> None:  # noqa: ARG002
+        self.calls.append(("ingress", hostname, service, no_tls_verify))
+
+    def sign_out(self) -> str | None:
+        self.calls.append("sign_out")
+        self.signed = False
+        self.id = None
+        return None
+
 
 class FakeDaemon:
     """Stands in for cloudflared.Cloudflared: a status object plus recorded process control."""
 
     def __init__(self, cfg: config.Config) -> None:
         self.config = cfg
+        self.tunnel_id: str | None = None
         self.status = cf.TunnelStatus()
         self.calls: list[str] = []
+
+    @property
+    def ready(self) -> bool:
+        return self.config.mode == config.MODE_TOKEN or bool(self.tunnel_id)
 
     def start(self) -> None:
         self.calls.append("start")
@@ -84,14 +152,26 @@ class AppTest(unittest.TestCase):
         self.store = store.Store(self.dir / "state.json")
         self.store.load()
         self.daemon = FakeDaemon(config.load_config(secrets.resolve(copy.deepcopy(STORED))))
+        self.account = FakeAccount()
+        self.ha_config = self.dir / "configuration.yaml"
+        self.ha_config.write_text("default_config:\n", encoding="utf-8")
+        self.probed: list[str] = []
+        self.probe_code: int | None = 401
         self.app = main.App(
             config.load_config(secrets.resolve(copy.deepcopy(STORED))),
             self.sup,
             self.store,
             copy.deepcopy(STORED),
             daemon=self.daemon,  # type: ignore[arg-type]
+            account=self.account,  # type: ignore[arg-type]
+            ha_config=self.ha_config,
+            probe=self._probe,
         )
         self.app.secrets = secrets
+
+    def _probe(self, url: str) -> int | None:
+        self.probed.append(url)
+        return self.probe_code
 
     def _state_text(self) -> str:
         return json.dumps(self.app.panel_state())
@@ -256,17 +336,172 @@ class AppTest(unittest.TestCase):
         self.assertEqual(raw["tunnel_token"], "!secret ct")  # references, never values
         self.assertEqual(cfg.tunnel_token, TOKEN)
 
-    def test_startup_with_an_empty_token_shows_setup_guidance(self) -> None:
+    def test_startup_with_an_empty_token_starts_in_login_mode(self) -> None:
         self.sup.stored = {"tunnel_token": ""}
-        secrets = webui.SecretRefs()
+        result = main._load_config(self.sup, webui.SecretRefs(), webui.PanelRouter(), threading.Event())
+        self.assertIsNotNone(result)
+        self.assertEqual(result[1].mode, config.MODE_LOGIN)
+
+    def test_startup_with_a_bad_option_shows_setup_guidance(self) -> None:
+        self.sup.stored = {"tunnel_token": "", "external_hostname": "https://nope"}
         router = webui.PanelRouter()
         stop = threading.Event()
         stop.set()  # stop before the 15s poll interval ticks: the panel shows setup guidance meanwhile
-        result = main._load_config(self.sup, secrets, router, stop)
-        self.assertIsNone(result)  # stopped before a token appeared
-        state = json.dumps(router.get_state())
-        self.assertIn("tunnel_token", state)
-        self.assertIn("Zero Trust", state)
+        self.assertIsNone(main._load_config(self.sup, webui.SecretRefs(), router, stop))
+        self.assertIn("external_hostname", json.dumps(router.get_state()))
+
+    # -- Login mode: sign in → hostname → tunnel + DNS ----------------------------------
+    def _login_mode(self, **options: object) -> None:
+        raw = {"tunnel_token": "", "notify_on_failure": True, "run_parameters": [], "log_level": "info", **options}
+        self.sup.stored = copy.deepcopy(raw)
+        self.app.apply_config(copy.deepcopy(raw), config.load_config(raw))
+        self.daemon.calls.clear()
+
+    def test_login_mode_starts_with_the_sign_in_button_and_no_outage_alerts(self) -> None:
+        self._login_mode()
+        text = self._state_text()
+        self.assertIn("Sign in with Cloudflare", text)
+        self.assertNotIn("Edge connections", text)  # the setup card replaces the connector card
+        for _ in range(main.FAILURES_BEFORE_NOTIFY + 2):
+            self.app._tick()
+        self.assertEqual(self.sup.sent, [])  # not set up yet is not an outage
+
+    def test_sign_in_runs_on_the_loop_thread_and_shows_the_link(self) -> None:
+        self._login_mode()
+        self.app.panel_action("login", {})
+        self.assertEqual(self.account.calls, [])  # queued, not run on the HTTP thread
+        self.app._tick()
+        self.assertEqual(self.account.calls, ["login"])
+        self.account.login.state = acc.LOGIN_WAITING
+        self.account.login.url = "https://dash.cloudflare.com/argotunnel?aud=&callback=https%3A%2F%2Flogin"
+        text = self._state_text()
+        self.assertIn("Open Cloudflare sign-in", text)
+        self.assertIn('"url": "https://dash.cloudflare.com/argotunnel', text)
+
+    def test_after_sign_in_the_hostname_is_asked_and_the_tunnel_is_set_up(self) -> None:
+        self._login_mode()
+        self.account.signed = True
+        self.app._tick()
+        self.assertIn('"prompt_value": "home.example.com"', self._state_text())
+        with self.assertRaises(webui.PanelError):
+            self.app.panel_action("hostname", {"text": "ha.other.org"})  # outside the signed-in zone
+        self.app.panel_action("hostname", {"text": "Home.Example.com"})
+        self.assertEqual(self.sup.written[-1]["external_hostname"], "home.example.com")
+        self.app._tick()
+        self.assertEqual(
+            self.account.calls,
+            [
+                "create",
+                ("route", "home.example.com", False),
+                ("ingress", "home.example.com", "http://homeassistant:8123", False),
+            ],
+        )
+        self.assertEqual(self.daemon.tunnel_id, self.account.id)
+        self.assertIn("restart", self.daemon.calls)
+        self.assertEqual(self.app.tunnel_state["hostname"], "home.example.com")
+        self.daemon.status.set(cf.STATE_CONNECTED)
+        text = self._state_text()
+        self.assertIn("Edge connections", text)  # set up: the connector card is back
+        self.assertIn("https://home.example.com", text)
+        self.app._tick()
+        self.assertEqual(self.account.calls.count("create"), 1)  # done once
+
+    def test_an_existing_dns_record_is_only_replaced_when_asked(self) -> None:
+        self._login_mode(external_hostname="home.example.com")
+        self.account.signed = True
+        self.account.route_result = acc.ROUTE_EXISTS
+        self.app._tick()
+        self.assertTrue(self.app.dns_conflict)
+        self.assertNotIn("restart", self.daemon.calls)
+        self.assertIn("Replace DNS record", self._state_text())
+        self.app._tick()
+        self.assertEqual(sum(1 for c in self.account.calls if isinstance(c, tuple) and c[0] == "route"), 1)
+        self.app.panel_action("overwrite_dns", {})
+        self.app._tick()
+        self.assertIn(("route", "home.example.com", True), self.account.calls)
+        self.assertIn("restart", self.daemon.calls)
+        self.assertFalse(self.app.dns_conflict)
+
+    def test_a_failed_step_waits_for_try_again(self) -> None:
+        self._login_mode(external_hostname="home.example.com")
+        self.account.signed = True
+        self.account.fail = "Could not create the tunnel: quota exceeded"
+        self.app._tick()
+        self.app._tick()
+        self.assertEqual(self.account.calls.count("create"), 1)  # no retry loop
+        self.assertIn("quota exceeded", self._state_text())
+        self.account.fail = None
+        self.app.panel_action("retry", {})
+        self.app._tick()
+        self.assertEqual(self.account.calls.count("create"), 2)
+        self.assertIn("restart", self.daemon.calls)
+
+    def test_sign_out_stops_and_forgets_the_tunnel(self) -> None:
+        self._login_mode(external_hostname="home.example.com")
+        self.account.signed = True
+        self.app._tick()
+        self.app.panel_action("sign_out", {})
+        self.app._tick()
+        self.assertIn("sign_out", self.account.calls)
+        self.assertIsNone(self.daemon.tunnel_id)
+        self.assertNotIn("hostname", self.app.tunnel_state)
+        self.assertIn("Sign in with Cloudflare", self._state_text())
+
+    def test_token_mode_refuses_the_sign_in_steps(self) -> None:
+        for step in ("login", "sign_out", "overwrite_dns", "retry"):
+            with self.assertRaises(webui.PanelError):
+                self.app.panel_action(step, {})
+
+    # -- Home Assistant proxy settings ---------------------------------------------------
+    def test_the_proxy_settings_are_added_once_and_restart_waits_for_a_click(self) -> None:
+        self.daemon.status.set(cf.STATE_CONNECTED)
+        self.app._tick()
+        text = self.ha_config.read_text(encoding="utf-8")
+        self.assertIn("use_x_forwarded_for: true", text)
+        self.assertIn("- 172.30.33.0/24", text)
+        self.assertTrue((self.dir / f"configuration.yaml{ha_proxy.BACKUP_SUFFIX}").exists())
+        self.assertEqual(self.sup.restarted, 0)
+        self.assertIn("Restart Home Assistant", self._state_text())
+        self.app.panel_action("restart_ha", {})
+        self.app._tick()
+        self.assertEqual(self.sup.restarted, 1)
+        self.assertNotIn("Restart Home Assistant", self._state_text())
+        self.ha_config.write_text("default_config:\n", encoding="utf-8")  # the user removed it again
+        self.app._tick()
+        self.assertEqual(self.ha_config.read_text(encoding="utf-8"), "default_config:\n")  # once per install
+        self.assertEqual(self.sup.checks, 1)
+
+    def test_a_failed_config_check_restores_the_file(self) -> None:
+        self.sup.config_valid = False
+        self.daemon.status.set(cf.STATE_CONNECTED)
+        self.app._tick()
+        self.assertEqual(self.ha_config.read_text(encoding="utf-8"), "default_config:\n")
+        self.assertEqual(self.app.tunnel_state["proxy_status"], ha_proxy.STATUS_INVALID)
+        self.assertIn("Check again", self._state_text())
+
+    def test_nothing_is_edited_before_the_tunnel_connects(self) -> None:
+        self.app._tick()
+        self.assertEqual(self.ha_config.read_text(encoding="utf-8"), "default_config:\n")
+        self.assertNotIn("proxy_status", self.app.tunnel_state)
+
+    # -- Public URL check ------------------------------------------------------------------
+    def test_the_public_url_is_checked_when_connected(self) -> None:
+        self.app.apply_config(
+            copy.deepcopy({**STORED, "external_hostname": "home.example.com"}),
+            config.load_config({**RESOLVED, "external_hostname": "home.example.com"}),
+        )
+        self.app._check_reach()
+        self.assertEqual(self.probed, [])  # not connected yet
+        self.daemon.status.set(cf.STATE_CONNECTED)
+        self.app._check_reach()
+        self.app._reach_thread.join(5)
+        self.assertEqual(self.probed, ["https://home.example.com/api/"])
+        self.assertIn("Reachable", self._state_text())
+        self.probe_code = 400
+        self.app.panel_action("check_reach", {})
+        self.app._tick()
+        self.app._reach_thread.join(5)
+        self.assertIn("HTTP 400", self._state_text())
 
     def test_run_starts_and_stops_the_connector(self) -> None:
         def stop_soon() -> None:

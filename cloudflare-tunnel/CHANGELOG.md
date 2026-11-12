@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- **Sign in with Cloudflare.** Leave `tunnel_token` empty and the panel walks through the setup: **Sign in with Cloudflare** opens Cloudflare's sign-in, you pick your domain, confirm the suggested hostname (e.g. `home.example.com`), and the app creates the tunnel, its DNS record and the route to Home Assistant, then starts the connector. **Change hostname** and **Sign out** are in the panel. The Zero Trust token setup keeps working as before.
+- **Home Assistant proxy settings.** When the tunnel first connects, the app adds `use_x_forwarded_for` and `trusted_proxies` to `configuration.yaml` if they are missing, with a backup and Home Assistant's configuration check (restored if it fails). Home Assistant is only restarted when you click **Restart Home Assistant**. An `http:` block it cannot edit safely is left alone, and the panel shows the snippet.
+- **Public URL check.** With `external_hostname` set, the panel links to the public URL and checks every 10 minutes that Home Assistant answers through it (and explains an HTTP 400 or 5xx).
+- New option `external_hostname`. The app now maps the Home Assistant configuration folder (read-write) for the proxy settings.
+
 ## 0.1.2
 
 - **Fixed: the app did not show in the app store.** The `run_parameters` schema entry was malformed (`$` outside `match(...)`), so the Supervisor rejected the whole config and hid the app. Blank entries and surrounding spaces are now accepted, as the app already ignored them.

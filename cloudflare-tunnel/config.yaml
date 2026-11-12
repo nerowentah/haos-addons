@@ -1,11 +1,12 @@
 name: "Cloudflare Tunnel"
-version: "0.1.2"
+version: "0.2.0"
 slug: "cloudflare_tunnel"
 description: >-
   Connect Home Assistant to the Internet through a Cloudflare Tunnel without
-  opening any port. Create the tunnel in Cloudflare Zero Trust, paste its
-  token, and this app keeps the connector running: status, connections and
-  restarts in a sidebar panel, with failure notifications.
+  opening any port. Sign in to Cloudflare from the panel and the app creates
+  the tunnel, its DNS record and the Home Assistant proxy settings (or paste
+  a Zero Trust tunnel token), then keeps the connector running with status
+  and failure notifications.
 url: "https://github.com/nerowentah/haos-addons/tree/main/cloudflare-tunnel"
 image: "ghcr.io/nerowentah/cloudflare-tunnel"
 arch:
@@ -18,13 +19,18 @@ panel_icon: mdi:cloud-lock
 panel_title: Cloudflare Tunnel
 homeassistant_api: true
 hassio_api: true
+map:
+  - type: homeassistant_config
+    read_only: false
 options:
   tunnel_token: ""
+  external_hostname: ""
   notify_on_failure: true
   run_parameters: []
   log_level: info
 schema:
   tunnel_token: password?
+  external_hostname: str?
   notify_on_failure: bool
   run_parameters:
     - match(^\s*((--edge-bind-address|--edge-ip-version|--grace-period|--ha-connections|--protocol|--region|--retries|--tag)=.+)?\s*$)?

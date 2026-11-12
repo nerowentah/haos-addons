@@ -1,5 +1,5 @@
 name: "TNB Usage Checker"
-version: "0.5.0"
+version: "0.5.1"
 slug: "power_tnb"
 description: >-
   Tracks Malaysian TNB electricity for multiple accounts: imports hourly

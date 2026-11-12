@@ -6,6 +6,7 @@ import io
 import sys
 import time
 import unittest
+import unittest.mock
 from collections.abc import Callable
 from pathlib import Path
 
@@ -116,6 +117,32 @@ class ArgvTest(unittest.TestCase):
         self.assertNotIn(TOKEN, argv)
         self.assertNotIn(TOKEN, " ".join(argv))
         self.assertEqual(spawn.envs[-1][cf.TOKEN_ENV], TOKEN)
+
+    def test_login_mode_runs_the_created_tunnel_without_a_token(self) -> None:
+        spawn = FakeSpawn()
+        d = cf.Cloudflared(config.load_config({"run_parameters": ["--region=us"]}), spawn=spawn, clock=FakeClock())
+        d.start()
+        self.assertEqual(spawn.argvs, [])  # nothing to run before the tunnel exists
+        self.assertEqual(d.status.state, cf.STATE_SETUP)
+        d.poll()
+        self.assertEqual(spawn.argvs, [])  # and no restart loop either
+        d.tunnel_id = "6ff42ae2-765d-4adf-8112-31c55c1551ef"
+        d.start()
+        argv = spawn.argvs[-1]
+        self.assertEqual(argv[-2:], ["run", "6ff42ae2-765d-4adf-8112-31c55c1551ef"])
+        self.assertEqual(argv[argv.index("--config") + 1], cf.INGRESS_PATH)
+        self.assertIn("--region=us", argv)
+        self.assertNotIn(cf.TOKEN_ENV, spawn.envs[-1])
+        d.stop()
+
+    def test_a_token_in_the_environment_never_leaks_into_login_mode(self) -> None:
+        spawn = FakeSpawn()
+        d = cf.Cloudflared(config.load_config({}), spawn=spawn, clock=FakeClock())
+        d.tunnel_id = "6ff42ae2-765d-4adf-8112-31c55c1551ef"
+        with unittest.mock.patch.dict("os.environ", {cf.TOKEN_ENV: "stale"}):
+            d.start()
+        self.assertNotIn(cf.TOKEN_ENV, spawn.envs[-1])
+        d.stop()
 
     def test_loglevel_follows_the_option(self) -> None:
         spawn = FakeSpawn()

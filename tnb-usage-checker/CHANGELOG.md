@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1
+
+- **Panel:** can open external pages (e.g. a sign-in) in a new browser tab; the shared panel code is kept identical across this repository's apps. No visible change in this app.
+
 ## 0.5.0
 
 - **The Energy dashboard import is now visible.** Each account card shows **Energy import** (`ok`, `failed`, `off` or waiting for the first sync) and **Last import**, lists the two statistic ids to pick in the dashboard, and has a button that opens **Settings → Dashboards → Energy**. Two new diagnostic entities carry the same state: `sensor.tnb_<id>_stats_status` and `sensor.tnb_<id>_stats_last_import`. Nothing needs reconfiguring: the statistic ids and the existing entities are unchanged.

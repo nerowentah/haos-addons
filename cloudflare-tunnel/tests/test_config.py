@@ -37,10 +37,37 @@ class LoadConfigTest(unittest.TestCase):
         self.assertEqual(cfg.log_level, "info")
         self.assertEqual(cfg.cloudflared_loglevel, "info")
 
-    def test_empty_token_names_the_fix(self) -> None:
-        with self.assertRaises(config.ConfigError) as ctx:
-            config.load_config({"tunnel_token": "  "})
-        self.assertIn("Zero Trust", str(ctx.exception))
+    def test_an_empty_token_means_login_mode(self) -> None:
+        self.assertEqual(config.load_config({"tunnel_token": "  "}).mode, config.MODE_LOGIN)
+        self.assertEqual(config.load_config({}).mode, config.MODE_LOGIN)
+        self.assertEqual(config.load_config({"tunnel_token": "tok"}).mode, config.MODE_TOKEN)
+
+    def test_switching_mode_changes_the_daemon_spec(self) -> None:
+        self.assertNotEqual(
+            config.load_config({}).daemon_spec(), config.load_config({"tunnel_token": "t"}).daemon_spec()
+        )
+
+    def test_hostname_is_normalized(self) -> None:
+        cfg = config.load_config({"external_hostname": " Home.Example.COM. "})
+        self.assertEqual(cfg.external_hostname, "home.example.com")
+        self.assertEqual(config.load_config({"external_hostname": ""}).external_hostname, "")
+
+    def test_hostname_must_be_a_bare_name(self) -> None:
+        for bad in (
+            "https://home.example.com",
+            "home.example.com/x",
+            "home.example.com:8123",
+            "localhost",
+            "-a.example.com",
+            "a..b.com",
+        ):
+            with self.assertRaises(config.ConfigError, msg=bad):
+                config.load_config({"external_hostname": bad})
+
+    def test_a_new_hostname_does_not_restart_the_connector_by_itself(self) -> None:
+        a = config.load_config({"external_hostname": "a.example.com"})
+        b = config.load_config({"external_hostname": "b.example.com"})
+        self.assertEqual(a.daemon_spec(), b.daemon_spec())  # the app routes it, then restarts
 
     def test_notify_flag_must_be_bool(self) -> None:
         cfg = config.load_config({"tunnel_token": "tok", "notify_on_failure": "yes"})

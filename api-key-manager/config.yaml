@@ -1,5 +1,5 @@
 name: "API Key Manager"
-version: "0.1.1"
+version: "0.1.2"
 slug: "api_key_manager"
 description: >-
   Every Home Assistant user's long-lived access tokens (API keys) in one
