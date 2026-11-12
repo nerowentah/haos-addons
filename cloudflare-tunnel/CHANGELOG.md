@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- **Fixed: the app did not show in the app store.** The `run_parameters` schema entry was malformed (`$` outside `match(...)`), so the Supervisor rejected the whole config and hid the app. Blank entries and surrounding spaces are now accepted, as the app already ignored them.
+
 ## 0.1.1
 
 - **Startup warning removed.** The service is now registered in the `user` bundle under `/etc/s6-overlay/user-bundles.d` instead of the deprecated `/etc/s6-overlay/s6-rc.d/user`, so s6-overlay no longer prints `defining user bundles in /etc/s6-overlay/s6-rc.d is deprecated`. No functional change.
