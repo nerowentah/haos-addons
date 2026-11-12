@@ -1,5 +1,5 @@
 name: "Cloudflare Tunnel"
-version: "0.1.1"
+version: "0.1.2"
 slug: "cloudflare_tunnel"
 description: >-
   Connect Home Assistant to the Internet through a Cloudflare Tunnel without
@@ -27,5 +27,5 @@ schema:
   tunnel_token: password?
   notify_on_failure: bool
   run_parameters:
-    - match(^(--edge-bind-address|--edge-ip-version|--grace-period|--ha-connections|--protocol|--region|--retries|--tag)=.+)?$
+    - match(^\s*((--edge-bind-address|--edge-ip-version|--grace-period|--ha-connections|--protocol|--region|--retries|--tag)=.+)?\s*$)?
   log_level: list(trace|debug|info|notice|warning|error|fatal)?
