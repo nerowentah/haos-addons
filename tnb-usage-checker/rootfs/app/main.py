@@ -19,6 +19,7 @@ from types import FrameType
 import maintenance
 import mqtt_pub
 import panel
+import redact
 import report
 import stats
 import tariff
@@ -61,6 +62,7 @@ from webui import (
 _LOGGER = logging.getLogger("power_tnb")
 
 VERSION = os.environ.get("POWER_TNB_VERSION", "dev")
+NOTIFICATION_PREFIX = "power_tnb_"
 LOOP_SECONDS = 60  # longest idle sleep; the loop wakes earlier for due work or panel actions
 MIN_SLEEP_SECONDS = 1
 STORE_SAVE_SECONDS = 60
@@ -364,7 +366,9 @@ class App:
         if self.config.notify_on_unpaid if bill else self.config.notify_on_failure:
             targets = effective_targets(self.discovered, self.phones)
             suffix = "_bill" if bill else ""
-            self.supervisor.notify(targets, title, message, notification_id(account.account_id) + suffix)
+            self.supervisor.notify(
+                targets, title, message, notification_id(NOTIFICATION_PREFIX, account.account_id) + suffix
+            )
 
     # -- MQTT broker (optional, detected while running) -------------------------
     def mqtt_status(self) -> str:
@@ -886,7 +890,10 @@ class App:
             return
         targets = effective_targets(self.discovered, self.phones)
         self.supervisor.notify(
-            targets, daily.title, daily.message(account.name), notification_id(account.account_id) + "_daily"
+            targets,
+            daily.title,
+            daily.message(account.name),
+            notification_id(NOTIFICATION_PREFIX, account.account_id) + "_daily",
         )
         _LOGGER.info("Daily report for '%s' (%s): %.2f kWh", account.name, daily.day.isoformat(), daily.usage_kwh)
         sent[account.account_id] = daily.day.isoformat()
@@ -1063,6 +1070,7 @@ def main() -> None:
 
     merge_s6_environment()  # TZ first, so every log line uses local time
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    redact.install()  # registered secrets (the Supervisor token...) never reach the log
     _LOGGER.info("Starting TNB Usage Checker %s", VERSION)
 
     token = load_supervisor_token()

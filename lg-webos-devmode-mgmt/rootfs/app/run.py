@@ -9,7 +9,6 @@ import logging
 import os
 import re
 import signal
-import tempfile
 import threading
 import time
 import urllib.error
@@ -21,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 
 import maintenance
+import redact
+from safefile import PRIVATE, atomic_write
 from webui import (
     PanelError,
     PanelRouter,
@@ -134,9 +135,9 @@ def setup_logging() -> None:
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
+    redact.install()  # registered secrets (the Supervisor token...) never reach the log
 
 
-MAX_PROBE_FILE_SIZE = 2048
 _CONTAINER_ENV_DIRS = (Path("/run/s6/container_environment"), Path("/run/s6-container-env"))
 
 
@@ -166,24 +167,16 @@ def _merge_s6_environment() -> None:
 
 
 def _log_container_env_probe() -> None:
-    """Log what the container environment actually contains (diagnostic)."""
+    """Log which names the container environment has (diagnostic; names only, never a value or a file's content)."""
 
     env_keys = sorted(os.environ)
-    _LOGGER.info("Container env var names (%d): %s", len(env_keys), ", ".join(env_keys[:80]))
+    _LOGGER.debug("Container env var names (%d): %s", len(env_keys), ", ".join(env_keys[:80]))
 
     def _list_dir(path: str) -> None:
         if not os.path.isdir(path):
             return
         entries = sorted(os.listdir(path))
-        _LOGGER.info("%s entries (%d): %s", path, len(entries), ", ".join(entries[:60]))
-        for name in entries:
-            entry = os.path.join(path, name)
-            if os.path.isfile(entry) and os.path.getsize(entry) <= MAX_PROBE_FILE_SIZE:
-                try:
-                    content = Path(entry).read_text(encoding="utf-8", errors="replace").strip()
-                    _LOGGER.info("  %s = %s", name, content[:400])
-                except OSError:
-                    pass
+        _LOGGER.debug("%s entries (%d): %s", path, len(entries), ", ".join(entries[:60]))
 
     try:
         _list_dir("/run")
@@ -191,7 +184,7 @@ def _log_container_env_probe() -> None:
         for directory in _CONTAINER_ENV_DIRS:
             if directory.is_dir():
                 names = ", ".join(sorted(p.name for p in directory.iterdir()))
-                _LOGGER.info("%s env var files: %s", directory, names or "(empty)")
+                _LOGGER.debug("%s env var files: %s", directory, names or "(empty)")
     except OSError:
         _LOGGER.debug("Container probe failed", exc_info=True)
 
@@ -212,6 +205,7 @@ def load_supervisor_token() -> str:
         if value:
             if name != SUPERVISOR_TOKEN_ENV:
                 _LOGGER.debug("Using %s for the supervisor token", name)
+            redact.register(value)  # never in a log line, whatever ends up logging it
             return value
 
     visible = ", ".join(sorted(key for key in os.environ if key.startswith(("SUPERVISOR_", "HASS", "HOMEASSISTANT"))))
@@ -480,11 +474,7 @@ def save_phone_prefs(prefs: dict[str, bool], path: Path = PHONES_PATH) -> None:
     """Write the phone switches atomically."""
 
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".phones-", suffix=".json")
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(prefs, handle, sort_keys=True)
-        os.replace(tmp, path)
+        atomic_write(path, json.dumps(prefs, sort_keys=True), PRIVATE)
     except OSError:
         _LOGGER.exception("Could not save phone settings")
 

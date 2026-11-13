@@ -26,11 +26,12 @@ import re
 import shutil
 import threading
 import urllib.error
-import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
 import cloudflared as cf
+import safehttp
+from safefile import PRIVATE, atomic_write
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,9 +64,7 @@ class AccountError(RuntimeError):
 
 
 def _http_get(url: str, headers: dict[str, str]) -> bytes:
-    request = urllib.request.Request(url, headers=headers)  # noqa: S310 - fixed https Cloudflare API URL
-    with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310 - fixed https Cloudflare API URL
-        return response.read()
+    return safehttp.get(url, headers, timeout=15)
 
 
 def _yaml_scalar(value: object) -> str:
@@ -336,10 +335,8 @@ class Account:
         if current == text:
             return False
         if current is not None:
-            self.previous.write_text(current, encoding="utf-8")
-        tmp = self.ingress.with_suffix(".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(self.ingress)
+            atomic_write(self.previous, current, PRIVATE)
+        atomic_write(self.ingress, text, PRIVATE)
         _LOGGER.info("Ingress: %s → %s", hostname, service)
         return True
 

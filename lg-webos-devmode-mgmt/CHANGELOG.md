@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.11
+
+- **Shared panel update (security):** the panel only accepts changes that come from its own page (a request from another web site is refused), every page it serves carries a Content-Security-Policy and may only be shown inside Home Assistant, and stalled or oversized requests are dropped. No visible change in this app.
+- **State files are private.** Everything the app saves in `/data` is written atomically and readable by the app only.
+- **The Supervisor token is masked** if it ever reaches a log line.
+- **Quieter diagnostics.** When no Supervisor token is found, the app no longer logs the content of small files in `/run`; it lists names only, at debug level.
+
 ## 1.7.10
 
 - **Shared panel update:** buttons can now upload files (SSL Cert Manager uses this to import certificates); the panel code stays identical across this repository's apps. No visible change in this app.

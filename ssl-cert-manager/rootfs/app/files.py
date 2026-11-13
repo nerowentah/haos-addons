@@ -19,14 +19,13 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import os
 import shutil
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import certs
 from cryptography import x509
+from safefile import atomic_write
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,23 +41,7 @@ RESERVED = {DEFAULT_DIR, TRUST_DIR}
 def write_file(path: Path, data: bytes, mode: int = 0o644) -> bool:
     """Write ``path`` atomically with ``mode``; False when it already held exactly ``data``."""
 
-    try:
-        same_mode = os.name != "posix" or (path.stat().st_mode & 0o777) == mode  # Windows (tests) has no modes
-        if path.read_bytes() == data and same_mode:
-            return False
-    except OSError:
-        pass
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".scm-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-        os.chmod(tmp, mode)
-        os.replace(tmp, path)
-    except OSError:
-        Path(tmp).unlink(missing_ok=True)
-        raise
-    return True
+    return atomic_write(path, data, mode)
 
 
 @dataclass(slots=True)

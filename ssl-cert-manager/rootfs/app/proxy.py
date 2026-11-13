@@ -21,6 +21,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from safefile import PRIVATE, atomic_write
+
 _LOGGER = logging.getLogger(__name__)
 
 NGINX = "/usr/sbin/nginx"
@@ -208,9 +210,8 @@ class Proxy:
 
         if text == self._text and self.running:
             return True
-        self.conf.parent.mkdir(parents=True, exist_ok=True)
         candidate = self.conf.with_suffix(".new")
-        candidate.write_text(text, encoding="utf-8")
+        atomic_write(candidate, text, PRIVATE)
         problem = self._test(candidate)
         if problem:
             self.error = f"nginx: {problem}"

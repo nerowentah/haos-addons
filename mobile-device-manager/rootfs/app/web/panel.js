@@ -95,7 +95,8 @@ function toast(message, isError) {
 async function post(path, body) {
   const response = await fetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    // X-Panel-Request: the server only accepts changes that carry it (see webui.py).
+    headers: { "Content-Type": "application/json", "X-Panel-Request": "1" },
     body: JSON.stringify(body),
     credentials: "same-origin",
   });
@@ -265,6 +266,13 @@ function renderHero(items) {
   );
 }
 
+function progressFill(pct) {
+  // Set through the style object: the panel's Content-Security-Policy blocks style attributes.
+  const fill = h("div", { class: "progress-fill" });
+  fill.style.width = `${pct}%`;
+  return fill;
+}
+
 function renderProgress(bar) {
   const pct = Math.round(Math.min(Math.max(Number(bar.value) || 0, 0), 1) * 100);
   return h(
@@ -273,7 +281,7 @@ function renderProgress(bar) {
     h(
       "div",
       { class: "progress-track", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(pct), "aria-label": bar.label },
-      h("div", { class: "progress-fill", style: `width: ${pct}%` }),
+      progressFill(pct),
     ),
     h("div", { class: "progress-text" }, h("span", {}, bar.label), bar.caption && h("span", { class: "muted" }, bar.caption)),
   );

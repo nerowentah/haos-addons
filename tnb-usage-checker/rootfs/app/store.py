@@ -1,12 +1,15 @@
-"""Atomic JSON persistence in /data (survives add-on restarts and updates)."""
+"""Atomic JSON persistence in /data (survives add-on restarts and updates).
+
+Edit this file in ``shared/app`` only, then run ``python tools/sync_shared.py``.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 from pathlib import Path
+
+from safefile import PRIVATE, atomic_write
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -14,7 +17,7 @@ STATE_PATH = Path("/data/state.json")
 
 
 class Store:
-    """A small JSON document saved atomically (write temp file, then rename)."""
+    """A small JSON document saved atomically (write temp file, then rename), readable by the app only."""
 
     def __init__(self, path: Path = STATE_PATH) -> None:
         self.path = path
@@ -48,13 +51,8 @@ class Store:
 
         if not self.dirty:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".state-", suffix=".json")
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(self.data, handle, separators=(",", ":"))
-            os.replace(tmp, self.path)
+            atomic_write(self.path, json.dumps(self.data, separators=(",", ":")), PRIVATE)
             self.dirty = False
         except OSError:
             _LOGGER.exception("Could not save state to %s", self.path)
-            Path(tmp).unlink(missing_ok=True)

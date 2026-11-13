@@ -1,4 +1,7 @@
-"""Supervisor / Home Assistant Core API helpers (shared pattern with the other apps in this repo)."""
+"""Supervisor / Home Assistant Core API helpers (shared by the apps in this repo).
+
+Edit this file in ``shared/app`` only, then run ``python tools/sync_shared.py``.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +13,9 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import quote
 
+import redact
 from config import load_options
 
 _LOGGER = logging.getLogger(__name__)
@@ -27,6 +32,7 @@ SUPERVISOR_TOKEN_ENV_CANDIDATES = (
 )
 MOBILE_TARGET_PREFIX = "mobile_app_"
 HTTP_TIMEOUT = 30
+MAX_REPLY_BYTES = 32 * 1024 * 1024  # the largest replies (every service, every state) are a few MB
 _CONTAINER_ENV_DIRS = (Path("/run/s6/container_environment"), Path("/run/s6-container-env"))
 
 
@@ -63,6 +69,7 @@ def load_supervisor_token() -> str:
         if value:
             if name != SUPERVISOR_TOKEN_ENV:
                 _LOGGER.debug("Using %s for the supervisor token", name)
+            redact.register(value)  # never in a log line, whatever ends up logging it
             return value
 
     visible = ", ".join(sorted(k for k in os.environ if k.startswith(("SUPERVISOR_", "HASS", "HOMEASSISTANT"))))
@@ -76,6 +83,14 @@ def load_supervisor_token() -> str:
 
 class SupervisorError(RuntimeError):
     """Raised when a Supervisor or Core API call fails."""
+
+
+def _segment(value: str) -> str:
+    """``value`` as one path segment: it can never add a ``/``, ``?`` or ``..`` to the address."""
+
+    if not value or value in {".", ".."}:
+        raise SupervisorError("Invalid name in a Supervisor API path")
+    return quote(value, safe="")
 
 
 class Supervisor:
@@ -95,15 +110,17 @@ class Supervisor:
         )
         try:
             with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:  # noqa: S310 - internal supervisor API
-                raw = response.read().decode("utf-8")
+                reply = response.read(MAX_REPLY_BYTES + 1)
         except urllib.error.HTTPError as err:
             raise SupervisorError(f"HTTP {err.code} from {method} {url.removeprefix(SUPERVISOR_API)}") from err
         except (urllib.error.URLError, OSError) as err:
             raise SupervisorError(f"{method} {url.removeprefix(SUPERVISOR_API)} failed: {err}") from err
-        if not raw:
+        if len(reply) > MAX_REPLY_BYTES:
+            raise SupervisorError(f"Reply from {url.removeprefix(SUPERVISOR_API)} is too large")
+        if not reply:
             return None
         try:
-            return json.loads(raw)
+            return json.loads(reply.decode("utf-8"))
         except ValueError as err:
             raise SupervisorError(f"Non-JSON reply from {url.removeprefix(SUPERVISOR_API)}") from err
 
@@ -130,7 +147,7 @@ class Supervisor:
         """Return the state object of an entity, or None when it does not exist."""
 
         try:
-            state = self.core_get(f"/states/{entity_id}")
+            state = self.core_get(f"/states/{_segment(entity_id)}")
         except SupervisorError as err:
             if "HTTP 404" in str(err):
                 return None
@@ -170,6 +187,54 @@ class Supervisor:
 
         self._request(f"{SUPERVISOR_API}/addons/self/options", "POST", {"options": options})
 
+    def _data(self, path: str) -> dict[str, object]:
+        reply = self._request(f"{SUPERVISOR_API}{path}")
+        data = reply.get("data") if isinstance(reply, dict) else None
+        if not isinstance(data, dict):
+            raise SupervisorError(f"Supervisor returned no data for {path}")
+        return data
+
+    def self_ip(self) -> str | None:
+        """This app's address on the internal hassio network (e.g. 172.30.33.4), or None."""
+
+        value = self._data("/addons/self/info").get("ip_address")
+        return str(value) if value else None
+
+    def self_info(self) -> dict[str, object]:
+        """This app's own Supervisor record (slug, hostname, ip_address...)."""
+
+        return self._data("/addons/self/info")
+
+    def addon_state(self, slug: str) -> str | None:
+        """``started``/``stopped``... of another app, or None when it is not installed."""
+
+        try:
+            data = self._data(f"/addons/{_segment(slug)}/info")
+        except SupervisorError as err:
+            if "HTTP 400" in str(err) or "HTTP 404" in str(err):
+                return None
+            raise
+        state = data.get("state")
+        return str(state) if state else None
+
+    def core_info(self) -> dict[str, object]:
+        """Home Assistant Core's port and SSL setting (``/core/info``)."""
+
+        return self._data("/core/info")
+
+    def check_core_config(self) -> tuple[bool, str]:
+        """Run Home Assistant's configuration check: (valid, errors)."""
+
+        reply = self.core_post("/config/core/check_config", {})
+        if not isinstance(reply, dict):
+            raise SupervisorError("Unexpected reply from the configuration check")
+        return reply.get("result") == "valid", str(reply.get("errors") or "")
+
+    def restart_core(self) -> None:
+        """Restart Home Assistant Core (the caller has asked the user first)."""
+
+        self.core_post("/services/homeassistant/restart", {})
+
     def save_options(self, updates: dict[str, object]) -> None:
         """Merge ``updates`` into the saved options."""
 
@@ -204,7 +269,7 @@ class Supervisor:
         if targets:
             for target in targets:
                 try:
-                    self.core_post(f"/services/notify/{target}", {"title": title, "message": message})
+                    self.core_post(f"/services/notify/{_segment(target)}", {"title": title, "message": message})
                     _LOGGER.info("Notification sent to '%s'", target)
                 except SupervisorError:
                     _LOGGER.exception("Failed to send notification to '%s'", target)
@@ -241,7 +306,7 @@ def overrides_from_options(raw_options: dict[str, object]) -> dict[str, bool]:
     return prefs
 
 
-def notification_id(account_id: str) -> str:
-    """Persistent-notification id for an account."""
+def notification_id(prefix: str, account_id: str) -> str:
+    """Persistent-notification id for an account (``prefix`` names the app, e.g. ``power_tnb_``)."""
 
-    return "mobile_device_manager_" + re.sub(r"[^a-z0-9_]+", "_", account_id)
+    return prefix + re.sub(r"[^a-z0-9_]+", "_", account_id)

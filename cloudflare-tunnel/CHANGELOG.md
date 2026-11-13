@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.3
+
+- **Shared panel update (security):** the panel only accepts changes that come from its own page (a request from another web site is refused), every page it serves carries a Content-Security-Policy and may only be shown inside Home Assistant, and stalled or oversized requests are dropped. No visible change in this app.
+- **State files are private.** Everything the app saves in `/data` is written atomically and readable by the app only.
+- **The Supervisor token is masked** if it ever reaches a log line.
+- **Outbound requests** to the Cloudflare API and the DNS-over-HTTPS lookup refuse redirects to plain http and oversized answers.
+- **Tunnel routing files** (`config.yml` and its backup) are readable by the app only.
+
 ## 0.3.2
 
 - **Two-level hostnames are caught in the panel.** When the public hostname is two levels below your domain (`ha.int.example.com`), the connector card explains that Cloudflare's free certificate doesn't cover it, and **Change hostname** is pre-filled with a one-level name (`ha.example.com`). Home Assistant's own certificate keeps working for the tunnel. The hint goes away once the public URL works, e.g. with an Advanced Certificate.

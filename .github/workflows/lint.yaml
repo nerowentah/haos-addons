@@ -69,6 +69,9 @@ jobs:
       - name: Supervisor schema syntax
         run: python .github/scripts/check_schema.py
 
+      - name: Shared modules are in sync
+        run: python tools/sync_shared.py --check
+
       - name: Ruff lint
         run: ruff check .
 
@@ -78,6 +81,7 @@ jobs:
       - name: Unit tests
         run: |
           set -e
+          # Every app, and shared/ (the modules every app ships a copy of).
           for app in */; do
             app=${app%/}
             [ -d "$app/tests" ] || continue

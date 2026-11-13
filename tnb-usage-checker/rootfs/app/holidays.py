@@ -6,8 +6,9 @@ import json
 import logging
 import urllib.error
 import urllib.parse
-import urllib.request
 from datetime import date, timedelta
+
+import safehttp
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,8 +37,7 @@ def fetch_calendarific(api_key: str, year: int, country: str = "MY") -> set[date
 
     query = urllib.parse.urlencode({"api_key": api_key, "country": country, "year": year, "type": "national"})
     try:
-        with urllib.request.urlopen(f"{CALENDARIFIC_URL}?{query}", timeout=HTTP_TIMEOUT) as response:  # noqa: S310 - fixed https URL
-            payload = json.loads(response.read().decode("utf-8"))
+        payload = json.loads(safehttp.get(f"{CALENDARIFIC_URL}?{query}", timeout=HTTP_TIMEOUT).decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
         # The URL carries the API key, so only log the year.
         _LOGGER.warning("Could not fetch Calendarific holidays for %s", year)

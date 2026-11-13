@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3
+
+- **Shared panel update (security):** the panel only accepts changes that come from its own page (a request from another web site is refused), every page it serves carries a Content-Security-Policy and may only be shown inside Home Assistant, and stalled or oversized requests are dropped. No visible change in this app.
+- **State files are private.** Everything the app saves in `/data` is written atomically and readable by the app only.
+- **The Supervisor token is masked** if it ever reaches a log line.
+- **Outbound requests** to the Cloudflare API and the DNS-over-HTTPS lookup refuse redirects to plain http and oversized answers.
+
 ## 0.1.2
 
 - **A clear reason for `SSLV3_ALERT_HANDSHAKE_FAILURE`.** This is how Cloudflare's edge answers when it has no certificate for the hostname. The check now says so and names what to check: a two-level name such as `a.b.example.com`, Universal SSL not active yet, or a DNS record that isn't proxied.

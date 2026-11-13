@@ -24,6 +24,19 @@ extend-select = [
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
+"shared/**/*.py" = [
+  "TRY003",
+]
+"shared/tests/*.py" = [
+  "TRY003",
+  "S101",
+  "SLF001",
+  "PLR2004",
+  "PT009",
+]
+"tools/*.py" = [
+  "TRY003",
+]
 "lg-webos-devmode-mgmt/**/*.py" = [
   "TRY003",
 ]

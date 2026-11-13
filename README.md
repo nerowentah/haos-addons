@@ -60,8 +60,11 @@ mobile-device-manager/
 ranhill-saj-bill-checker/
 api-key-manager/
 cloudflare-tunnel/
+shared/app/                the modules every app ships a copy of (panel, store, Supervisor client,
+                           safe file/HTTP helpers); shared/tests/ tests them
+tools/sync_shared.py       copies shared/app/ into the apps (--check: fail when a copy differs)
 .github/workflows/         builder.yaml (finds changed apps), build-app.yaml (builds, signs, verifies one app),
-                           lint.yaml (app config, ruff, tests, s6 layout),
+                           lint.yaml (app config, shared copies in sync, ruff, tests, s6 layout),
                            retry-signing.yaml (re-runs builds that failed only because Sigstore was down),
                            cleanup-packages.yaml (deletes ghcr packages no app uses anymore,
                            and prunes old untagged versions),
@@ -76,7 +79,7 @@ pyproject.toml             ruff settings for every app
   - The store name matches the folder name.
   - The `slug` and `image` never change after release, because changing them would make Home Assistant treat the app as new.
 - **Folder depth:** keep apps exactly one level below the root. The CI app finder only looks two levels deep.
-- **Shared panel files:** `webui.py` and `web/` (`index.html`, `panel.css`, `panel.js`) are **identical copies** in every app, because each image is built from its own folder only. Edit one copy, copy it to the others, then check with `cmp`.
+- **Shared modules:** the panel (`webui.py`, `web/`), `store.py`, `supervisor.py` and the safety helpers (`safefile.py`, `safehttp.py`, `redact.py`, `jsonval.py`) live in `shared/app/`. Every app ships a copy, because each image is built from its own folder only. Edit the file in `shared/app/`, then run `python tools/sync_shared.py`; CI fails when a copy differs (`python tools/sync_shared.py --check`).
 
 ## Development
 

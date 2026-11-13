@@ -25,6 +25,7 @@ import ha_config
 import origin_ca as origin_mod
 import proxy as proxy_mod
 import reach
+import redact
 from config import Config, ConfigError, apply_log_level, load_config, load_options
 from cryptography import x509
 from cryptography.x509.oid import NameOID
@@ -1350,6 +1351,7 @@ def _load_config(
 def main() -> None:
     merge_s6_environment()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    redact.install()  # registered secrets (the Supervisor token...) never reach the log
     _LOGGER.info("Starting SSL Cert Manager %s", VERSION)
     token = load_supervisor_token()
     if not token:

@@ -21,6 +21,7 @@ import cloudflared as cf
 import ha_proxy
 import origin_tls as otls
 import reach
+import redact
 from config import (
     MODE_LOGIN,
     Config,
@@ -30,6 +31,7 @@ from config import (
     load_options,
     parse_hostname,
 )
+from safefile import PUBLIC, atomic_write
 from store import Store
 from supervisor import (
     Supervisor,
@@ -711,10 +713,7 @@ class App:
         if text == self._published:
             return
         try:
-            self.status_file.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.status_file.with_suffix(".tmp")
-            tmp.write_text(text, encoding="utf-8")
-            tmp.replace(self.status_file)
+            atomic_write(self.status_file, text, PUBLIC)  # other apps read it
         except OSError:
             return  # /ssl not mapped: nothing to share
         self._published = text
@@ -1140,6 +1139,7 @@ def main() -> None:
 
     merge_s6_environment()  # TZ first, so every log line uses local time
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    redact.install()  # registered secrets (the Supervisor token...) never reach the log
     _LOGGER.info("Starting Cloudflare Tunnel %s", VERSION)
     version = cf.binary_version()
     if version:

@@ -10,9 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import urllib.error
-import urllib.request
 from collections.abc import Callable
 from pathlib import Path
+
+import safehttp
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,13 +30,11 @@ class OriginCaError(RuntimeError):
 
 
 def _http(method: str, url: str, headers: dict[str, str], body: bytes | None) -> tuple[int, bytes]:
-    request = urllib.request.Request(url, data=body, method=method, headers=headers)  # noqa: S310 - fixed https Cloudflare API URL
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - fixed https Cloudflare API URL
-            return int(response.status), response.read()
+        return safehttp.fetch(url, method=method, headers=headers, body=body, timeout=30)
     except urllib.error.HTTPError as err:
-        return int(err.code), err.read()
-    except (urllib.error.URLError, OSError) as err:
+        return int(err.code), safehttp.read_limited(err)
+    except (urllib.error.URLError, OSError, ValueError) as err:
         raise OriginCaError(f"Cloudflare API not reachable: {err}") from err
 
 

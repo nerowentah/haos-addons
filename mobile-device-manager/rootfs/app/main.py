@@ -15,6 +15,7 @@ from pathlib import Path
 from types import FrameType
 
 import inventory
+import redact
 from config import Config, ConfigError, apply_log_level, load_config, load_options
 from ha_ws import HaSocket, WsError
 from inventory import Device
@@ -603,6 +604,7 @@ def main() -> None:
 
     merge_s6_environment()  # TZ first, so every log line uses local time
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    redact.install()  # registered secrets (the Supervisor token...) never reach the log
     _LOGGER.info("Starting Mobile Device Manager %s", VERSION)
     token = load_supervisor_token()
     if not token:

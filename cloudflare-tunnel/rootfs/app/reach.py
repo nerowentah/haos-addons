@@ -22,9 +22,10 @@ import json
 import socket
 import ssl
 import urllib.parse
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+
+import safehttp
 
 TIMEOUT_SECONDS = 15
 DOH_URL = "https://1.1.1.1/dns-query"
@@ -78,11 +79,12 @@ def doh_resolve(hostname: str) -> list[str]:
     """IPv4 addresses from Cloudflare's public DNS-over-HTTPS (bypasses local overrides)."""
 
     query = urllib.parse.urlencode({"name": hostname, "type": "A"})
-    request = urllib.request.Request(  # noqa: S310 - fixed https URL
-        f"{DOH_URL}?{query}", headers={"accept": "application/dns-json", "User-Agent": USER_AGENT}
+    reply = safehttp.get(
+        f"{DOH_URL}?{query}",
+        {"accept": "application/dns-json", "User-Agent": USER_AGENT},
+        timeout=DOH_TIMEOUT_SECONDS,
     )
-    with urllib.request.urlopen(request, timeout=DOH_TIMEOUT_SECONDS) as response:  # noqa: S310 - fixed https URL
-        data = json.loads(response.read().decode("utf-8"))
+    data = json.loads(reply.decode("utf-8"))
     answers = data.get("Answer") if isinstance(data, dict) else None
     return [str(a["data"]) for a in answers or [] if isinstance(a, dict) and a.get("type") == 1 and a.get("data")]
 
