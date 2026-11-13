@@ -23,25 +23,39 @@ jobs:
       changed_apps: ${{ steps.filter.outputs.changed_apps }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v7.0.1
-
-      - name: Get changed files
-        id: changed_files
-        uses: tj-actions/changed-files@v47
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the changed files are read from git, not a third-party action.
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Find app directories
         id: apps
-        uses: home-assistant/actions/helpers/find-addons@master
+        uses: home-assistant/actions/helpers/find-addons@86d4564712fa02543c808e3a693dd04f9d3f8361 # master, 2026-10-26
 
       - name: Filter changed apps
         id: filter
         env:
           APPS: ${{ steps.apps.outputs.addons }}
-          CHANGED_FILES: ${{ steps.changed_files.outputs.all_changed_files }}
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
         run: |
+          # Pull request: HEAD is the merge commit, its first parent is the base branch.
+          # Push: everything since the previous tip of the branch. When that commit is
+          # unknown (first push, force push) the list stays empty and every app is built.
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            base="HEAD^1"
+          else
+            base="${BEFORE}"
+          fi
+          CHANGED_FILES=""
+          if git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            CHANGED_FILES=$(git diff --name-only "${base}" HEAD | paste -sd " " -)
+          fi
+          echo "Changed files: ${CHANGED_FILES:-(unknown, building every app)}"
           changed_apps=()
           if [[ -z "${CHANGED_FILES}" ]]; then
-            # Initial commit: no previous ref, nothing to diff against.
+            # No previous commit to diff against.
             changed_apps=(${APPS})
           # If the workflow file itself changed, rebuild all apps
           elif [[ "${CHANGED_FILES}" =~ .github/workflows/(builder|build-app)\.yaml ]]; then
@@ -79,4 +93,3 @@ jobs:
     with:
       app: ${{ matrix.app }}
       publish: ${{ github.event_name == 'push' }}
-    secrets: inherit

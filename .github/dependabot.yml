@@ -41,7 +41,26 @@ updates:
     open-pull-requests-limit: 3
 
   - package-ecosystem: "docker"
+    directory: "/ssl-cert-manager"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: "docker"
     directory: "/tnb-usage-checker"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 3
+
+  # requirements-dev.txt: only the tools move. The libraries mirror the
+  # versions of the Alpine packages in the images and change with the base image.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: "paho-mqtt"
+      - dependency-name: "websocket-client"
+      - dependency-name: "cryptography"
+      - dependency-name: "pyyaml"

@@ -19,11 +19,13 @@ jobs:
       apps: ${{ steps.apps.outputs.addons_list }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Find app directories
         id: apps
-        uses: home-assistant/actions/helpers/find-addons@master
+        uses: home-assistant/actions/helpers/find-addons@86d4564712fa02543c808e3a693dd04f9d3f8361 # master, 2026-10-26
 
   app-config:
     name: App config ${{ matrix.app }}
@@ -35,10 +37,12 @@ jobs:
         app: ${{ fromJSON(needs.find.outputs.apps) }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Lint the app configuration
-        uses: frenck/action-app-linter@v2.21.2
+        uses: frenck/action-app-linter@d51677290aef26cdfc835271dd3c7343ce502809 # v2.21.2
         with:
           path: "./${{ matrix.app }}"
 
@@ -47,15 +51,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7.1.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.13"  # matches target-version = py313 in pyproject.toml
+          # The Python the images run (Alpine 3.24). Ruff still targets py313
+          # (pyproject.toml), the oldest syntax the code is written for.
+          python-version: "3.14"
 
       - name: Install linters and test dependencies
-        run: pip install ruff paho-mqtt websocket-client pyyaml cryptography
+        # Exact versions: the tools, and the libraries as Alpine 3.24 ships them.
+        run: pip install -r requirements-dev.txt
 
       - name: Supervisor schema syntax
         run: python .github/scripts/check_schema.py
@@ -82,7 +91,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: No deprecated s6-rc.d/user bundle
         run: |

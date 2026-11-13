@@ -1,0 +1,13 @@
+# Tools and test dependencies for CI (.github/workflows/lint.yaml) and local runs:
+#   pip install -r requirements-dev.txt
+#
+# Tools: exact versions, updated by Dependabot.
+ruff==0.17.5
+
+# Libraries: the versions of the Alpine 3.24 packages the images install
+# (py3-paho-mqtt, py3-websocket-client, py3-cryptography, py3-yaml), so the
+# tests run against what ships. Update them together with the base image.
+paho-mqtt==1.6.1
+websocket-client==1.9.0
+cryptography==47.0.0
+pyyaml==6.0.3

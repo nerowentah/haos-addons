@@ -64,8 +64,11 @@ cloudflare-tunnel/
                            lint.yaml (app config, ruff, tests, s6 layout),
                            retry-signing.yaml (re-runs builds that failed only because Sigstore was down),
                            cleanup-packages.yaml (deletes ghcr packages no app uses anymore,
-                           and prunes old untagged versions)
-.github/dependabot.yml     weekly updates for actions and base images
+                           and prunes old untagged versions),
+                           codeql.yaml (static analysis of the Python, the panel script and the workflows)
+.github/dependabot.yml     weekly updates for actions, base images and CI tools
+requirements-dev.txt       pinned CI tools and test libraries (pip install -r requirements-dev.txt)
+SECURITY.md                what the apps are trusted with, and how to report a problem
 pyproject.toml             ruff settings for every app
 ```
 
@@ -89,7 +92,7 @@ python -m unittest discover -s cloudflare-tunnel/tests
 
 **s6 layout:** keep the service in `rootfs/etc/s6-overlay/s6-rc.d/<app>/` and register it with an empty file at `rootfs/etc/s6-overlay/user-bundles.d/user/contents.d/<app>`. Never create `s6-rc.d/user`; s6-overlay warns about it at startup.
 
-**Pull requests:** CI lints the app configs, runs ruff and every app's tests, checks the s6 layout, and builds every changed app for aarch64 and amd64.
+**Pull requests:** CI lints the app configs, runs ruff and every app's tests, checks the s6 layout, runs CodeQL, and builds every changed app for aarch64 and amd64. Every GitHub Action is pinned to a commit and the base image to a digest; Dependabot proposes the updates.
 
 **Merges to `main`:**
 - CI pushes the images to `ghcr.io/nerowentah/<arch>-<image>` and publishes a multi-arch manifest, tagged with the version and `latest`.
