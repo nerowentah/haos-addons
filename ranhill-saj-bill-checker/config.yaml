@@ -1,5 +1,5 @@
 name: "Ranhill SAJ Bill Checker"
-version: "0.2.5"
+version: "0.2.6"
 slug: "ranhill_saj_bill_checker"
 description: >-
   Checks the amount due on one or more Ranhill SAJ (Johor) water accounts

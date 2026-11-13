@@ -4,6 +4,8 @@
 
 const POLL_MS = 5000;
 const THEME_SYNC_MS = 3000;
+const MAX_UPLOAD_FILES = 8;
+const MAX_UPLOAD_BYTES = 64 * 1024;
 // Home Assistant theme variable -> panel variable.
 const THEME_VARS = {
   "--primary-color": "--primary",
@@ -175,6 +177,42 @@ function renderLinkButton(item, iconName) {
   return button;
 }
 
+function pickFiles(accept) {
+  // The browser's file picker; resolves to [{name, text}] or null when cancelled or refused.
+  return new Promise((resolve) => {
+    const input = h("input", { type: "file", accept: accept || null, multiple: true, hidden: true });
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      input.remove();
+      resolve(value);
+    };
+    input.addEventListener("change", async () => {
+      const files = Array.from(input.files || []);
+      if (files.length === 0) return done(null);
+      if (files.length > MAX_UPLOAD_FILES) {
+        toast(`Choose at most ${MAX_UPLOAD_FILES} files`, true);
+        return done(null);
+      }
+      const big = files.find((f) => f.size > MAX_UPLOAD_BYTES);
+      if (big) {
+        toast(`${big.name} is larger than ${MAX_UPLOAD_BYTES / 1024} KB`, true);
+        return done(null);
+      }
+      try {
+        done(await Promise.all(files.map(async (f) => ({ name: f.name, text: await f.text() }))));
+      } catch (err) {
+        toast(err.message, true);
+        done(null);
+      }
+    });
+    input.addEventListener("cancel", () => done(null));
+    document.body.append(input);
+    input.click();
+  });
+}
+
 function renderAction(item) {
   if (item.path || item.url) return renderLinkButton({ ...item, button: item.label }, item.icon);
   const button = h(
@@ -186,6 +224,11 @@ function renderAction(item) {
   button.addEventListener("click", async () => {
     if (item.confirm && !window.confirm(item.confirm)) return;
     const args = { ...(item.args || {}) };
+    if (item.upload) {
+      const files = await pickFiles(item.upload);
+      if (files === null) return;
+      args.files = files;
+    }
     if (item.prompt) {
       const text = window.prompt(item.prompt, item.prompt_value || "");
       if (text === null) return;
