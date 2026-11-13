@@ -124,6 +124,21 @@ def _tls_reason(err: ssl.SSLCertVerificationError, hostname: str) -> str:
     return reason
 
 
+def _handshake_reason(hostname: str, address: str) -> str:
+    """Cloudflare's edge refuses the handshake (alert 40) when no edge certificate covers the SNI name."""
+
+    reason = f"TLS: {address} refused the handshake for {hostname}, so Cloudflare has no edge certificate for it"
+    if hostname.count(".") >= 3:  # noqa: PLR2004 - a.b.example.com
+        return reason + (
+            " (the free certificate covers example.com and *.example.com only: use a one-level name"
+            " such as home.example.com, or add an Advanced Certificate)"
+        )
+    return reason + (
+        " (in the Cloudflare dashboard, SSL/TLS > Edge Certificates: Universal SSL must be enabled and Active,"
+        " which can take up to 24 hours on a new domain; the DNS record must be Proxied)"
+    )
+
+
 def probe(
     hostname: str,
     path: str = "/api/",
@@ -157,19 +172,29 @@ def probe(
     for address in targets[:MAX_TARGETS]:
         try:
             code = fetch(address, hostname, path)
-        except ssl.SSLCertVerificationError as err:
-            return Result(None, _tls_reason(err, hostname), tuple(targets), local)
-        except ConnectionRefusedError:
-            reason = f"connection refused by {address}"
-        except TimeoutError:
-            reason = f"no answer within {TIMEOUT_SECONDS} s from {address}"
-        except ssl.SSLError as err:
-            reason = f"TLS: {err.reason or _short(err)}"
         except (OSError, http.client.HTTPException) as err:
-            reason = f"network error with {address} ({_short(err)})"
+            reason, final = _failure(err, hostname, address)
+            if final:
+                return Result(None, reason, tuple(targets), local)
         else:
             return Result(code, "", tuple(targets), local)
     return Result(None, reason + override, tuple(targets), local)
+
+
+def _failure(err: OSError | http.client.HTTPException, hostname: str, address: str) -> tuple[str, bool]:
+    """(reason, final): final when every edge address would fail alike (a certificate problem)."""
+
+    if isinstance(err, ssl.SSLCertVerificationError):
+        return _tls_reason(err, hostname), True
+    if isinstance(err, ssl.SSLError) and "HANDSHAKE_FAILURE" in str(err.reason or err):
+        return _handshake_reason(hostname, address), True
+    if isinstance(err, ssl.SSLError):
+        return f"TLS: {err.reason or _short(err)}", False
+    if isinstance(err, ConnectionRefusedError):
+        return f"connection refused by {address}", False
+    if isinstance(err, TimeoutError):
+        return f"no answer within {TIMEOUT_SECONDS} s from {address}", False
+    return f"network error with {address} ({_short(err)})", False
 
 
 def explain(result: Result, describe: Callable[[int | None], tuple[str, str]]) -> tuple[str, str]:

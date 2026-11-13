@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- **A clear reason for `SSLV3_ALERT_HANDSHAKE_FAILURE`.** This is how Cloudflare's edge answers when it has no certificate for the hostname. The check now says so and names what to check: a two-level name such as `a.b.example.com`, Universal SSL not active yet, or a DNS record that isn't proxied.
+
 ## 0.1.1
 
 - **Proxy options**, like the official NGINX SSL proxy:
