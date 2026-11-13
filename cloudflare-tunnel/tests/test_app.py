@@ -18,6 +18,7 @@ import cloudflared as cf
 import config
 import ha_proxy
 import main
+import reach
 import store
 import supervisor
 import webui
@@ -202,9 +203,9 @@ class AppTest(unittest.TestCase):
         )
         self.app.secrets = secrets
 
-    def _probe(self, url: str) -> int | None:
-        self.probed.append(url)
-        return self.probe_code
+    def _probe(self, hostname: str) -> reach.Result:
+        self.probed.append(hostname)
+        return reach.Result(self.probe_code, "" if self.probe_code else "connection refused by 192.0.2.1")
 
     def _state_text(self) -> str:
         return json.dumps(self.app.panel_state())
@@ -528,7 +529,7 @@ class AppTest(unittest.TestCase):
         self.daemon.status.set(cf.STATE_CONNECTED)
         self.app._check_reach()
         self.app._reach_thread.join(5)
-        self.assertEqual(self.probed, ["https://home.example.com/api/"])
+        self.assertEqual(self.probed, ["home.example.com"])
         self.assertIn("Reachable", self._state_text())
         self.probe_code = 400
         self.app.panel_action("check_reach", {})

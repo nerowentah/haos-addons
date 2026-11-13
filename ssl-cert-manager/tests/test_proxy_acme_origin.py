@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import sys
 import tempfile
@@ -37,6 +38,36 @@ class RenderTest(unittest.TestCase):
         self.assertIn("proxy_ssl_verify off;", proxy.render(site, [], "https://homeassistant:8123"))
         self.assertEqual(proxy.upstream_for({"port": 8123, "ssl": True}), "https://homeassistant:8123")
         self.assertEqual(proxy.upstream_for({}), "http://homeassistant:8123")
+
+
+class OptionsTest(unittest.TestCase):
+    SITE = proxy.Site(["home.example.com"], "/f", "/k")
+
+    def test_hsts_header_only_when_set(self) -> None:
+        self.assertNotIn("Strict-Transport-Security", proxy.render(self.SITE, [], "http://homeassistant:8123"))
+        text = proxy.render(
+            self.SITE, [proxy.Site(["b.example.com"], "/f2", "/k2")], "http://h:1", hsts="max-age=31536000"
+        )
+        self.assertEqual(text.count('add_header Strict-Transport-Security "max-age=31536000" always;'), 2)
+
+    def test_real_ip_modes(self) -> None:
+        apps = proxy.render(self.SITE, [], "http://h:1")
+        self.assertIn("set_real_ip_from 172.30.32.0/23;", apps)
+        self.assertIn("real_ip_header X-Forwarded-For;", apps)
+        cloudflare = proxy.render(self.SITE, [], "http://h:1", real_ip="cloudflare", ranges=proxy.cloudflare_ranges())
+        self.assertIn("real_ip_header CF-Connecting-IP;", cloudflare)
+        self.assertIn("set_real_ip_from 173.245.48.0/20;", cloudflare)
+        self.assertIn("set_real_ip_from 172.30.32.0/23;", cloudflare)
+        off = proxy.render(self.SITE, [], "http://h:1", real_ip="off")
+        self.assertNotIn("real_ip", off)
+
+    def test_vendored_cloudflare_ranges_parse(self) -> None:
+        ranges = proxy.cloudflare_ranges()
+        self.assertGreaterEqual(len(ranges), 10)
+        for network in ranges:
+            with self.subTest(network=network):
+                ipaddress.ip_network(network)
+        self.assertTrue(any(":" in n for n in ranges))  # IPv6 too
 
 
 class FakeProcess:

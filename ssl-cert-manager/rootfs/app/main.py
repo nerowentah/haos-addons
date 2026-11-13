@@ -14,8 +14,6 @@ import re
 import signal
 import threading
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from types import FrameType
@@ -26,6 +24,7 @@ import files as files_mod
 import ha_config
 import origin_ca as origin_mod
 import proxy as proxy_mod
+import reach
 from config import Config, ConfigError, apply_log_level, load_config, load_options
 from cryptography import x509
 from cryptography.x509.oid import NameOID
@@ -87,6 +86,7 @@ SOURCE_LABEL = {
     SOURCE_ISSUED: "Issued by your CA",
 }
 RENEWABLE = {SOURCE_LE, SOURCE_ISSUED}
+REAL_IP_LABEL = {"off": "Not passed on", "apps": "From apps (tunnel)", "cloudflare": "From Cloudflare"}
 
 
 def _now() -> dt.datetime:
@@ -115,19 +115,6 @@ def make_id(name: str, taken: set[str], prefix: str = "") -> str:
     while candidate in taken:
         candidate, n = f"{base}-{n}", n + 1
     return candidate
-
-
-def http_status(url: str) -> int | None:
-    """The HTTP status of a GET without credentials, or None when nothing answers."""
-
-    request = urllib.request.Request(url, headers={"User-Agent": "ssl-cert-manager-app"})  # noqa: S310 - https only
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310 - https only
-            return int(response.status)
-    except urllib.error.HTTPError as err:
-        return int(err.code)
-    except (urllib.error.URLError, OSError, ValueError):
-        return None
 
 
 def describe_reach(code: int | None) -> tuple[str, str]:  # noqa: PLR0911 - one answer per status
@@ -172,7 +159,7 @@ class App:
         origin: origin_mod.OriginCa | None = None,
         proxy: proxy_mod.Proxy | None = None,
         ha_path: Path = ha_config.CONFIG_PATH,
-        probe: Callable[[str], int | None] = http_status,
+        probe: Callable[[str], reach.Result] = reach.probe,
         tunnel_status: Path = TUNNEL_STATUS,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -256,7 +243,8 @@ class App:
         if old.log_level != config.log_level:
             _LOGGER.info("Log level set to %s", config.log_level)
             apply_log_level(config.log_level)
-        if (old.local_proxy, old.write_ssl_root) != (config.local_proxy, config.write_ssl_root):
+        proxy_options = (config.local_proxy, config.write_ssl_root, config.proxy_hsts, config.proxy_real_ip)
+        if (old.local_proxy, old.write_ssl_root, old.proxy_hsts, old.proxy_real_ip) != proxy_options:
             self.need_sync = True
         if config.local_proxy and not old.local_proxy:
             self.enqueue("Checking Home Assistant's proxy settings", self._trust_proxy)
@@ -615,7 +603,8 @@ class App:
             return None
         text, tone = "No answer", "warn"
         for attempt in range(TUNNEL_PROBES):
-            text, tone = describe_reach(self.probe(f"https://{hostname}/api/"))
+            result = self.probe(hostname)
+            text, tone = reach.explain(result, describe_reach)
             if tone == "ok":
                 break
             if attempt < TUNNEL_PROBES - 1:
@@ -715,7 +704,20 @@ class App:
             others.append(proxy_mod.Site(list(meta.get("names") or []), str(chain_path), str(key_path)))  # type: ignore[call-overload]
         fingerprints = tuple(str((m.get("info") or {}).get("fingerprint")) for m in self.certs.values())  # type: ignore[union-attr]
         key = (default, fingerprints, self.upstream)
-        text = proxy_mod.render(default_site, others, self.upstream)
+        ranges: list[str] = []
+        if self.config.proxy_real_ip == proxy_mod.REAL_IP_CLOUDFLARE:
+            try:
+                ranges = proxy_mod.cloudflare_ranges()
+            except OSError as err:
+                _LOGGER.warning("Cloudflare's IP ranges are unreadable (%s); trusting the apps network only", err)
+        text = proxy_mod.render(
+            default_site,
+            others,
+            self.upstream,
+            hsts=self.config.proxy_hsts,
+            real_ip=self.config.proxy_real_ip,
+            ranges=ranges,
+        )
         if self.proxy.configure(text):
             changed = key != self._proxy_key
             self._proxy_key = key
@@ -1035,7 +1037,12 @@ class App:
             "icon": "mdi:lock",
             "subtitle": f"https://<name>:{proxy_mod.PORT} in front of Home Assistant; http:// keeps working",
             "badge": chip,
-            "stats": [stat("Port", proxy_mod.PORT), stat("Forwards to", self.upstream.removeprefix("http://"))],
+            "stats": [
+                stat("Port", proxy_mod.PORT),
+                stat("Forwards to", self.upstream.removeprefix("http://")),
+                stat("HSTS", "On" if config.proxy_hsts else "Off"),
+                stat("Client IP", REAL_IP_LABEL.get(config.proxy_real_ip, config.proxy_real_ip)),
+            ],
             "toggles": [
                 toggle(
                     "local_proxy",

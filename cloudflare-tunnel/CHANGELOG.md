@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- **Docs:** Cloudflare Access breaks the Companion app (use a bypass for `/api/*`), and `caPool` adds to the system CAs.
+- **The public URL check says why.** Instead of just "No answer from the public hostname", the panel and the log name the reason: the name does not resolve, the TLS certificate does not match (with a hint for two-level names such as `a.b.example.com`), the connection was refused, or nothing answered. A changed reason is logged once.
+- **Local DNS overrides no longer break the check.** When the hostname resolves to a private address inside Home Assistant (local HTTPS setups often do this), the check looks it up in Cloudflare's public DNS and requests it through Cloudflare, as the Internet would.
+
 ## 0.3.0
 
 - **Home Assistant's certificate is checked.** With the new **SSL Cert Manager** app, the tunnel no longer uses `noTLSVerify`:

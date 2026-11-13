@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1
+
+- **Proxy options**, like the official NGINX SSL proxy:
+  - `proxy_hsts` adds a `Strict-Transport-Security` header (off by default).
+  - `proxy_real_ip` passes the visitor's address on to Home Assistant. Through Cloudflare Tunnel it works by default (`apps`). Set `cloudflare` to trust Cloudflare's IP ranges when port 8443 is forwarded through Cloudflare's proxy.
+  - The proxy card shows both settings.
+- **Docs:** local DNS pitfalls (HTTPS/SVCB records, IPv6, Pi-hole forwarding, the Companion app's external URL).
+- **The Cloudflare Tunnel check says why.** Instead of just "No answer from the public hostname", the panel and the log name the reason: the name does not resolve, the TLS certificate does not match (with a hint for two-level names such as `a.b.example.com`), the connection was refused, or nothing answered. A changed reason is logged once.
+- **Local DNS overrides no longer break the check.** When the hostname resolves to a private address inside Home Assistant (local HTTPS setups often do this), the check looks it up in Cloudflare's public DNS and requests it through Cloudflare, as the Internet would.
+
 ## 0.1.0
 
 - First release. One place for your TLS certificates:

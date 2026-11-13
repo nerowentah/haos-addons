@@ -1,5 +1,5 @@
 name: "SSL Cert Manager"
-version: "0.1.0"
+version: "0.1.1"
 slug: "ssl_cert_manager"
 description: >-
   Get, import and renew TLS certificates in one place: Let's Encrypt and
@@ -35,6 +35,8 @@ options:
   local_proxy: false
   write_ssl_root: true
   renew_days_before: 30
+  proxy_hsts: ""
+  proxy_real_ip: apps
   notify_on_failure: true
   log_level: info
 schema:
@@ -44,5 +46,7 @@ schema:
   local_proxy: bool
   write_ssl_root: bool
   renew_days_before: int(7,60)
+  proxy_hsts: str?
+  proxy_real_ip: list(off|apps|cloudflare)?
   notify_on_failure: bool
   log_level: list(trace|debug|info|notice|warning|error|fatal)?
