@@ -72,6 +72,13 @@ jobs:
       - name: Shared modules are in sync
         run: python tools/sync_shared.py --check
 
+      - name: Type check (strict) the shared modules
+        # Each app is checked on its own (same module names in every app);
+        # apps join this list as they become strict-clean.
+        env:
+          MYPYPATH: shared/app:shared/tests/stubs:tools
+        run: mypy shared/app shared/tests tools
+
       - name: Ruff lint
         run: ruff check .
 

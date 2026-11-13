@@ -24,6 +24,11 @@ class SyncTest(unittest.TestCase):
     def test_every_shared_file_is_listed(self) -> None:
         self.assertEqual(sync_shared.unlisted(), [])
 
+    def test_codeql_skips_exactly_the_copies(self) -> None:
+        config = (REPO / ".github" / "codeql" / "codeql-config.yml").read_text(encoding="utf-8")
+        ignored = re.findall(r'^  - "\*\*/rootfs/app/(.+)"$', config, re.MULTILINE)
+        self.assertEqual(sorted(ignored), sorted(sync_shared.SHARED))
+
     def test_every_app_gets_the_panel(self) -> None:
         apps = sync_shared.app_names()
         self.assertGreaterEqual(len(apps), 7)

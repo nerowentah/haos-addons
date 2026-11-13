@@ -36,7 +36,7 @@ import json
 import logging
 import re
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -262,6 +262,11 @@ class SecretRefs:
         elif isinstance(stored, list) and isinstance(resolved, list):
             for value, resolved_value in zip(stored, resolved, strict=False):
                 self.learn(value, resolved_value)
+
+    def resolve_options(self, raw: dict[str, object]) -> dict[str, object]:
+        """A copy of the stored options with every reference replaced by its value (raises SecretError)."""
+
+        return {key: self.resolve(value) for key, value in raw.items()}
 
     def resolve(self, raw: object) -> object:
         """A copy of ``raw`` with every reference replaced by its value (raises SecretError)."""
@@ -525,7 +530,7 @@ HA_PATH_PREFIX = "/config/"
 def action(  # noqa: PLR0913 - view-model fields
     action_id: str,
     label: str,
-    args: dict[str, object] | None = None,
+    args: Mapping[str, object] | None = None,
     *,
     disabled: bool = False,
     confirm: str = "",
@@ -547,7 +552,7 @@ def action(  # noqa: PLR0913 - view-model fields
     return {
         "id": action_id,
         "label": label,
-        "args": args or {},
+        "args": dict(args or {}),
         "disabled": disabled,
         "confirm": confirm,
         "danger": danger,

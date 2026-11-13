@@ -1,3 +1,11 @@
+[tool.mypy]
+# Run once per app, because the apps use the same module names:
+#   MYPYPATH=<app>/rootfs/app mypy <app>/rootfs/app <app>/tests
+python_version = "3.13"
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py313"

@@ -1,0 +1,19 @@
+# CodeQL analyses the shared modules once, in shared/app. The copies in the apps
+# are byte-identical (tools/sync_shared.py --check runs in CI), so analysing them
+# again would only repeat every finding once per app.
+# Keep this list equal to SHARED in tools/sync_shared.py (shared/tests/test_sync.py checks it).
+paths-ignore:
+  - "**/rootfs/app/webui.py"
+  - "**/rootfs/app/web/index.html"
+  - "**/rootfs/app/web/panel.css"
+  - "**/rootfs/app/web/panel.js"
+  - "**/rootfs/app/web/icons.js"
+  - "**/rootfs/app/safefile.py"
+  - "**/rootfs/app/jsonval.py"
+  - "**/rootfs/app/redact.py"
+  - "**/rootfs/app/safehttp.py"
+  - "**/rootfs/app/store.py"
+  - "**/rootfs/app/supervisor.py"
+  - "**/rootfs/app/maintenance.py"
+  - "**/rootfs/app/unpaid.py"
+  - "**/rootfs/app/reach.py"

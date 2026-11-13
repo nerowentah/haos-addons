@@ -13,7 +13,6 @@ import http.client
 import ssl
 import urllib.error
 import urllib.request
-from email.message import Message
 from typing import IO
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -58,7 +57,7 @@ class _HttpsRedirects(urllib.request.HTTPRedirectHandler):
         fp: IO[bytes],
         code: int,
         msg: str,
-        headers: Message,
+        headers: http.client.HTTPMessage,
         newurl: str,
     ) -> urllib.request.Request | None:
         if not newurl.lower().startswith(HTTPS):

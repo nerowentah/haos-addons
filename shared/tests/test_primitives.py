@@ -11,7 +11,8 @@ import tempfile
 import unittest
 import urllib.error
 import urllib.request
-from email.message import Message
+from collections.abc import Callable
+from http.client import HTTPMessage
 from pathlib import Path
 from unittest import mock
 
@@ -100,7 +101,7 @@ class JsonValTest(unittest.TestCase):
         self.assertEqual(jsonval.get_list({}, "rows"), [])
 
     def test_wrong_types_raise(self) -> None:
-        wrong = [
+        wrong: list[tuple[Callable[..., object], tuple[object, ...]]] = [
             (jsonval.as_dict, ([],)),
             (jsonval.as_list, ({},)),
             (jsonval.get_str, ({"k": 5}, "k")),
@@ -171,8 +172,8 @@ class SafeHttpTest(unittest.TestCase):
         handler = safehttp._HttpsRedirects()
         request = urllib.request.Request("https://example.com/a")
         with self.assertRaises(urllib.error.HTTPError):
-            handler.redirect_request(request, io.BytesIO(), 302, "Found", Message(), "http://example.com/b")
-        followed = handler.redirect_request(request, io.BytesIO(), 302, "Found", Message(), "https://example.com/b")
+            handler.redirect_request(request, io.BytesIO(), 302, "Found", HTTPMessage(), "http://example.com/b")
+        followed = handler.redirect_request(request, io.BytesIO(), 302, "Found", HTTPMessage(), "https://example.com/b")
         assert followed is not None
         self.assertEqual(followed.full_url, "https://example.com/b")
 

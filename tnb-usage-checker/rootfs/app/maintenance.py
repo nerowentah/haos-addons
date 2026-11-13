@@ -97,7 +97,8 @@ class Window:
         if not self.crosses_midnight:
             return today in self.days and self.start <= now and (self.end is None or now < self.end)
         yesterday = (today - 1) % 7
-        return (today in self.days and now >= self.start) or (yesterday in self.days and now < self.end)  # type: ignore[operator]
+        end = self.end
+        return (today in self.days and now >= self.start) or (yesterday in self.days and end is not None and now < end)
 
     def end_after(self, moment: datetime) -> datetime:
         """When this window (active at ``moment``) closes."""
@@ -123,9 +124,9 @@ def parse_window(line: str) -> Window:
         )
     start = _clock(match["start"], allow_end_of_day=False)
     end = _clock(match["end"], allow_end_of_day=True)
-    if start == end:
+    if start is None or start == end:
         raise MaintenanceConfigError(f"maintenance window '{line}' starts and ends at the same time")
-    return Window(text=text, days=_days(match["days"]), start=start, end=end)  # type: ignore[arg-type]
+    return Window(text=text, days=_days(match["days"]), start=start, end=end)
 
 
 def parse_windows(raw: object) -> list[Window]:
@@ -189,7 +190,7 @@ class Backoff:
     def next_delay(self) -> float:
         """Seconds to wait after one more maintenance answer."""
 
-        delay = min(self.base_seconds * (2**self.attempts), self.max_seconds)
+        delay = min(self.base_seconds * (2.0**self.attempts), self.max_seconds)
         self.attempts += 1
         return delay * self._random.uniform(0.9, 1.1)
 

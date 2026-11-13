@@ -206,6 +206,20 @@ class PanelPageTest(unittest.TestCase):
         self.assertIsNone(re.search(r"\bstyle:\s", script), "style attributes are blocked by the CSP; use el.style")
 
 
+class SecretRefsTest(unittest.TestCase):
+    def test_resolve_options_keeps_the_shape(self) -> None:
+        secrets = webui.SecretRefs()
+        secrets.learn({"token": "!secret api_token", "n": 1}, {"token": "placeholder-value", "n": 1})
+        stored: dict[str, object] = {"token": "!secret api_token", "rows": [{"t": "!secret api_token"}], "n": 1}
+        self.assertEqual(
+            secrets.resolve_options(stored),
+            {"token": "placeholder-value", "rows": [{"t": "placeholder-value"}], "n": 1},
+        )
+        self.assertEqual(stored["token"], "!secret api_token")  # the stored copy keeps the reference
+        with self.assertRaises(webui.SecretError):
+            secrets.resolve_options({"token": "!secret unknown"})
+
+
 class PanelArgsTest(unittest.TestCase):
     def test_text_is_stripped_and_bounded(self) -> None:
         args = webui.PanelArgs({"text": "  home.example.com \n", "n": 5, "long": "x" * 50})

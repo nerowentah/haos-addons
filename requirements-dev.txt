@@ -3,6 +3,7 @@
 #
 # Tools: exact versions, updated by Dependabot.
 ruff==0.17.5
+mypy==2.4.1
 
 # Libraries: the versions of the Alpine 3.24 packages the images install
 # (py3-paho-mqtt, py3-websocket-client, py3-cryptography, py3-yaml), so the
