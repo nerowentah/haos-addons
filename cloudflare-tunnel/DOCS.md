@@ -220,7 +220,12 @@ The **Settings** card shows the setup type, log level and run parameters, with a
 - **Public URL shows HTTP 400:** Home Assistant does not trust the tunnel yet. Restart Home Assistant if the panel asks for it, or add the snippet from **Home Assistant proxy settings**.
 - **"No answer from the public hostname: ..."** now ends with the reason:
   - **"does not resolve from Home Assistant or in public DNS"**: the DNS record is missing or still new. Check the CNAME in the Cloudflare dashboard, and wait a few minutes after creating it.
-  - **"TLS: Hostname mismatch ..."**: the certificate at Cloudflare's edge does not cover the name. Cloudflare's free certificate covers `example.com` and `*.example.com` only, so use a name one level deep such as `home.example.com`, or add an Advanced Certificate.
+  - **"TLS: ... refused the handshake for ..., so Cloudflare has no edge certificate for it"** (`SSLV3_ALERT_HANDSHAKE_FAILURE`): Cloudflare's edge has no certificate for the name, so it ends the connection instead of showing one. Check, in the Cloudflare dashboard:
+    - **The name is one level deep.** The free Universal certificate covers `example.com` and `*.example.com` only. `ha.home.example.com` needs an Advanced Certificate (paid), or use `home.example.com`.
+    - **SSL/TLS → Edge Certificates:** Universal SSL is enabled and the certificate is **Active**. On a new domain, or after re-enabling it, this can take up to 24 hours.
+    - **DNS:** the hostname's record is **Proxied** (orange cloud).
+    - Port 8443 working at home doesn't rule this out: that is SSL Cert Manager's own certificate, not Cloudflare's.
+  - **"TLS: Hostname mismatch ..."**: a server other than Cloudflare's edge answered with a certificate for another name (for example a local DNS override that points at another device).
   - **"connection refused by ..."** or **"no answer within 15 s from ..."**: Cloudflare's edge could not be reached from Home Assistant (a firewall or outbound filtering). With **"(local DNS override; the name has no public address)"**, the name only exists in your local DNS.
 - **A local DNS override is fine.** When your router or Pi-hole points the hostname at Home Assistant's LAN address, the check notices it, looks the name up in Cloudflare's public DNS (1.1.1.1) instead and still goes through the tunnel. The panel then adds "(local DNS points to 192.168.x.x; checked through public DNS)".
 - **Public URL shows HTTP 502 or 530:** Cloudflare reached the tunnel but not Home Assistant; check that Home Assistant runs and look at the app's log.

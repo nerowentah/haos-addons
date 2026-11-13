@@ -440,6 +440,25 @@ class AppTest(unittest.TestCase):
         self.app._tick()
         self.assertEqual(self.account.calls.count("create"), 1)  # done once
 
+    def test_a_two_level_name_gets_a_one_level_suggestion(self) -> None:
+        self.assertEqual(main.one_level_name("ha.int.example.com", "example.com"), "ha.example.com")
+        self.assertIsNone(main.one_level_name("home.example.com", "example.com"))
+        self.assertIsNone(main.one_level_name("example.com", "example.com"))
+        self.assertIsNone(main.one_level_name("a.b.other.org", "example.com"))
+        self._login_mode()
+        self.account.signed = True
+        self.app._tick()
+        self.app.panel_action("hostname", {"text": "ha.int.example.com"})  # allowed: an Advanced Certificate covers it
+        self.app._tick()
+        self.daemon.status.set(cf.STATE_CONNECTED)
+        text = self._state_text()
+        self.assertIn("two levels below example.com", text)
+        self.assertIn('"prompt_value": "ha.example.com"', text)
+        self.app.reach = ("Reachable", "ok")  # e.g. with an Advanced Certificate: no nagging
+        text = self._state_text()
+        self.assertNotIn("two levels below", text)
+        self.assertIn('"prompt_value": "ha.int.example.com"', text)
+
     def test_an_existing_dns_record_is_only_replaced_when_asked(self) -> None:
         self._login_mode(external_hostname="home.example.com")
         self.account.signed = True

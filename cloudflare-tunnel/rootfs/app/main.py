@@ -116,6 +116,18 @@ def _ago(moment: datetime | None, now: datetime) -> str | None:
     return "just now"
 
 
+def one_level_name(hostname: str, zone: str | None) -> str | None:
+    """A name directly under ``zone`` for a hostname deeper than that (free edge certificates cover one level).
+
+    ``haos.int.example.com`` in ``example.com`` gives ``haos.example.com``; None when the name is fine.
+    """
+
+    if not hostname or not zone or not hostname.endswith(f".{zone}"):
+        return None
+    labels = hostname.removesuffix(f".{zone}").split(".")
+    return f"{labels[0]}.{zone}" if len(labels) > 1 else None
+
+
 def describe_reach(code: int | None) -> tuple[str, str]:  # noqa: PLR0911 - one answer per status
     """(text, tone) for the public URL check."""
 
@@ -513,6 +525,11 @@ class App:
         if self.daemon.ready:
             self._fix_proxy()
 
+    def _reachable(self) -> bool:
+        """The last public URL check got Home Assistant (e.g. an Advanced Certificate covers a deep name)."""
+
+        return bool(self.reach and self.reach[1] == "ok")
+
     def _check_reach(self) -> None:
         """Try the public hostname from outside, on a worker thread (it can take seconds)."""
 
@@ -759,7 +776,8 @@ class App:
     # -- Panel view model ------------------------------------------------------------------
     def _hostname_action(self, config: Config, label: str = "Choose hostname") -> dict[str, object]:
         zone = self.account.zone
-        prefill = config.external_hostname or (f"home.{zone}" if zone else "")
+        better = one_level_name(config.external_hostname, zone) if not self._reachable() else None
+        prefill = better or config.external_hostname or (f"home.{zone}" if zone else "")
         return action(
             "hostname",
             label,
@@ -934,6 +952,7 @@ class App:
         state = status.state
         text, tone = STATE_BADGE.get(state, ("Unknown", "warn"))
         login_mode = config.mode == MODE_LOGIN
+        zone = self.account.zone
         actions = [
             action("restart", "Restart connector", confirm="Restart the tunnel connector now?", icon="mdi:restart")
         ]
@@ -975,6 +994,13 @@ class App:
             )
         elif self.verify.get("state") in (VERIFY_FAILED, VERIFY_ROLLED_BACK):
             tunnel["notice"] = notice(str(self.verify.get("message")), "error")
+        elif login_mode and not self._reachable() and (better := one_level_name(config.external_hostname, zone)):
+            tunnel["notice"] = notice(
+                f"{config.external_hostname} is two levels below {zone}, but Cloudflare's free certificate covers "
+                f"only *.{zone}, so the public URL fails with a TLS error. Click Change hostname to use {better} "
+                "(Home Assistant's own certificate keeps working), or add an Advanced Certificate in Cloudflare.",
+                "warn",
+            )
         elif self.reach and self.reach[1] == "error":
             tunnel["notice"] = notice(self.reach[0], "error")
         settings: dict[str, object] = {

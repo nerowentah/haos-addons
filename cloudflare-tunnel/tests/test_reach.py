@@ -82,6 +82,20 @@ class ProbeTest(unittest.TestCase):
         self.assertIn("covers one level", result.reason)
         self.assertEqual(len(fetch.calls), 1)  # a certificate problem is the same on every edge address
 
+    def test_a_refused_handshake_means_no_edge_certificate(self) -> None:
+        def refused() -> ssl.SSLError:
+            err = ssl.SSLError(1, "[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] ssl/tls alert handshake failure")
+            err.reason = "SSLV3_ALERT_HANDSHAKE_FAILURE"
+            return err
+
+        fetch = Fetcher(refused())
+        result = reach.probe("home.example.com", resolve=lambda _h: [EDGE, "104.16.2.2"], doh=no_doh, fetch=fetch)
+        self.assertEqual(len(fetch.calls), 1)
+        self.assertTrue(result.reason.startswith(f"TLS: {EDGE} refused the handshake for home.example.com"))
+        self.assertIn("Universal SSL", result.reason)
+        deep = reach.probe("ha.home.example.com", resolve=lambda _h: [EDGE], doh=no_doh, fetch=Fetcher(refused()))
+        self.assertIn("one-level name", deep.reason)
+
     def test_a_timeout_tries_a_second_address(self) -> None:
         fetch = Fetcher(TimeoutError("timed out"))
         result = reach.probe(

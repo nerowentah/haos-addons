@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+- **Two-level hostnames are caught in the panel.** When the public hostname is two levels below your domain (`ha.int.example.com`), the connector card explains that Cloudflare's free certificate doesn't cover it, and **Change hostname** is pre-filled with a one-level name (`ha.example.com`). Home Assistant's own certificate keeps working for the tunnel. The hint goes away once the public URL works, e.g. with an Advanced Certificate.
+- **A clear reason for `SSLV3_ALERT_HANDSHAKE_FAILURE`.** This is how Cloudflare's edge answers when it has no certificate for the hostname. The check now says so and names what to check: a two-level name such as `a.b.example.com`, Universal SSL not active yet, or a DNS record that isn't proxied.
+
 ## 0.3.1
 
 - **Docs:** Cloudflare Access breaks the Companion app (use a bypass for `/api/*`), and `caPool` adds to the system CAs.
