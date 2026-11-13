@@ -70,6 +70,16 @@ ignore = ["E501"]
   "PLR2004",
   "PT009",
 ]
+"ssl-cert-manager/**/*.py" = [
+  "TRY003",
+]
+"ssl-cert-manager/tests/*.py" = [
+  "TRY003",
+  "S101",
+  "SLF001",
+  "PLR2004",
+  "PT009",
+]
 "mobile-device-manager/tests/*.py" = [
   "TRY003",
   "S101",

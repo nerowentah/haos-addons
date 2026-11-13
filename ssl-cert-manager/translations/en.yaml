@@ -1,0 +1,27 @@
+configuration:
+  cloudflare_api_token:
+    name: Cloudflare API token (optional)
+    description: Needed for Let's Encrypt and Cloudflare Origin certificates. Create it in Cloudflare (My Profile -> API Tokens -> Create Token -> Custom token) with Zone -> Zone -> Read, Zone -> DNS -> Edit and Zone -> SSL and Certificates -> Edit for your domain. A !secret works too. It is only given to certbot through a private file while a request runs, never on the command line or in the log. Imports work without it.
+  acme_email:
+    name: E-mail for Let's Encrypt
+    description: Let's Encrypt writes to this address about problems with your certificates. Optional.
+  acme_staging:
+    name: Let's Encrypt staging
+    description: Request test certificates (not trusted by browsers) with much higher rate limits. Turn it off and click Renew now for a real certificate.
+  local_proxy:
+    name: HTTPS proxy
+    description: Serve your certificates on port 8443 and forward to Home Assistant, so https://home.example.com:8443 works at home. Home Assistant itself stays on http://, so nothing else changes. Also switchable in the panel.
+  write_ssl_root:
+    name: Also write /ssl/fullchain.pem
+    description: Copy the default certificate to /ssl/fullchain.pem and /ssl/privkey.pem, the names most apps expect. Files put there by anything else are never replaced.
+  renew_days_before:
+    name: Renew before (days)
+    description: Renew Let's Encrypt certificates and certificates from your own CA this many days before they expire (7 to 60). Other certificates get a notification instead.
+  notify_on_failure:
+    name: Notifications
+    description: Notify about failed renewals, certificates about to expire and a failing Cloudflare Tunnel check. Phones are found automatically; switch individual phones in the panel.
+  log_level:
+    name: Log level
+    description: How much the app writes to its log - trace, debug, info (default), notice, warning, error or fatal. Applies without a restart.
+network:
+  8443/tcp: HTTPS proxy to Home Assistant (only answers while the proxy is switched on). Clear it to keep the proxy reachable by other apps only, such as Cloudflare Tunnel.

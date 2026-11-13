@@ -4,4 +4,5 @@ maintainer: CWT <cwt@clgx.org>
 description: >-
   Home Assistant OS apps: TNB and Ranhill SAJ bill checkers, LG webOS
   Developer Mode renewal, Companion app device cleanup, API key review,
-  and Cloudflare Tunnel (TM Unifi bill checker planned).
+  Cloudflare Tunnel and an SSL certificate manager (TM Unifi bill checker
+  planned).

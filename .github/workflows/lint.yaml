@@ -55,7 +55,7 @@ jobs:
           python-version: "3.13"  # matches target-version = py313 in pyproject.toml
 
       - name: Install linters and test dependencies
-        run: pip install ruff paho-mqtt websocket-client pyyaml
+        run: pip install ruff paho-mqtt websocket-client pyyaml cryptography
 
       - name: Supervisor schema syntax
         run: python .github/scripts/check_schema.py
