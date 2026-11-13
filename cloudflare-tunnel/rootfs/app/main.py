@@ -11,8 +11,6 @@ import os
 import signal
 import threading
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +20,7 @@ import account as acc
 import cloudflared as cf
 import ha_proxy
 import origin_tls as otls
+import reach
 from config import (
     MODE_LOGIN,
     Config,
@@ -117,19 +116,6 @@ def _ago(moment: datetime | None, now: datetime) -> str | None:
     return "just now"
 
 
-def http_status(url: str) -> int | None:
-    """The HTTP status of a GET without credentials, or None when nothing answers."""
-
-    request = urllib.request.Request(url, headers={"User-Agent": "cloudflare-tunnel-app"})  # noqa: S310 - https only
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310 - https only
-            return int(response.status)
-    except urllib.error.HTTPError as err:
-        return int(err.code)
-    except (urllib.error.URLError, OSError, ValueError):
-        return None
-
-
 def describe_reach(code: int | None) -> tuple[str, str]:  # noqa: PLR0911 - one answer per status
     """(text, tone) for the public URL check."""
 
@@ -189,7 +175,7 @@ class App:
         daemon: cf.Cloudflared | None = None,
         account: acc.Account | None = None,
         ha_config: Path = ha_proxy.CONFIG_PATH,
-        probe: Callable[[str], int | None] = http_status,
+        probe: Callable[[str], reach.Result] = reach.probe,
         manager_status: Path = otls.MANAGER_STATUS,
         status_file: Path = otls.TUNNEL_STATUS,
         sleep: Callable[[float], None] = time.sleep,
@@ -234,9 +220,10 @@ class App:
         self._verify_deadline = 0.0
         self._verify_rollback = False
         self._verify_thread: threading.Thread | None = None
-        self._verify_code: int | None = None
+        self._verify_result: reach.Result | None = None
         self._rolled_back: str | None = None  # why the last change was undone, while the old route is re-checked
         self._published: str | None = None
+        self._reach_logged: str | None = None
         if config.mode == MODE_LOGIN:
             self.daemon.tunnel_id = self._routed_tunnel_id()
 
@@ -539,10 +526,21 @@ class App:
         self.next_reach_check = time.monotonic() + REACH_CHECK_SECONDS
 
         def check() -> None:
-            self.reach = describe_reach(self.probe(f"https://{hostname}/api/"))
+            self.reach = self._explain(self.probe(hostname))
 
         self._reach_thread = threading.Thread(target=check, daemon=True, name="reach-check")
         self._reach_thread.start()
+
+    def _explain(self, result: reach.Result) -> tuple[str, str]:
+        """Panel text for a probe; a new failure reason is logged once."""
+
+        text, tone = reach.explain(result, describe_reach)
+        if text != self._reach_logged:
+            self._reach_logged = text
+            log = _LOGGER.info if tone == "ok" else _LOGGER.warning
+            log("Public URL check: %s", text)
+        _LOGGER.debug("Public URL check addresses: %s", ", ".join(result.addresses) or "-")
+        return text, tone
 
     # -- Origin TLS: follow SSL Cert Manager (loop thread) -------------------------------
     def _can_roll_back(self) -> bool:
@@ -604,7 +602,7 @@ class App:
                     self._verify_done(f"Connected ({status.connections} edge connections); no public hostname to try")
                     return
                 self._verify_stage = "probe"
-                self._verify_code = None
+                self._verify_result = None
                 self._verify_thread = threading.Thread(
                     target=self._verify_probe, args=(hostname,), daemon=True, name="tunnel-check"
                 )
@@ -614,15 +612,16 @@ class App:
             return
         if self._verify_thread is not None and self._verify_thread.is_alive():
             return
-        code = self._verify_code
-        text, tone = describe_reach(code)
+        result = self._verify_result or reach.Result(None, "the check did not run")
+        text, tone = self._explain(result)
         self.reach = (text, tone)
         if tone == "ok":
             origin = self.origin
             tls = "origin OK" if origin is not None and not origin.tls else "origin TLS OK"
+            note = f" ({result.note})" if result.note else ""
             self._verify_done(
                 f"Verified {datetime.now().astimezone():%H:%M}: connected ({status.connections} edge connections), "
-                f"{tls}, HTTP {code}"
+                f"{tls}, HTTP {result.code}{note}"
             )
             return
         if status.origin_error:
@@ -630,14 +629,14 @@ class App:
         self._verify_failed(text)
 
     def _verify_probe(self, hostname: str) -> None:
-        code = None
+        result = None
         for attempt in range(VERIFY_PROBES):
-            code = self.probe(f"https://{hostname}/api/")
-            if code in (200, 401):
+            result = self.probe(hostname)
+            if result.ok:
                 break
             if attempt < VERIFY_PROBES - 1:
                 self.sleep(VERIFY_PROBE_GAP_SECONDS)
-        self._verify_code = code
+        self._verify_result = result
 
     def _verify_done(self, message: str) -> None:
         self._verify_stage = None

@@ -176,7 +176,7 @@ Then the **Connector** card shows:
 - **Badge:** the state — **Connected**, **Starting**, **Degraded**, **Restarting**, **Error** or **Not set up**.
 - **Edge connections:** how many connections to Cloudflare's edge are live (normally 4).
 - **Restarts**, **Started** and **Last change.**
-- The **public URL** with the result of the last check: the app requests `https://<hostname>/api/` every 10 minutes from outside; Home Assistant answering (even with "login required") means **Reachable**.
+- The **public URL** with the result of the last check: the app requests `https://<hostname>/api/` every 10 minutes through Cloudflare (bypassing a local DNS override); Home Assistant answering (even with "login required") means **Reachable**. Without an answer, the reason is shown.
 - **Tunnel check** and **origin**: the result of the last check after a change, and where the tunnel sends traffic (with or without a certificate check).
 - **Restart connector**, **Check now**, and when signed in **Change hostname** and **Sign out**.
 
@@ -218,8 +218,15 @@ The **Settings** card shows the setup type, log level and run parameters, with a
 - **The sign-in link expired:** it is valid for about 10 minutes; click **Sign in with Cloudflare** again.
 - **"already has a DNS record":** the hostname is used by another record. **Replace DNS record** points it at this tunnel, or choose another name.
 - **Public URL shows HTTP 400:** Home Assistant does not trust the tunnel yet. Restart Home Assistant if the panel asks for it, or add the snippet from **Home Assistant proxy settings**.
+- **"No answer from the public hostname: ..."** now ends with the reason:
+  - **"does not resolve from Home Assistant or in public DNS"**: the DNS record is missing or still new. Check the CNAME in the Cloudflare dashboard, and wait a few minutes after creating it.
+  - **"TLS: Hostname mismatch ..."**: the certificate at Cloudflare's edge does not cover the name. Cloudflare's free certificate covers `example.com` and `*.example.com` only, so use a name one level deep such as `home.example.com`, or add an Advanced Certificate.
+  - **"connection refused by ..."** or **"no answer within 15 s from ..."**: Cloudflare's edge could not be reached from Home Assistant (a firewall or outbound filtering). With **"(local DNS override; the name has no public address)"**, the name only exists in your local DNS.
+- **A local DNS override is fine.** When your router or Pi-hole points the hostname at Home Assistant's LAN address, the check notices it, looks the name up in Cloudflare's public DNS (1.1.1.1) instead and still goes through the tunnel. The panel then adds "(local DNS points to 192.168.x.x; checked through public DNS)".
 - **Public URL shows HTTP 502 or 530:** Cloudflare reached the tunnel but not Home Assistant; check that Home Assistant runs and look at the app's log.
 - **"Change rolled back" with `x509: ...`:** the certificate the tunnel saw does not match. Give the origin a certificate that covers your tunnel hostname (a Cloudflare Origin or Let's Encrypt certificate in SSL Cert Manager), or set `origin_tls: skip` to go back to not checking.
+- **The Companion app cannot connect through the tunnel, but the browser can:** a Cloudflare Access (Zero Trust login) policy on the hostname blocks the app and webhooks, which can't show a login page. Leave Access off for Home Assistant, or add a Bypass policy for `/api/*` and `/auth/*`.
+- **"caPool replaces the normal CAs?"** No. `cloudflared` starts from the system certificate store and adds the trust bundle, so a Let's Encrypt certificate on the origin still verifies.
 - **Panel stuck on Starting:** check the app's log; set `log_level: debug` for `cloudflared`'s debug output. A firewall blocking outbound UDP 7844 (QUIC) is the usual cause — `--protocol=http` in `run_parameters` works as a fallback.
 - **Edge connections 0 but the process runs:** the connector lost its edge connections; the panel shows **Degraded** and `cloudflared` keeps retrying on its own.
 - **Wrong version warning from Cloudflare:** Zero Trust flags connectors older than 2026.10.2. Update this app to get the pinned release.
