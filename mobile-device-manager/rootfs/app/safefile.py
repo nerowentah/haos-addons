@@ -10,7 +10,11 @@ import tempfile
 from pathlib import Path
 
 PRIVATE = 0o600  # owner only: state, credentials, private keys
-PUBLIC = 0o644  # readable by other apps: certificates, status files
+# Readable by everyone: only for data that is public anyway and that other apps
+# or Home Assistant read from /ssl (certificate chains, status files). Never
+# for a key, a token or state. Nothing here is ever writable by group or others.
+PUBLIC = 0o644
+MODES = (PRIVATE, PUBLIC)
 
 
 def atomic_write(path: Path, data: bytes | str, mode: int = PRIVATE) -> bool:
@@ -20,9 +24,12 @@ def atomic_write(path: Path, data: bytes | str, mode: int = PRIVATE) -> bool:
     folder (created owner-only), is flushed to disk, gets ``mode`` and is then
     renamed over ``path``: a reader sees the old file or the new one, never a
     partial one, and the content is never readable with wider permissions than
-    ``mode``. Raises OSError when the file cannot be written.
+    ``mode``. Raises OSError when the file cannot be written, and ValueError
+    for a ``mode`` other than PRIVATE or PUBLIC.
     """
 
+    if mode not in MODES:
+        raise ValueError("mode must be safefile.PRIVATE or safefile.PUBLIC")
     payload = data.encode("utf-8") if isinstance(data, str) else data
     try:
         same_mode = os.name != "posix" or (path.stat().st_mode & 0o777) == mode  # Windows (tests) has no modes

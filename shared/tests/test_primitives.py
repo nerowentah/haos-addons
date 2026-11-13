@@ -64,6 +64,12 @@ class AtomicWriteTest(unittest.TestCase):
         self.assertTrue(safefile.atomic_write(path, "secret", safefile.PRIVATE))  # same data, wrong mode
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
+    def test_only_the_two_known_modes_are_accepted(self) -> None:
+        for mode in (0o666, 0o777, 0o640, 0o660, 0):
+            with self.subTest(mode=oct(mode)), self.assertRaises(ValueError):
+                safefile.atomic_write(self.folder / "x", "data", mode)
+        self.assertEqual(list(self.folder.iterdir()), [])
+
     def test_the_store_saves_through_it(self) -> None:
         store = Store(self.folder / "state.json")
         store.section("phones")["mobile_app_phone"] = True
