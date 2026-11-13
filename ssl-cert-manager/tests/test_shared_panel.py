@@ -36,6 +36,13 @@ class SharedPanelTest(unittest.TestCase):
                     assert path is not None
                     self.assertEqual(path.read_bytes().replace(b"\r\n", b"\n"), expected, f"{path} differs")
 
+    def test_reach_check_is_the_same_in_both_apps(self) -> None:
+        for name in ("rootfs/app/reach.py", "tests/test_reach.py"):
+            ours = (REPO / "ssl-cert-manager" / name).read_bytes().replace(b"\r\n", b"\n")
+            theirs = (REPO / "cloudflare-tunnel" / name).read_bytes().replace(b"\r\n", b"\n")
+            with self.subTest(file=name):
+                self.assertEqual(ours, theirs)
+
     def test_upload_support_is_present(self) -> None:
         webui = (REPO / "ssl-cert-manager" / "rootfs" / "app" / "webui.py").read_text(encoding="utf-8")
         panel = (REPO / "ssl-cert-manager" / "rootfs" / "app" / "web" / "panel.js").read_text(encoding="utf-8")

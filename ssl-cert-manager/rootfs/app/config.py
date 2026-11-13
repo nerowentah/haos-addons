@@ -23,6 +23,8 @@ LOG_LEVELS = {
 }
 RENEW_DAYS_MIN, RENEW_DAYS_MAX, RENEW_DAYS_DEFAULT = 7, 60, 30
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_HSTS_RE = re.compile(r"^max-age=\d+(;\s*includeSubDomains)?(;\s*preload)?$", re.IGNORECASE)
+REAL_IP_MODES = ("off", "apps", "cloudflare")  # see proxy.py
 
 
 def parse_log_level(raw: dict[str, object]) -> str:
@@ -54,6 +56,8 @@ class Config:
     local_proxy: bool = False
     write_ssl_root: bool = True
     renew_days_before: int = RENEW_DAYS_DEFAULT
+    proxy_hsts: str = ""
+    proxy_real_ip: str = "apps"
     notify_on_failure: bool = True
     log_level: str = "info"
 
@@ -89,6 +93,12 @@ def load_config(raw: dict[str, object]) -> Config:
     token = str(raw.get("cloudflare_api_token") or "").strip()
     if token and (len(token) < 20 or any(c.isspace() for c in token)):  # noqa: PLR2004 - Cloudflare tokens are 40 characters
         raise ConfigError("cloudflare_api_token does not look like a Cloudflare API token (copy it again)")
+    hsts = str(raw.get("proxy_hsts") or "").strip()
+    if hsts and not _HSTS_RE.match(hsts):
+        raise ConfigError(f"proxy_hsts '{hsts}' is not a Strict-Transport-Security value, e.g. max-age=31536000")
+    real_ip = str(raw.get("proxy_real_ip") or "apps").strip().lower()
+    if real_ip not in REAL_IP_MODES:
+        raise ConfigError(f"proxy_real_ip must be one of {', '.join(REAL_IP_MODES)}")
     return Config(
         cloudflare_api_token=token,
         acme_email=email,
@@ -96,6 +106,8 @@ def load_config(raw: dict[str, object]) -> Config:
         local_proxy=_bool(raw, "local_proxy", False),
         write_ssl_root=_bool(raw, "write_ssl_root", True),
         renew_days_before=days,
+        proxy_hsts=hsts,
+        proxy_real_ip=real_ip,
         notify_on_failure=_bool(raw, "notify_on_failure", True),
         log_level=parse_log_level(raw),
     )

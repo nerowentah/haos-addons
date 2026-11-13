@@ -14,6 +14,12 @@ configuration:
   write_ssl_root:
     name: Also write /ssl/fullchain.pem
     description: Copy the default certificate to /ssl/fullchain.pem and /ssl/privkey.pem, the names most apps expect. Files put there by anything else are never replaced.
+  proxy_hsts:
+    name: HSTS header (HTTPS proxy)
+    description: Optional Strict-Transport-Security value the proxy sends, e.g. max-age=31536000 (add ; includeSubDomains only if every subdomain has HTTPS). Leave empty for none. Browsers then refuse plain http:// for that name, so only set it once HTTPS works.
+  proxy_real_ip:
+    name: Client address (HTTPS proxy)
+    description: apps (default) - trust X-Forwarded-For from other apps such as Cloudflare Tunnel, so Home Assistant sees the visitor's address. cloudflare - also trust Cloudflare's own IP ranges and their CF-Connecting-IP header, for port 8443 forwarded through Cloudflare's proxy without the tunnel. off - pass only the direct peer.
   renew_days_before:
     name: Renew before (days)
     description: Renew Let's Encrypt certificates and certificates from your own CA this many days before they expire (7 to 60). Other certificates get a notification instead.

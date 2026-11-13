@@ -27,6 +27,13 @@ NGINX = "/usr/sbin/nginx"
 PORT = 8443
 CONF_DIR = Path("/data/nginx")
 BACKOFF_SECONDS = (2, 5, 10, 30, 60)
+APPS_NETWORK = "172.30.32.0/23"  # the Supervisor's networks: Cloudflare Tunnel and other apps connect from here
+CLOUDFLARE_IPS = Path(__file__).resolve().parent / "roots" / "cloudflare_ips.txt"
+
+REAL_IP_OFF = "off"
+REAL_IP_APPS = "apps"
+REAL_IP_CLOUDFLARE = "cloudflare"
+REAL_IP_MODES = (REAL_IP_OFF, REAL_IP_APPS, REAL_IP_CLOUDFLARE)
 
 SpawnFn = Callable[[list[str]], "subprocess.Popen[bytes]"]
 RunFn = Callable[[list[str]], tuple[int, str]]
@@ -52,8 +59,38 @@ def _server_names(names: list[str], taken: set[str]) -> list[str]:
     return picked
 
 
-def render(default: Site, others: list[Site], upstream: str, port: int = PORT) -> str:
-    """nginx.conf for the proxy."""
+def cloudflare_ranges(path: Path = CLOUDFLARE_IPS) -> list[str]:
+    """Cloudflare's published IP ranges (vendored; one network per line, # comments)."""
+
+    lines = path.read_text(encoding="ascii").splitlines()
+    return [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")]
+
+
+def _real_ip(mode: str, ranges: list[str]) -> str:
+    """``http {}`` directives that make nginx (and the X-Forwarded-For it sends) use the visitor's address."""
+
+    if mode == REAL_IP_OFF:
+        return ""
+    trusted = [APPS_NETWORK] + (list(ranges) if mode == REAL_IP_CLOUDFLARE else [])
+    header = "CF-Connecting-IP" if mode == REAL_IP_CLOUDFLARE else "X-Forwarded-For"
+    return (
+        "".join(f"    set_real_ip_from {network};\n" for network in trusted)
+        + f"    real_ip_header {header};\n"
+        + "    real_ip_recursive on;\n"
+    )
+
+
+def render(  # noqa: PLR0913 - the options of the proxy
+    default: Site,
+    others: list[Site],
+    upstream: str,
+    port: int = PORT,
+    *,
+    hsts: str = "",
+    real_ip: str = REAL_IP_APPS,
+    ranges: list[str] | None = None,
+) -> str:
+    """nginx.conf for the proxy (``hsts``: the Strict-Transport-Security value, empty for none)."""
 
     location = (
         "        location / {\n"
@@ -75,6 +112,8 @@ def render(default: Site, others: list[Site], upstream: str, port: int = PORT) -
         location += "            proxy_ssl_server_name on;\n            proxy_ssl_verify off;  # Home Assistant on the internal network\n"
     location += "        }\n"
 
+    security = f'        add_header Strict-Transport-Security "{hsts}" always;\n' if hsts else ""
+
     def server(site: Site, names: list[str], *, default_server: bool) -> str:
         flag = " default_server" if default_server else ""
         server_name = " ".join(names) if names else "_"
@@ -86,6 +125,7 @@ def render(default: Site, others: list[Site], upstream: str, port: int = PORT) -
             f"        server_name {server_name};\n"
             f"        ssl_certificate {site.fullchain};\n"
             f"        ssl_certificate_key {site.privkey};\n"
+            f"{security}"
             f"{location}"
             "    }\n"
         )
@@ -113,6 +153,7 @@ def render(default: Site, others: list[Site], upstream: str, port: int = PORT) -
         "    ssl_session_timeout 1d;\n"
         "    ssl_session_tickets off;\n"
         "    map $http_upgrade $connection_upgrade {\n        default upgrade;\n        '' close;\n    }\n"
+        + _real_ip(real_ip, ranges if ranges is not None else [])
         + "".join(blocks)
         + "}\n"
     )

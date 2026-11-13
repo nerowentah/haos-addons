@@ -20,6 +20,7 @@ import ha_config
 import main
 import origin_ca
 import proxy
+import reach
 import store
 import supervisor
 import webui
@@ -171,7 +172,7 @@ class AppTest(unittest.TestCase):
             origin=self.origin,
             proxy=self.proxy,
             ha_path=self.ha_path,
-            probe=lambda _url: self.probes.pop(0) if self.probes else 401,
+            probe=lambda _host: reach.Result(self.probes.pop(0) if self.probes else 401),
             tunnel_status=self.tunnel_file,
             sleep=self.sleeps.append,
         )
@@ -318,6 +319,19 @@ class AppTest(unittest.TestCase):
         self.app._tick()
         self.assertGreater(self.proxy.stopped, 0)
 
+    def test_proxy_options_reload_the_proxy(self) -> None:
+        self.act("letsencrypt", {"text": "home.example.com"})
+        self.app.panel_toggle("local_proxy", True)
+        self.app._tick()
+        self.drain()
+        self.assertNotIn("Strict-Transport-Security", self.proxy.texts[-1])
+        self.sup.stored = {**self.sup.stored, "proxy_hsts": "max-age=31536000", "proxy_real_ip": "cloudflare"}
+        self.app.check_options()
+        self.app._tick()
+        self.assertIn('Strict-Transport-Security "max-age=31536000"', self.proxy.texts[-1])
+        self.assertIn("real_ip_header CF-Connecting-IP;", self.proxy.texts[-1])
+        self.assertIn("From Cloudflare", self.state_text())
+
     def test_home_assistant_https_on_and_off(self) -> None:
         self.act("letsencrypt", {"text": "home.example.com"})
         self.act("ha_https_on")
@@ -396,6 +410,13 @@ class HelpersTest(unittest.TestCase):
             config.load_config({"renew_days_before": 3})
         with self.assertRaises(config.ConfigError):
             config.load_config({"acme_email": "nope"})
+        with self.assertRaises(config.ConfigError):
+            config.load_config({"proxy_hsts": "max-age=1; evil"})
+        with self.assertRaises(config.ConfigError):
+            config.load_config({"proxy_real_ip": "everyone"})
+        self.assertEqual(
+            config.load_config({"proxy_hsts": "max-age=31536000; includeSubDomains"}).proxy_real_ip, "apps"
+        )
         self.assertEqual(config.load_config({}).renew_days_before, 30)
         self.assertEqual(ha_config.network_for("172.30.33.7"), "172.30.33.0/24")
 

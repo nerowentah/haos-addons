@@ -97,9 +97,34 @@ Switch on **HTTPS proxy** in the panel, or set `local_proxy: true`. nginx then l
 - **Proxy settings:** the first time, the app adds `use_x_forwarded_for` and `trusted_proxies` for its own network to `configuration.yaml`, the same way the Cloudflare Tunnel app does. That way Home Assistant sees the real client address. Then click **Restart Home Assistant** in the panel.
 - **What stays the same:** Home Assistant itself is untouched. `http://homeassistant.local:8123`, the Companion apps, add-on ingress and automations keep working.
 
-To use a public name such as `home.example.com` at home, point it at your Home Assistant in your local DNS (router, Pi-hole, AdGuard). Then open `https://home.example.com:8443`.
+To use a public name such as `home.example.com` at home, point it at your Home Assistant in your local DNS (router, Pi-hole, AdGuard). Then open `https://home.example.com:8443`. The Cloudflare Tunnel check is not fooled by this: it notices the private address and asks Cloudflare's public DNS instead.
 
 The port can be changed or cleared in the app's **Network** settings. With the port cleared, the proxy is only reachable from other apps, such as Cloudflare Tunnel.
+
+### Local DNS (split DNS) pitfalls
+
+Pointing a public name at Home Assistant's LAN address in your router or Pi-hole is the usual way to use the proxy at home. Watch for these:
+
+- **HTTPS (SVCB) DNS records.** Current browsers also ask for the name's `HTTPS` record (type 65), and Cloudflare answers it with its own addresses. Overriding only the `A` record then sends the browser to Cloudflare anyway.
+  - **Fix:** override or block the `HTTPS` record for that name too.
+  - **Or:** leave the name public and use a separate local-only name (for example `ha.home.example.com`) for port 8443.
+- **IPv6.** Override (or block) the `AAAA` record as well as `A`. Otherwise devices with IPv6 still get Cloudflare's address.
+- **Pi-hole forwarding.** If the local record seems ignored, turn on **Never forward reverse lookups for private IP ranges** and check that the local record (not a CNAME to the public name) is what answers.
+- **Phones away from home.** The Companion app's external URL must be the public `https://home.example.com` (through the tunnel), not `https://home.example.com:8443`. Port 8443 only exists on your network.
+
+The Cloudflare Tunnel check is not affected: it notices the private address and asks Cloudflare's public DNS instead.
+
+### Proxy options
+
+Modelled on the official NGINX SSL proxy add-on:
+
+- **`proxy_hsts`** (default empty, so no header): a `Strict-Transport-Security` value such as `max-age=31536000`.
+  - Browsers then refuse plain `http://` for that name, so set it only once HTTPS works.
+  - Add `; includeSubDomains` only if every subdomain has HTTPS.
+- **`proxy_real_ip`**: which client address Home Assistant sees.
+  - `apps` (default) trusts `X-Forwarded-For` from other apps, such as Cloudflare Tunnel. Login attempts and IP bans then show the visitor, not `172.30.33.x`.
+  - `cloudflare` also trusts Cloudflare's published IP ranges and their `CF-Connecting-IP` header. Use it when you forward port 8443 through Cloudflare's proxy (the orange cloud) without the tunnel.
+  - `off` passes on only the direct peer.
 
 ### Home Assistant itself on HTTPS (optional)
 
@@ -143,6 +168,8 @@ acme_staging: false
 local_proxy: false
 write_ssl_root: true
 renew_days_before: 30
+proxy_hsts: ""
+proxy_real_ip: apps
 notify_on_failure: true
 log_level: info
 ```
@@ -154,6 +181,8 @@ log_level: info
 | `acme_staging` | `false` | Let's Encrypt test certificates (not trusted, higher limits). |
 | `local_proxy` | `false` | The HTTPS proxy on port 8443. |
 | `write_ssl_root` | `true` | Also write the default certificate to `/ssl/fullchain.pem` and `/ssl/privkey.pem` (only where allowed, see above). |
+| `proxy_hsts` | `""` | `Strict-Transport-Security` value for the HTTPS proxy, e.g. `max-age=31536000`; empty sends none. |
+| `proxy_real_ip` | `apps` | Client address passed to Home Assistant: `apps`, `cloudflare` or `off` (see **Proxy options**). |
 | `renew_days_before` | `30` | Renew (or warn) this many days before expiry, from 7 to 60. |
 | `notify_on_failure` | `true` | Notifications about renewals, expiry and the tunnel check. |
 | `log_level` | `info` | `trace`, `debug`, `info`, `notice`, `warning`, `error` or `fatal`. Applies without a restart. |
@@ -187,4 +216,9 @@ The switches in the panel save these options. Changes in the Configuration tab a
 - **The browser warns about the certificate on port 8443:**
   - The name in the address bar must be on one of the certificates.
   - For certificates from your own CA, install the CA on that device.
+- **"No answer from the public hostname: ..."** now ends with the reason:
+  - **"does not resolve from Home Assistant or in public DNS"**: the DNS record is missing or still new. Check the CNAME in the Cloudflare dashboard, and wait a few minutes after creating it.
+  - **"TLS: Hostname mismatch ..."**: the certificate at Cloudflare's edge does not cover the name. Cloudflare's free certificate covers `example.com` and `*.example.com` only, so use a name one level deep such as `home.example.com`, or add an Advanced Certificate.
+  - **"connection refused by ..."** or **"no answer within 15 s from ..."**: Cloudflare's edge could not be reached from Home Assistant (a firewall or outbound filtering). With **"(local DNS override; the name has no public address)"**, the name only exists in your local DNS.
+- **A local DNS override is fine.** When your router or Pi-hole points the hostname at Home Assistant's LAN address, the check notices it, looks the name up in Cloudflare's public DNS (1.1.1.1) instead and still goes through the tunnel. The panel then adds "(local DNS points to 192.168.x.x; checked through public DNS)".
 - **Cloudflare Tunnel check: HTTP 502 or "x509":** the tunnel cannot verify the proxy's certificate. Use a Let's Encrypt or Cloudflare Origin certificate for the tunnel hostname, or a CA in the trust bundle.
