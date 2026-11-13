@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.10
+
+- **Shared panel update:** buttons can now upload files (SSL Cert Manager uses this to import certificates); the panel code stays identical across this repository's apps. No visible change in this app.
+
 ## 1.7.9
 
 - **Panel:** can open external pages (e.g. a sign-in) in a new browser tab; the shared panel code is kept identical across this repository's apps. No visible change in this app.

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0
+
+- **Home Assistant's certificate is checked.** With the new **SSL Cert Manager** app, the tunnel no longer uses `noTLSVerify`:
+  - With its HTTPS proxy on, traffic goes through the proxy and the certificate is checked against its trust bundle for a name the proxy serves.
+  - With Home Assistant itself on HTTPS, Home Assistant's certificate is checked the same way.
+  - The route follows changes in SSL Cert Manager by itself.
+  - Without SSL Cert Manager nothing changes.
+  - New option `origin_tls`: `auto` (default), `verify` (never skip the check) or `skip` (the 0.2 behaviour).
+- **Tunnel check after every change.** After a new route, an origin change or new options, the app:
+  1. waits for the connector to reconnect;
+  2. requests `https://<hostname>/api/` (three tries);
+  3. reads origin TLS errors from `cloudflared`'s log.
+
+  If the change broke the tunnel, the previous route is **put back automatically** and you are notified with the reason, for example `x509: certificate signed by unknown authority`. A rolled-back route is not retried until SSL Cert Manager changes something.
+- The panel shows the tunnel check and where traffic goes. **Check now** (formerly **Check public URL**) runs the check without changing anything.
+- HTTP 502, 526 and 530 from the public URL are explained.
+- The app maps `/ssl` to read SSL Cert Manager's files and to publish its own status in `/ssl/cloudflare-tunnel/status.json`.
+- **Shared panel update:** buttons can upload files. No visible change in this app.
+
 ## 0.2.0
 
 - **Sign in with Cloudflare.** Leave `tunnel_token` empty and the panel walks through the setup: **Sign in with Cloudflare** opens Cloudflare's sign-in, you pick your domain, confirm the suggested hostname (e.g. `home.example.com`), and the app creates the tunnel, its DNS record and the route to Home Assistant, then starts the connector. **Change hostname** and **Sign out** are in the panel. The Zero Trust token setup keeps working as before.

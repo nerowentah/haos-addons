@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 250 100" width="250" height="100">
+  <g>
+    <circle cx="50" cy="50" r="45" fill="#2e7d32"/>
+    <g transform="translate(19 17) scale(2.6)"><path fill="#ffffff" d="M4,3C2.89,3 2,3.89 2,5V15A2,2 0 0,0 4,17H12V22L15,19L18,22V17H20A2,2 0 0,0 22,15V8L22,6V5A2,2 0 0,0 20,3H16V3H4M12,5L15,7L18,5V8.5L21,10L18,11.5V15L15,13L12,15V11.5L9,10L12,8.5V5M4,5H9V7H4V5M4,9H7V11H4V9M4,13H9V15H4V13Z"/></g>
+    <g transform="translate(68 68)">
+      <circle r="16" fill="#25435f"/>
+      <g transform="translate(-10.8 -10.8) scale(0.9)"><path fill="#ffffff" d="M12,17A2,2 0 0,0 14,15C14,13.89 13.1,13 12,13A2,2 0 0,0 10,15A2,2 0 0,0 12,17M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6A2,2 0 0,1 4,20V10C4,8.89 4.9,8 6,8H7V6A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,3A3,3 0 0,0 9,6V8H15V6A3,3 0 0,0 12,3Z"/></g>
+    </g>
+  </g>
+  <text x="104" y="46" font-family="Roboto, Segoe UI, Arial, sans-serif" font-size="17" font-weight="700" fill="#25435f">SSL Cert</text>
+  <text x="104" y="70" font-family="Roboto, Segoe UI, Arial, sans-serif" font-size="17" font-weight="700" fill="#2e7d32">Manager</text>
+</svg>

@@ -9,6 +9,7 @@ Reach your Home Assistant from anywhere through a **Cloudflare Tunnel** — no o
 
 - **Sign in with Cloudflare.** Sign in once from the panel and pick your domain: the app creates the tunnel, its DNS record and the route to Home Assistant, and adds the `trusted_proxies` setting Home Assistant needs (with a backup, its config check, and a restart only when you click it).
 - **Or a Zero Trust token.** Prefer the dashboard? Create the tunnel in Cloudflare Zero Trust and paste its token.
+- **Checked certificates.** With the **SSL Cert Manager** app, the tunnel checks Home Assistant's certificate instead of skipping the check. After every change it checks the whole path, and it rolls back a change that broke the tunnel.
 - **Watched connector.** The app restarts `cloudflared` automatically if it exits, with increasing back-off, and shows its state, edge connections, restarts and version in a sidebar panel, with a **Restart connector** button.
 - **Safe run parameters.** Optional flags such as `--protocol`, `--region`, `--retries` and `--tag` are passed to `cloudflared`; anything else is rejected.
 - **Failure notifications.** Your phones are told when the tunnel has been down for about 30 seconds, and when it recovers.

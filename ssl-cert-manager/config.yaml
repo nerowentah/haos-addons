@@ -1,0 +1,48 @@
+name: "SSL Cert Manager"
+version: "0.1.0"
+slug: "ssl_cert_manager"
+description: >-
+  Get, import and renew TLS certificates in one place: Let's Encrypt and
+  Cloudflare Origin certificates through your Cloudflare account, or your own
+  certificates and CA. Publishes them to /ssl for Home Assistant and other
+  apps, adds an optional HTTPS proxy for secure local access, and lets the
+  Cloudflare Tunnel app verify Home Assistant's certificate.
+url: "https://github.com/nerowentah/haos-addons/tree/main/ssl-cert-manager"
+image: "ghcr.io/nerowentah/ssl-cert-manager"
+arch:
+  - aarch64
+  - amd64
+startup: services
+init: false
+ingress: true
+panel_icon: mdi:certificate
+panel_title: SSL Certificates
+homeassistant_api: true
+hassio_api: true
+map:
+  - type: ssl
+    read_only: false
+  - type: homeassistant_config
+    read_only: false
+ports:
+  8443/tcp: 8443
+ports_description:
+  8443/tcp: HTTPS proxy to Home Assistant (only while the proxy is switched on)
+options:
+  cloudflare_api_token: ""
+  acme_email: ""
+  acme_staging: false
+  local_proxy: false
+  write_ssl_root: true
+  renew_days_before: 30
+  notify_on_failure: true
+  log_level: info
+schema:
+  cloudflare_api_token: password?
+  acme_email: email?
+  acme_staging: bool
+  local_proxy: bool
+  write_ssl_root: bool
+  renew_days_before: int(7,60)
+  notify_on_failure: bool
+  log_level: list(trace|debug|info|notice|warning|error|fatal)?

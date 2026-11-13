@@ -55,6 +55,58 @@ When the tunnel first connects, the app adds this for you, in either setup:
 
 This happens once per install; if you later remove the block, the app does not add it again (use **Check again** in the panel to re-run it).
 
+## Checking Home Assistant's certificate
+
+Without the **SSL Cert Manager** app, the tunnel works as before:
+
+- Home Assistant on `http://` is reached on the internal network.
+- Home Assistant on HTTPS is reached with `noTLSVerify`, so its certificate is not checked.
+
+With SSL Cert Manager installed, this app reads `/ssl/ssl-cert-manager/status.json` and points the route at a checked origin (sign-in setup):
+
+| SSL Cert Manager | The tunnel sends traffic to | Certificate check |
+| --- | --- | --- |
+| HTTPS proxy on | `https://<SSL Cert Manager>:8443` | `caPool` = its trust bundle, `originServerName` = your hostname if a certificate covers it |
+| Home Assistant itself on HTTPS | `https://homeassistant:8123` | Same check, for the default certificate's name |
+| Neither | `http://homeassistant:8123` | None needed (internal network) |
+
+- The trust bundle holds Cloudflare's Origin CA roots and your imported CAs. Publicly trusted certificates such as Let's Encrypt are accepted too.
+- A Cloudflare Origin certificate for your tunnel hostname is the natural choice for the proxy.
+- When SSL Cert Manager changes something (a new certificate, the proxy switched on), the route follows within about 30 seconds.
+
+The `origin_tls` option controls this:
+
+- `auto` (default): check where possible, and undo a change that breaks the tunnel.
+- `verify`: always check (never `noTLSVerify`), and report failures without undoing them.
+- `skip`: the behaviour before 0.3.0.
+
+**Zero Trust token setup:** Cloudflare manages the route, so set it in Zero Trust under **Networks → Tunnels → your tunnel → Public Hostname → (edit) → Additional application settings → TLS**:
+
+- **CA Pool:** `/ssl/ssl-cert-manager/trust/ca-bundle.pem`
+- **Origin Server Name:** a name on your certificate
+- **No TLS Verify:** off
+
+The panel shows the path.
+
+## Tunnel check after every change
+
+After a new route, an origin change, new options and at start, the app checks the tunnel end to end:
+
+1. The connector must be connected again (at least one edge connection) within a minute.
+2. `https://<hostname>/api/` must answer with Home Assistant (HTTP 200 or 401). It is tried three times, 10 seconds apart.
+3. If that fails, the reason comes from `cloudflared`'s log when it is a TLS problem (`x509: ...`, `certificate is valid for ...`), or from the HTTP status:
+   - **502:** the origin connection failed;
+   - **526:** invalid origin certificate;
+   - **530:** not routed.
+
+When a change made by the app fails the check in `auto` mode:
+
+- The previous `config.yml` is put back (it is kept as `config.yml.prev` until a change is verified) and the connector restarts.
+- The old route is checked again, and you are notified.
+- That route is not tried again until SSL Cert Manager's files change.
+
+The **Connector** card shows the result: **Tunnel check passed**, **failed** or **Change rolled back**, with the reason. **Check now** runs the check without changing anything. The result is also written to `/ssl/cloudflare-tunnel/status.json`, where SSL Cert Manager shows it.
+
 ## Use a Zero Trust token instead
 
 1. Open [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) with the Cloudflare account that holds your domain.
@@ -76,6 +128,7 @@ tunnel_token: ""
 external_hostname: ""
 notify_on_failure: true
 run_parameters: []
+origin_tls: auto
 log_level: info
 ```
 
@@ -85,6 +138,7 @@ log_level: info
 | `external_hostname` | `""` | The public hostname, e.g. `home.example.com` (no `https://`). Normally set from the panel. |
 | `notify_on_failure` | `true` | Notify when the tunnel has been down for about 30 seconds, and when it recovers. |
 | `run_parameters` | `[]` | Extra `cloudflared` flags, e.g. `--protocol=quic` or `--region=us`. Only connection flags are allowed (below); anything else is rejected. |
+| `origin_tls` | `auto` | How Home Assistant's certificate is checked: `auto`, `verify` or `skip` (see **Checking Home Assistant's certificate**). |
 | `log_level` | `info` | How much is logged: `trace`, `debug`, `info`, `notice`, `warning`, `error` or `fatal`. Applies without a restart. |
 
 Changes made in the Configuration tab are picked up within about 30 seconds. Changing the token, the log level or the run parameters restarts the connector for you; a new `external_hostname` is routed and applied too. You don't need to restart the app.
@@ -123,7 +177,8 @@ Then the **Connector** card shows:
 - **Edge connections:** how many connections to Cloudflare's edge are live (normally 4).
 - **Restarts**, **Started** and **Last change.**
 - The **public URL** with the result of the last check: the app requests `https://<hostname>/api/` every 10 minutes from outside; Home Assistant answering (even with "login required") means **Reachable**.
-- **Restart connector**, **Check public URL**, and when signed in **Change hostname** and **Sign out**.
+- **Tunnel check** and **origin**: the result of the last check after a change, and where the tunnel sends traffic (with or without a certificate check).
+- **Restart connector**, **Check now**, and when signed in **Change hostname** and **Sign out**.
 
 The **Home Assistant proxy settings** card appears while there is something to do: a restart to apply the change, or a snippet to add yourself.
 
@@ -142,7 +197,7 @@ The **Settings** card shows the setup type, log level and run parameters, with a
 - **Pinned, verified binary.** The Dockerfile downloads a fixed `cloudflared` release and fails the build unless its SHA-256 matches the digest GitHub publishes for that release asset. Updating means changing the pin here, in the open.
 - **2026.10.2 or later.** Following Cloudflare's advisory about the compromised eMudhra intermediate CA, connectors must run `cloudflared` 2026.10.2 or later; this app pins a newer release and never auto-updates to an unvetted one.
 - **Post-quantum encryption** between the connector and Cloudflare's edge is on by default (it has been since cloudflared 2024.1); there is no option to weaken it.
-- **Least privilege.** The app needs no port mappings, no device access and no USB. It talks to the Supervisor and Home Assistant APIs for its panel, notifications and the configuration check, and to Cloudflare. It writes to your Home Assistant configuration folder only to add the proxy settings described above, with a backup and Home Assistant's own check.
+- **Least privilege.** The app needs no port mappings, no device access and no USB. It talks to the Supervisor and Home Assistant APIs for its panel, notifications and the configuration check, and to Cloudflare. It writes to your Home Assistant configuration folder only to add the proxy settings described above, with a backup and Home Assistant's own check. From `/ssl` it reads SSL Cert Manager's status and trust bundle, and writes only its own `/ssl/cloudflare-tunnel/status.json`.
 
 ## Notifications
 
@@ -164,6 +219,7 @@ The **Settings** card shows the setup type, log level and run parameters, with a
 - **"already has a DNS record":** the hostname is used by another record. **Replace DNS record** points it at this tunnel, or choose another name.
 - **Public URL shows HTTP 400:** Home Assistant does not trust the tunnel yet. Restart Home Assistant if the panel asks for it, or add the snippet from **Home Assistant proxy settings**.
 - **Public URL shows HTTP 502 or 530:** Cloudflare reached the tunnel but not Home Assistant; check that Home Assistant runs and look at the app's log.
+- **"Change rolled back" with `x509: ...`:** the certificate the tunnel saw does not match. Give the origin a certificate that covers your tunnel hostname (a Cloudflare Origin or Let's Encrypt certificate in SSL Cert Manager), or set `origin_tls: skip` to go back to not checking.
 - **Panel stuck on Starting:** check the app's log; set `log_level: debug` for `cloudflared`'s debug output. A firewall blocking outbound UDP 7844 (QUIC) is the usual cause — `--protocol=http` in `run_parameters` works as a fallback.
 - **Edge connections 0 but the process runs:** the connector lost its edge connections; the panel shows **Degraded** and `cloudflared` keeps retrying on its own.
 - **Wrong version warning from Cloudflare:** Zero Trust flags connectors older than 2026.10.2. Update this app to get the pinned release.

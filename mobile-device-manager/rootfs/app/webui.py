@@ -11,6 +11,9 @@ posts changes back:
 Cards, sections, toggles, links and actions accept an optional ``icon`` (an
 ``mdi:`` name); ``web/icons.js`` holds the SVG paths of the names in use.
 
+An action with ``upload`` opens the browser's file picker first and sends the
+chosen text files as ``args["files"]`` (read them with :func:`uploaded_files`).
+
 Only the Supervisor ingress proxy (172.30.32.2) may connect; Home Assistant has
 already authenticated the user (and ``panel_admin`` limits it to admins).
 """
@@ -31,7 +34,9 @@ _LOGGER = logging.getLogger(__name__)
 
 INGRESS_PORT = 8099
 ALLOWED_CLIENTS = frozenset({"172.30.32.2", "127.0.0.1", "::1"})
-MAX_BODY_BYTES = 64 * 1024
+MAX_BODY_BYTES = 1024 * 1024  # room for a few uploaded text files
+MAX_UPLOAD_FILES = 8
+MAX_UPLOAD_BYTES = 64 * 1024  # per file; the page checks this before sending
 STATIC_TYPES = {".html", ".js", ".css", ".svg", ".png", ".ico"}
 
 StateGetter = Callable[[], dict[str, object]]
@@ -380,10 +385,14 @@ def action(  # noqa: PLR0913 - view-model fields
     icon: str = "",
     prompt: str = "",
     prompt_value: str = "",
+    upload: str = "",
 ) -> dict[str, object]:
     """A button; ``confirm`` asks first, ``reason`` explains why it is disabled.
 
     ``prompt`` asks for a line of text first (pre-filled with ``prompt_value``); it arrives as ``args["text"]``.
+    ``upload`` (an ``accept`` list such as ``".pem,.crt"``) asks for text files first; they arrive as
+    ``args["files"]`` (see :func:`uploaded_files`). Do not combine it with ``confirm``: browsers only open
+    a file picker straight after a click.
     """
 
     return {
@@ -397,7 +406,28 @@ def action(  # noqa: PLR0913 - view-model fields
         "icon": icon,
         "prompt": prompt,
         "prompt_value": prompt_value,
+        "upload": upload,
     }
+
+
+def uploaded_files(args: dict[str, object]) -> list[tuple[str, str]]:
+    """``(name, text)`` of the files an ``upload`` action sent; raises PanelError when there are none or too many."""
+
+    rows = args.get("files")
+    if not isinstance(rows, list) or not rows:
+        raise PanelError("Choose a file to upload")
+    if len(rows) > MAX_UPLOAD_FILES:
+        raise PanelError(f"Choose at most {MAX_UPLOAD_FILES} files")
+    files: list[tuple[str, str]] = []
+    for item in rows:
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            raise PanelError("Invalid upload")
+        text = str(item["text"])
+        name = str(item.get("name") or "file")[:120]
+        if len(text.encode("utf-8")) > MAX_UPLOAD_BYTES:
+            raise PanelError(f"{name} is larger than {MAX_UPLOAD_BYTES // 1024} KB")
+        files.append((name, text))
+    return files
 
 
 def link(label: str, path: str, description: str = "", *, button: str = "Edit", icon: str = "") -> dict[str, object]:
