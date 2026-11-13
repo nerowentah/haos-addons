@@ -11,6 +11,9 @@ configuration:
   notify_on_failure:
     name: Notifications
     description: Notify when the tunnel has been down for about 30 seconds, and when it recovers. Phones are found automatically; switch individual phones on or off in the Cloudflare Tunnel panel.
+  origin_tls:
+    name: Origin certificate check
+    description: How the tunnel checks Home Assistant's certificate when it uses HTTPS. auto (default) - check it when the SSL Cert Manager app knows the certificate, otherwise skip the check as before, and undo a change that breaks the tunnel. verify - always check, never undo. skip - never check (the behaviour before 0.3.0).
   run_parameters:
     name: Run parameters
     description: Extra cloudflared flags, e.g. --protocol=quic or --region=us. Only connection flags are allowed (--edge-bind-address, --edge-ip-version, --grace-period, --ha-connections, --protocol, --region, --retries, --tag); anything else is rejected so a bad option can never break the connector.

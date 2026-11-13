@@ -51,6 +51,13 @@ _VERSION_RE = re.compile(r"cloudflared version ([0-9A-Za-z.\-]+)", re.IGNORECASE
 _REGISTERED_RE = re.compile(r"Registered tunnel connection\b")
 _UNREGISTERED_RE = re.compile(r"(Unregistered tunnel connection|Connection terminated)\b")
 _BAD_TOKEN_RE = re.compile(r"(Provided Tunnel token is not valid|invalid tunnel secret)", re.IGNORECASE)
+# cloudflared's complaints about the origin's certificate (the request reached cloudflared, the origin TLS failed).
+_ORIGIN_TLS_RE = re.compile(
+    r"(x509: |tls: failed to verify|certificate signed by unknown authority|certificate is valid for|"
+    r"doesn't contain any IP SANs|remote error: tls:|first record does not look like a TLS handshake)",
+    re.IGNORECASE,
+)
+_ERROR_FIELD_RE = re.compile(r'error="([^"]+)"')
 _METRIC_RE = re.compile(r"^cloudflared_tunnel_ha_connections\s+(\d+)\b", re.MULTILINE)
 
 SpawnFn = Callable[[list[str], dict[str, str]], "subprocess.Popen[bytes]"]
@@ -84,6 +91,18 @@ def _ha_connections(metrics_text: str | None) -> int | None:
         return None
     match = _METRIC_RE.search(metrics_text)
     return int(match.group(1)) if match else None
+
+
+def origin_tls_reason(line: str) -> str:
+    """The useful part of a cloudflared origin TLS error line (its ``error="..."`` field), at most 300 characters."""
+
+    match = _ERROR_FIELD_RE.search(line)
+    text = match.group(1) if match else line
+    if ": " in text and _ORIGIN_TLS_RE.search(text):
+        # "Unable to reach the origin service ...: tls: failed to verify certificate: x509: ..." -> from the TLS part on
+        start = _ORIGIN_TLS_RE.search(text)
+        text = text[start.start() :] if start else text
+    return text.strip()[:300]
 
 
 def binary_version(run: SpawnFn = _spawn) -> str | None:
@@ -130,6 +149,7 @@ class TunnelStatus:
         self.restarts = 0
         self.last_error: str | None = None
         self.last_change = datetime.now(UTC)
+        self.origin_error: str | None = None  # the last origin TLS failure since the connector started
 
     def set(self, state: str, error: str | None = None) -> bool:
         """Move to ``state``; returns True when the state changed."""
@@ -222,6 +242,7 @@ class Cloudflared:
         self._bad_token = False
         self._conn_count = 0
         self._ever_connected = False
+        self.status.origin_error = None
         argv = self._argv()
         if self.config.mode == app_config.MODE_TOKEN:
             _LOGGER.info("Starting cloudflared (token passed via %s)", TOKEN_ENV)
@@ -294,6 +315,8 @@ class Cloudflared:
             self._conn_count = max(0, self._conn_count - 1)
         if _BAD_TOKEN_RE.search(line):
             self._bad_token = True
+        if _ORIGIN_TLS_RE.search(line):
+            self.status.origin_error = origin_tls_reason(line)
 
     def _metrics_connections(self) -> int | None:
         """The connector's edge-connection count from its localhost metrics page."""

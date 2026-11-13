@@ -179,13 +179,41 @@ class AccountTest(unittest.TestCase):
 
     def test_ingress_sends_the_hostname_to_home_assistant_and_everything_else_to_404(self) -> None:
         account, _spawn = self.account()
-        account.write_ingress(TUNNEL_ID, "home.example.com", "https://homeassistant:8123", no_tls_verify=True)
+        changed = account.write_ingress(
+            TUNNEL_ID, "home.example.com", "https://homeassistant:8123", origin_request={"noTLSVerify": True}
+        )
+        self.assertTrue(changed)
         text = account.ingress.read_text(encoding="utf-8")
         self.assertIn(f"tunnel: {TUNNEL_ID}\n", text)
         self.assertIn(f"credentials-file: {account.credentials}\n", text)
         self.assertIn("  - hostname: home.example.com\n    service: https://homeassistant:8123\n", text)
-        self.assertIn("noTLSVerify: true", text)
+        self.assertIn("    originRequest:\n      noTLSVerify: true\n", text)
         self.assertTrue(text.rstrip().endswith("- service: http_status:404"))
+        self.assertFalse(account.has_previous())  # nothing was there before
+
+    def test_ingress_with_ca_pool_keeps_the_previous_file_until_verified(self) -> None:
+        account, _spawn = self.account()
+        account.write_ingress(TUNNEL_ID, "home.example.com", "http://homeassistant:8123")
+        first = account.ingress.read_text(encoding="utf-8")
+        self.assertNotIn("originRequest", first)
+        self.assertFalse(account.write_ingress(TUNNEL_ID, "home.example.com", "http://homeassistant:8123"))
+        account.write_ingress(
+            TUNNEL_ID,
+            "home.example.com",
+            "https://a1b2c3d4-ssl-cert-manager:8443",
+            origin_request={
+                "caPool": "/ssl/ssl-cert-manager/trust/ca-bundle.pem",
+                "originServerName": "home.example.com",
+            },
+        )
+        text = account.ingress.read_text(encoding="utf-8")
+        self.assertIn("      caPool: /ssl/ssl-cert-manager/trust/ca-bundle.pem\n", text)
+        self.assertIn("      originServerName: home.example.com\n", text)
+        self.assertTrue(account.has_previous())
+        self.assertTrue(account.restore_previous())
+        self.assertEqual(account.ingress.read_text(encoding="utf-8"), first)
+        self.assertFalse(account.has_previous())
+        self.assertFalse(account.restore_previous())
 
     def test_tunnel_id_comes_from_the_credentials(self) -> None:
         account, _spawn = self.account()

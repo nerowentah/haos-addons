@@ -68,6 +68,15 @@ def _http_get(url: str, headers: dict[str, str]) -> bytes:
         return response.read()
 
 
+def _yaml_scalar(value: object) -> str:
+    """A config.yml value: booleans as YAML booleans, strings quoted when needed."""
+
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = str(value)
+    return text if re.fullmatch(r"[A-Za-z0-9_./*-]+", text) else json.dumps(text)
+
+
 def _last_message(output: str) -> str:
     """The most useful line of cloudflared's output for the panel (log prefixes removed)."""
 
@@ -158,6 +167,7 @@ class Account:
         self.cert = base / ".cloudflared" / "cert.pem"
         self.credentials = base / "tunnel.json"
         self.ingress = base / "config.yml"
+        self.previous = base / "config.yml.prev"
         self.spawn = spawn
         self.http_get = http_get
         self.login = Login(self)
@@ -288,11 +298,27 @@ class Account:
             return ROUTE_EXISTS
         raise AccountError(f"Could not create the DNS record for {hostname}: {_last_message(output)}")
 
-    def write_ingress(self, tunnel_id: str, hostname: str, service: str, *, no_tls_verify: bool = False) -> None:
-        """Write config.yml: ``hostname`` goes to Home Assistant, anything else gets a 404."""
+    def write_ingress(
+        self,
+        tunnel_id: str,
+        hostname: str,
+        service: str,
+        *,
+        origin_request: dict[str, object] | None = None,
+    ) -> bool:
+        """Write config.yml: ``hostname`` goes to Home Assistant, anything else gets a 404.
+
+        The config it replaces is kept as ``config.yml.prev`` until the change is
+        verified (:meth:`discard_previous`) or undone (:meth:`restore_previous`).
+        Returns False when the file already said exactly this.
+        """
 
         self.prepare()
-        origin = "    originRequest:\n      noTLSVerify: true\n" if no_tls_verify else ""
+        origin = ""
+        if origin_request:
+            origin = "    originRequest:\n" + "".join(
+                f"      {key}: {_yaml_scalar(value)}\n" for key, value in origin_request.items()
+            )
         text = (
             "# Written by the Cloudflare Tunnel app; changes are overwritten.\n"
             f"tunnel: {tunnel_id}\n"
@@ -303,10 +329,35 @@ class Account:
             f"{origin}"
             "  - service: http_status:404\n"
         )
+        try:
+            current = self.ingress.read_text(encoding="utf-8")
+        except OSError:
+            current = None
+        if current == text:
+            return False
+        if current is not None:
+            self.previous.write_text(current, encoding="utf-8")
         tmp = self.ingress.with_suffix(".tmp")
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(self.ingress)
         _LOGGER.info("Ingress: %s → %s", hostname, service)
+        return True
+
+    def has_previous(self) -> bool:
+        return self.previous.is_file()
+
+    def restore_previous(self) -> bool:
+        """Put the config.yml from before the last change back; False when there is none."""
+
+        try:
+            self.previous.replace(self.ingress)
+        except OSError:
+            return False
+        _LOGGER.warning("Ingress: restored the previous configuration")
+        return True
+
+    def discard_previous(self) -> None:
+        self.previous.unlink(missing_ok=True)
 
     def sign_out(self) -> str | None:
         """Delete the tunnel at Cloudflare (best effort) and forget the sign-in; returns a warning or None."""
@@ -324,7 +375,7 @@ class Account:
                 )
         elif tunnel_id:
             warning = "Not signed in, so the tunnel was left at Cloudflare; delete it in Zero Trust"
-        for path in (self.cert, self.credentials, self.ingress):
+        for path in (self.cert, self.credentials, self.ingress, self.previous):
             path.unlink(missing_ok=True)
         shutil.rmtree(self.base / ".cloudflared", ignore_errors=True)
         self._zone = None

@@ -80,6 +80,8 @@ class FakeAccount:
         self.route_result = acc.ROUTE_OK
         self.fail: str | None = None
         self.calls: list[object] = []
+        self.ingress_text: str | None = None
+        self.previous_text: str | None = None
         self.login = SimpleNamespace(
             state=acc.LOGIN_IDLE, url=None, error=None, start=lambda: self.calls.append("login")
         )
@@ -104,8 +106,34 @@ class FakeAccount:
         self.calls.append(("route", hostname, overwrite))
         return acc.ROUTE_OK if overwrite else self.route_result
 
-    def write_ingress(self, tunnel_id: str, hostname: str, service: str, *, no_tls_verify: bool = False) -> None:  # noqa: ARG002
-        self.calls.append(("ingress", hostname, service, no_tls_verify))
+    def write_ingress(
+        self,
+        tunnel_id: str,  # noqa: ARG002
+        hostname: str,
+        service: str,
+        *,
+        origin_request: dict[str, object] | None = None,
+    ) -> bool:
+        self.calls.append(("ingress", hostname, service, dict(origin_request or {})))
+        text = repr((hostname, service, sorted((origin_request or {}).items())))
+        if text == self.ingress_text:
+            return False
+        self.previous_text = self.ingress_text
+        self.ingress_text = text
+        return True
+
+    def has_previous(self) -> bool:
+        return self.previous_text is not None
+
+    def restore_previous(self) -> bool:
+        if self.previous_text is None:
+            return False
+        self.ingress_text, self.previous_text = self.previous_text, None
+        self.calls.append("restore")
+        return True
+
+    def discard_previous(self) -> None:
+        self.previous_text = None
 
     def sign_out(self) -> str | None:
         self.calls.append("sign_out")
@@ -136,6 +164,8 @@ class FakeDaemon:
     def restart(self) -> None:
         self.calls.append("restart")
         self.status.restarts += 1
+        self.status.set(cf.STATE_STARTING)  # like the real connector: reconnects from scratch
+        self.status.connections = 0
 
     def poll(self) -> None:
         self.calls.append("poll")
@@ -166,6 +196,9 @@ class AppTest(unittest.TestCase):
             account=self.account,  # type: ignore[arg-type]
             ha_config=self.ha_config,
             probe=self._probe,
+            manager_status=self.dir / "ssl-cert-manager" / "status.json",
+            status_file=self.dir / "cloudflare-tunnel" / "status.json",
+            sleep=lambda _seconds: None,
         )
         self.app.secrets = secrets
 
@@ -393,7 +426,7 @@ class AppTest(unittest.TestCase):
             [
                 "create",
                 ("route", "home.example.com", False),
-                ("ingress", "home.example.com", "http://homeassistant:8123", False),
+                ("ingress", "home.example.com", "http://homeassistant:8123", {}),
             ],
         )
         self.assertEqual(self.daemon.tunnel_id, self.account.id)
@@ -502,6 +535,142 @@ class AppTest(unittest.TestCase):
         self.app._tick()
         self.app._reach_thread.join(5)
         self.assertIn("HTTP 400", self._state_text())
+
+    # -- Origin TLS and the check after every change ---------------------------------------
+    def _connected(self, connections: int = 2) -> None:
+        self.daemon.status.set(cf.STATE_CONNECTED)
+        self.daemon.status.connections = connections
+
+    def _finish_verify(self) -> None:
+        self.app._tick()  # connected: the probe starts on its own thread
+        if self.app._verify_thread is not None:
+            self.app._verify_thread.join(5)
+        self.app._tick()
+
+    def _set_up_tunnel(self) -> None:
+        self._login_mode(external_hostname="home.example.com")
+        self.account.signed = True
+        self.app._tick()
+        self.assertEqual(self.app.verify["state"], main.VERIFY_PENDING)
+        self._connected()
+        self._finish_verify()
+        self.assertEqual(self.app.verify["state"], main.VERIFY_OK)
+
+    def _manager(self, **proxy: object) -> Path:
+        bundle = self.dir / "ca-bundle.pem"
+        bundle.write_text("-----BEGIN CERTIFICATE-----\n", encoding="ascii")
+        status = {
+            "version": 1,
+            "trust_bundle": str(bundle),
+            "default": {"id": "home", "names": ["home.example.com"]},
+            "certificates": [{"id": "home", "names": ["home.example.com"]}],
+            "proxy": {"enabled": True, "host": "a1b2c3d4-ssl-cert-manager", "port": 8443, **proxy},
+            "ha_https": False,
+        }
+        path = self.dir / "ssl-cert-manager" / "status.json"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps(status), encoding="utf-8")
+        self.app.next_origin_check = 0.0
+        return bundle
+
+    def test_a_new_route_is_verified_and_published(self) -> None:
+        self._set_up_tunnel()
+        self.assertIn("Verified", str(self.app.verify["message"]))
+        self.assertIn("2 edge connections", str(self.app.verify["message"]))
+        published = json.loads((self.dir / "cloudflare-tunnel" / "status.json").read_text(encoding="utf-8"))
+        self.assertEqual(published["hostname"], "home.example.com")
+        self.assertEqual(published["verify"]["state"], "ok")
+        self.assertIn("Tunnel check passed", self._state_text())
+
+    def test_the_route_follows_ssl_cert_manager_and_is_verified(self) -> None:
+        self._set_up_tunnel()
+        bundle = self._manager()
+        self.app._tick()
+        self._connected()
+        self.assertEqual(
+            self.account.calls[-1],
+            (
+                "ingress",
+                "home.example.com",
+                "https://a1b2c3d4-ssl-cert-manager:8443",
+                {"caPool": str(bundle), "originServerName": "home.example.com"},
+            ),
+        )
+        self.assertTrue(self.app._verify_rollback)
+        self._finish_verify()
+        self.assertEqual(self.app.verify["state"], main.VERIFY_OK)
+        self.assertFalse(self.account.has_previous())  # verified: the old file is gone
+        self.assertIn("certificate checked for home.example.com", self._state_text())
+
+    def test_a_failing_change_is_rolled_back_and_not_retried(self) -> None:
+        self._set_up_tunnel()
+        self._manager()
+        self.app._tick()  # re-routed to the proxy, check pending
+        self.probe_code = 502
+        self._connected()
+        self.app._tick()  # connected: probe
+        self.app._verify_thread.join(5)
+        self.daemon.status.origin_error = "x509: certificate signed by unknown authority"
+        self.app._tick()  # failed: rolled back, checking the old route
+        self.assertIn("restore", self.account.calls)
+        self.assertEqual(self.sup.sent[-1][1], "Cloudflare Tunnel change rolled back")
+        self.assertIn("unknown authority", self.sup.sent[-1][2])
+        self.assertEqual(self.app.origin.service, "http://homeassistant:8123")  # type: ignore[union-attr]
+        self.probe_code = 401
+        self._connected()
+        self._finish_verify()
+        self.assertEqual(self.app.verify["state"], main.VERIFY_ROLLED_BACK)
+        self.assertIn("works again", str(self.app.verify["message"]))
+        self.assertIn("Change rolled back", self._state_text())
+        # The same route is not tried again...
+        ingress_calls = sum(1 for c in self.account.calls if isinstance(c, tuple) and c[0] == "ingress")
+        self.app.next_origin_check = 0.0
+        self.app._tick()
+        self.assertEqual(
+            sum(1 for c in self.account.calls if isinstance(c, tuple) and c[0] == "ingress"), ingress_calls
+        )
+        # ...until SSL Cert Manager changes something.
+        self._manager(port=8444)
+        self.app._tick()
+        self.assertEqual(self.account.calls[-1][2], "https://a1b2c3d4-ssl-cert-manager:8444")  # type: ignore[index]
+
+    def test_verify_mode_reports_but_never_rolls_back(self) -> None:
+        self._set_up_tunnel()
+        self.sup.stored = {**self.sup.stored, "origin_tls": "verify"}
+        self.app.check_options()
+        self._manager()
+        self.app._tick()
+        self.assertFalse(self.app._verify_rollback)
+        self.probe_code = 526
+        self._connected()
+        self._finish_verify()
+        self.assertEqual(self.app.verify["state"], main.VERIFY_FAILED)
+        self.assertNotIn("restore", self.account.calls)
+        self.assertEqual(self.sup.sent[-1][1], "Cloudflare Tunnel check failed")
+        self.assertIn("HTTP 526", self.sup.sent[-1][2])
+
+    def test_a_connector_that_does_not_reconnect_fails_the_check(self) -> None:
+        self._set_up_tunnel()
+        self.daemon.status.set(cf.STATE_STOPPED)
+        self.app._begin_verify("a test", rollback=False)
+        self.app._verify_deadline = 0.0
+        self.app._tick()
+        self.assertEqual(self.app.verify["state"], main.VERIFY_FAILED)
+        self.assertIn("did not reconnect", str(self.app.verify["message"]))
+
+    def test_check_now_changes_nothing(self) -> None:
+        self._set_up_tunnel()
+        calls = list(self.account.calls)
+        self.app.panel_action("check_reach", {})
+        self.app._tick()
+        self.assertEqual(self.app.verify["state"], main.VERIFY_PENDING)
+        self._finish_verify()
+        self.assertEqual(self.app.verify["state"], main.VERIFY_OK)
+        self.assertEqual(self.account.calls, calls)
+
+    def test_token_mode_shows_where_to_set_the_ca_pool(self) -> None:
+        bundle = self._manager()
+        self.assertIn(f"set CA Pool to {bundle}".replace("\\", "\\\\"), self._state_text())
 
     def test_run_starts_and_stops_the_connector(self) -> None:
         def stop_soon() -> None:

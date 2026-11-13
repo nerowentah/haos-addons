@@ -38,6 +38,8 @@ _RUN_PARAMETER_RE = re.compile(r"^(--[a-z-]+)=.*$")
 # A public DNS name such as home.example.com: no scheme, port or path.
 _HOSTNAME_RE = re.compile(r"^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$")
 
+ORIGIN_TLS_MODES = ("auto", "verify", "skip")  # see origin_tls.py
+
 MODE_TOKEN = "token"  # noqa: S105 - a mode name, not a secret
 MODE_LOGIN = "login"
 
@@ -81,6 +83,7 @@ class Config:
     notify_on_failure: bool = True
     run_parameters: tuple[str, ...] = ()
     log_level: str = "info"
+    origin_tls: str = "auto"
 
     @property
     def mode(self) -> str:
@@ -169,4 +172,12 @@ def load_config(raw: dict[str, object]) -> Config:
         notify_on_failure=notify if isinstance(notify, bool) else True,
         run_parameters=_run_parameters(raw),
         log_level=parse_log_level(raw),
+        origin_tls=_origin_tls(raw),
     )
+
+
+def _origin_tls(raw: dict[str, object]) -> str:
+    value = str(raw.get("origin_tls") or "auto").strip().lower()
+    if value not in ORIGIN_TLS_MODES:
+        raise ConfigError(f"origin_tls must be one of {', '.join(ORIGIN_TLS_MODES)}")
+    return value

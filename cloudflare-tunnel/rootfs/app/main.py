@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import logging
 import os
 import signal
@@ -19,6 +21,7 @@ from types import FrameType
 import account as acc
 import cloudflared as cf
 import ha_proxy
+import origin_tls as otls
 from config import (
     MODE_LOGIN,
     Config,
@@ -68,7 +71,21 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 NOTIFICATION_ID = "cloudflare_tunnel"
 REACH_CHECK_SECONDS = 600  # how often the public hostname is tried from outside
 REACH_FIRST_CHECK_SECONDS = 20  # after a (re)connect: give DNS and the edge a moment
-DEFAULT_CORE_PORT = 8123
+ORIGIN_CHECK_SECONDS = 30  # how often SSL Cert Manager's status.json is compared with the route
+VERIFY_CONNECT_SECONDS = 60  # after a change: the connector must be connected again by then
+VERIFY_PROBES = 3
+VERIFY_PROBE_GAP_SECONDS = 10
+
+VERIFY_PENDING = "pending"
+VERIFY_OK = "ok"
+VERIFY_FAILED = "failed"
+VERIFY_ROLLED_BACK = "rolled_back"
+VERIFY_ICON = {
+    VERIFY_PENDING: "mdi:progress-clock",
+    VERIFY_OK: "mdi:check-circle",
+    VERIFY_FAILED: "mdi:alert-circle",
+    VERIFY_ROLLED_BACK: "mdi:alert-circle",
+}
 
 STATE_BADGE = {
     cf.STATE_SETUP: ("Not set up", "neutral"),
@@ -113,18 +130,50 @@ def http_status(url: str) -> int | None:
         return None
 
 
-def describe_reach(code: int | None) -> tuple[str, str]:
+def describe_reach(code: int | None) -> tuple[str, str]:  # noqa: PLR0911 - one answer per status
     """(text, tone) for the public URL check."""
 
     if code in (200, 401):  # 401: Home Assistant itself answered and wants a login
         return "Reachable", "ok"
     if code == 400:  # noqa: PLR2004 - HTTP status
         return "Home Assistant rejects the proxy (HTTP 400): see Home Assistant proxy settings", "error"
+    if code == 502:  # noqa: PLR2004 - HTTP status
+        return "Tunnel up, but the connection to Home Assistant failed (HTTP 502): usually origin TLS", "error"
+    if code == 526:  # noqa: PLR2004 - HTTP status
+        return "Cloudflare rejected the origin certificate (HTTP 526)", "error"
+    if code == 530:  # noqa: PLR2004 - HTTP status
+        return "The hostname is not routed to a running tunnel (HTTP 530)", "error"
     if code is None:
         return "No answer from the public hostname", "warn"
     if code >= 500:  # noqa: PLR2004 - HTTP status
         return f"Cloudflare cannot reach Home Assistant (HTTP {code})", "error"
     return f"HTTP {code}", "warn"
+
+
+def _iso_now() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
+
+
+def _origin_dict(origin: otls.Origin) -> dict[str, object]:
+    return {
+        "service": origin.service,
+        "no_tls_verify": origin.no_tls_verify,
+        "ca_pool": origin.ca_pool,
+        "server_name": origin.server_name,
+        "note": origin.note,
+    }
+
+
+def _origin_from(value: object) -> otls.Origin | None:
+    if not isinstance(value, dict) or not value.get("service"):
+        return None
+    return otls.Origin(
+        service=str(value["service"]),
+        no_tls_verify=bool(value.get("no_tls_verify")),
+        ca_pool=str(value["ca_pool"]) if value.get("ca_pool") else None,
+        server_name=str(value["server_name"]) if value.get("server_name") else None,
+        note=str(value.get("note") or ""),
+    )
 
 
 class App:
@@ -141,6 +190,9 @@ class App:
         account: acc.Account | None = None,
         ha_config: Path = ha_proxy.CONFIG_PATH,
         probe: Callable[[str], int | None] = http_status,
+        manager_status: Path = otls.MANAGER_STATUS,
+        status_file: Path = otls.TUNNEL_STATUS,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.config = config
         self.raw_options = raw_options or {}  # as stored: !secret references, never their values
@@ -170,6 +222,21 @@ class App:
         self.reach: tuple[str, str] | None = None
         self.next_reach_check = 0.0
         self._reach_thread: threading.Thread | None = None
+        # Origin TLS (SSL Cert Manager) and the check after every change.
+        self.manager_status = manager_status
+        self.status_file = status_file
+        self.sleep = sleep
+        self.next_origin_check = 0.0
+        self._manager_digest: str | None = None
+        self.verify: dict[str, object] = {}
+        self._verify_stage: str | None = None
+        self._verify_reason = ""
+        self._verify_deadline = 0.0
+        self._verify_rollback = False
+        self._verify_thread: threading.Thread | None = None
+        self._verify_code: int | None = None
+        self._rolled_back: str | None = None  # why the last change was undone, while the old route is re-checked
+        self._published: str | None = None
         if config.mode == MODE_LOGIN:
             self.daemon.tunnel_id = self._routed_tunnel_id()
 
@@ -183,6 +250,12 @@ class App:
         """The created tunnel, once a hostname has been routed to it."""
 
         return self.account.tunnel_id() if self.tunnel_state.get("hostname") else None
+
+    @property
+    def origin(self) -> otls.Origin | None:
+        """The origin config.yml uses (login mode), as this app last wrote it."""
+
+        return _origin_from(self.tunnel_state.get("origin"))
 
     def _set_tunnel(self, **values: object) -> None:
         for key, value in values.items():
@@ -216,9 +289,13 @@ class App:
         if old.log_level != config.log_level:
             _LOGGER.info("Log level set to %s", config.log_level)  # before applying: may hide info
             apply_log_level(config.log_level)
+        if old.origin_tls != config.origin_tls:
+            self._set_tunnel(rejected_origin=None)
+            self.next_origin_check = 0.0
         if old.daemon_spec() != config.daemon_spec():
             _LOGGER.info("Tunnel options changed; restarting the connector")
             self.daemon.restart()
+            self._begin_verify("the new options", rollback=False)
         _LOGGER.info("Applied updated options")
 
     def update_options(self, mutate: Callable[[dict[str, object]], None]) -> None:
@@ -324,16 +401,27 @@ class App:
             self.steps.append(step)
         self.wake.set()
 
-    def _local_service(self) -> tuple[str, bool]:
-        """Where the tunnel sends traffic: Home Assistant on the internal network (and whether it uses SSL)."""
+    def _origin_plan(self) -> otls.Origin:
+        """Where the tunnel should send traffic, and how it checks the certificate there."""
 
         try:
-            info = self.supervisor.core_info()
-            port = int(str(info.get("port") or DEFAULT_CORE_PORT))
-            ssl = bool(info.get("ssl"))
-        except (SupervisorError, ValueError):
-            port, ssl = DEFAULT_CORE_PORT, False
-        return f"{'https' if ssl else 'http'}://homeassistant:{port}", ssl
+            core = self.supervisor.core_info()
+        except SupervisorError:
+            core = {}
+        manager = otls.read_manager(self.manager_status)
+        return otls.plan(self.config.origin_tls, core, manager, self.config.external_hostname)
+
+    def _write_origin(self, tunnel_id: str, hostname: str, origin: otls.Origin) -> bool:
+        """Point the ingress rule at ``origin``; True when config.yml changed."""
+
+        previous = self.tunnel_state.get("origin")
+        changed = self.account.write_ingress(tunnel_id, hostname, origin.service, origin_request=origin.request())
+        if changed:
+            self._set_tunnel(previous_origin=previous)
+            if origin.note:
+                _LOGGER.info("Origin: %s - %s", origin.describe(), origin.note)
+        self._set_tunnel(origin=_origin_dict(origin))
+        return changed
 
     def _provision(self, *, overwrite: bool = False) -> None:
         """Create the tunnel (once), route the hostname to it, write the ingress and (re)start the connector."""
@@ -347,8 +435,7 @@ class App:
                 self.dns_conflict = True
                 _LOGGER.warning("%s already has a DNS record; replace it or choose another name in the panel", hostname)
                 return
-            service, ssl = self._local_service()
-            self.account.write_ingress(tunnel_id, hostname, service, no_tls_verify=ssl)
+            self._write_origin(tunnel_id, hostname, self._origin_plan())
         except acc.AccountError as err:
             self.setup_error = str(err)
             _LOGGER.error("Setup: %s", err)  # noqa: TRY400 - the message says it all
@@ -359,10 +446,11 @@ class App:
             return
         self.dns_conflict = False
         self.setup_error = None
-        self._set_tunnel(hostname=hostname)
+        self._set_tunnel(hostname=hostname, rejected_origin=None)
         self.daemon.tunnel_id = tunnel_id
         self.daemon.restart()
         self.next_reach_check = time.monotonic() + REACH_FIRST_CHECK_SECONDS
+        self._begin_verify(f"routing {hostname}", rollback=self._can_roll_back())
 
     def _sign_out(self) -> None:
         self.daemon.stop()
@@ -401,6 +489,8 @@ class App:
             self._set_tunnel(proxy_status=None, proxy_message=None, restart_pending=None)
         elif step == "check_reach":
             self.next_reach_check = 0.0
+            if self.daemon.ready:
+                self._begin_verify("Check now", rollback=False)
 
     def _fix_proxy(self) -> None:
         """Once per install, when the tunnel first connects: make Home Assistant trust it."""
@@ -453,6 +543,165 @@ class App:
 
         self._reach_thread = threading.Thread(target=check, daemon=True, name="reach-check")
         self._reach_thread.start()
+
+    # -- Origin TLS: follow SSL Cert Manager (loop thread) -------------------------------
+    def _can_roll_back(self) -> bool:
+        return self.config.origin_tls == otls.ORIGIN_AUTO and self.account.has_previous()
+
+    def _watch_origin(self) -> None:
+        """Re-point the route when SSL Cert Manager (or Home Assistant's SSL) changes what the origin should be."""
+
+        if time.monotonic() < self.next_origin_check:
+            return
+        self.next_origin_check = time.monotonic() + ORIGIN_CHECK_SECONDS
+        hostname = self.config.external_hostname
+        tunnel_id = self.daemon.tunnel_id
+        if self.config.mode != MODE_LOGIN or not tunnel_id or self.tunnel_state.get("hostname") != hostname:
+            return
+        if self._verify_stage is not None:
+            return  # one change at a time
+        try:
+            digest: str | None = hashlib.sha256(self.manager_status.read_bytes()).hexdigest()
+        except OSError:
+            digest = None
+        if digest != self._manager_digest:
+            self._manager_digest = digest
+            self._set_tunnel(rejected_origin=None)  # new certificates: a rejected route may work now
+        origin = self._origin_plan()
+        if origin in (self.origin, _origin_from(self.tunnel_state.get("rejected_origin"))):
+            return
+        try:
+            changed = self._write_origin(tunnel_id, hostname, origin)
+        except OSError as err:
+            _LOGGER.error("Could not update the tunnel route: %s", err)  # noqa: TRY400 - the message says it all
+            return
+        if not changed:
+            return
+        _LOGGER.info("Origin changed: %s", origin.describe())
+        self.daemon.restart()
+        self._begin_verify("an origin change", rollback=self._can_roll_back())
+
+    # -- The check after every change (loop thread; probes on a worker thread) ----------
+    def _begin_verify(self, reason: str, *, rollback: bool) -> None:
+        """Check, step by step, that the tunnel works: connector connected, then Home Assistant answering."""
+
+        self._verify_stage = "connect"
+        self._verify_reason = reason
+        self._verify_rollback = rollback
+        self._verify_deadline = time.monotonic() + VERIFY_CONNECT_SECONDS
+        self.daemon.status.origin_error = None
+        self.verify = {"state": VERIFY_PENDING, "message": f"Checking after {reason}...", "checked": _iso_now()}
+
+    def _verify_step(self) -> None:
+        stage = self._verify_stage
+        if stage is None or not self.daemon.ready:
+            return
+        status = self.daemon.status
+        if stage == "connect":
+            if status.state == cf.STATE_CONNECTED and status.connections >= 1:
+                hostname = self.config.external_hostname
+                if not hostname:
+                    self._verify_done(f"Connected ({status.connections} edge connections); no public hostname to try")
+                    return
+                self._verify_stage = "probe"
+                self._verify_code = None
+                self._verify_thread = threading.Thread(
+                    target=self._verify_probe, args=(hostname,), daemon=True, name="tunnel-check"
+                )
+                self._verify_thread.start()
+            elif time.monotonic() > self._verify_deadline:
+                self._verify_failed(status.last_error or "The connector did not reconnect within a minute")
+            return
+        if self._verify_thread is not None and self._verify_thread.is_alive():
+            return
+        code = self._verify_code
+        text, tone = describe_reach(code)
+        self.reach = (text, tone)
+        if tone == "ok":
+            origin = self.origin
+            tls = "origin OK" if origin is not None and not origin.tls else "origin TLS OK"
+            self._verify_done(
+                f"Verified {datetime.now().astimezone():%H:%M}: connected ({status.connections} edge connections), "
+                f"{tls}, HTTP {code}"
+            )
+            return
+        if status.origin_error:
+            text = f"{text}: {status.origin_error}"
+        self._verify_failed(text)
+
+    def _verify_probe(self, hostname: str) -> None:
+        code = None
+        for attempt in range(VERIFY_PROBES):
+            code = self.probe(f"https://{hostname}/api/")
+            if code in (200, 401):
+                break
+            if attempt < VERIFY_PROBES - 1:
+                self.sleep(VERIFY_PROBE_GAP_SECONDS)
+        self._verify_code = code
+
+    def _verify_done(self, message: str) -> None:
+        self._verify_stage = None
+        if self._rolled_back is not None:
+            reason, self._rolled_back = self._rolled_back, None
+            message = f"Rolled back: {reason}. The previous route works again."
+            self.verify = {"state": VERIFY_ROLLED_BACK, "message": message, "checked": _iso_now()}
+            return
+        self.account.discard_previous()
+        self.verify = {"state": VERIFY_OK, "message": message, "checked": _iso_now()}
+        _LOGGER.info("Tunnel check: %s", message)
+
+    def _verify_failed(self, reason: str) -> None:
+        self._verify_stage = None
+        _LOGGER.warning("Tunnel check after %s failed: %s", self._verify_reason, reason)
+        if self._rolled_back is not None:
+            first, self._rolled_back = self._rolled_back, None
+            message = f"Rolled back: {first}. The previous route fails too: {reason}"
+            self.verify = {"state": VERIFY_ROLLED_BACK, "message": message, "checked": _iso_now()}
+            self.notify("Cloudflare Tunnel check failed", message, "_check")
+            return
+        if self._verify_rollback and self.account.restore_previous():
+            self._set_tunnel(
+                rejected_origin=self.tunnel_state.get("origin"),
+                origin=self.tunnel_state.get("previous_origin"),
+            )
+            self._rolled_back = reason
+            self.notify(
+                "Cloudflare Tunnel change rolled back",
+                f"After {self._verify_reason}, Home Assistant did not answer through the tunnel ({reason}). "
+                "The previous route was put back.",
+                "_check",
+            )
+            self.daemon.restart()
+            self._begin_verify("the rollback", rollback=False)
+            return
+        self.verify = {"state": VERIFY_FAILED, "message": reason, "checked": _iso_now()}
+        self.notify("Cloudflare Tunnel check failed", f"After {self._verify_reason}: {reason}", "_check")
+
+    def _publish_status(self) -> None:
+        """/ssl/cloudflare-tunnel/status.json: what SSL Cert Manager shows about the tunnel."""
+
+        origin = self.origin
+        doc = {
+            "version": 1,
+            "app_version": self.version,
+            "mode": self.config.mode,
+            "hostname": self.config.external_hostname or None,
+            "origin": origin.describe() if origin else None,
+            "origin_tls": self.config.origin_tls,
+            "verify": self.verify or None,
+            "connector": self.daemon.status.state,
+        }
+        text = json.dumps(doc, indent=2, sort_keys=True)
+        if text == self._published:
+            return
+        try:
+            self.status_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.status_file.with_suffix(".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(self.status_file)
+        except OSError:
+            return  # /ssl not mapped: nothing to share
+        self._published = text
 
     # -- Panel callbacks (HTTP thread) ---------------------------------------------------
     def panel_toggle(self, toggle_id: str, value: bool) -> None:
@@ -645,6 +894,38 @@ class App:
             card["actions"] = [action("fix_proxy", "Check again", icon="mdi:refresh")]
         return card
 
+    def _origin_rows(self, config: Config) -> list[dict[str, object]]:
+        """Tunnel check and origin rows for the connector card."""
+
+        rows: list[dict[str, object]] = []
+        if self.verify:
+            state = str(self.verify.get("state"))
+            label = {
+                VERIFY_PENDING: "Checking...",
+                VERIFY_OK: "Tunnel check passed",
+                VERIFY_FAILED: "Tunnel check failed",
+                VERIFY_ROLLED_BACK: "Change rolled back",
+            }.get(state, state)
+            rows.append(row(label, str(self.verify.get("message") or ""), icon=VERIFY_ICON.get(state, "")))
+        origin = self.origin
+        if config.mode == MODE_LOGIN and origin is not None:
+            rows.append(
+                row(origin.describe(), origin.note or "Where the tunnel sends Home Assistant's traffic", icon="mdi:lan")
+            )
+        elif config.mode != MODE_LOGIN:
+            manager = otls.read_manager(self.manager_status)
+            bundle = manager.get("trust_bundle") if manager else None
+            if bundle:
+                rows.append(
+                    row(
+                        "Check Home Assistant's certificate",
+                        f"In Zero Trust, open the public hostname → TLS: set CA Pool to {bundle} and Origin Server "
+                        "Name to a name on your certificate, and turn No TLS Verify off",
+                        icon="mdi:shield-check",
+                    )
+                )
+        return rows
+
     def panel_state(self) -> dict[str, object]:
         """The panel view model."""
 
@@ -657,8 +938,8 @@ class App:
         actions = [
             action("restart", "Restart connector", confirm="Restart the tunnel connector now?", icon="mdi:restart")
         ]
-        if config.external_hostname:
-            actions.append(action("check_reach", "Check public URL", icon="mdi:refresh"))
+        if config.external_hostname or self.daemon.ready:
+            actions.append(action("check_reach", "Check now", icon="mdi:refresh"))
         if login_mode:
             actions += [self._hostname_action(config, "Change hostname"), self._sign_out_action()]
         tunnel: dict[str, object] = {
@@ -674,21 +955,27 @@ class App:
             ],
             "actions": actions,
         }
+        links: list[dict[str, object]] = []
         if config.external_hostname:
             reach_text, _reach_tone = self.reach or ("Not checked yet", "neutral")
-            tunnel["links"] = [
+            links.append(
                 external(
                     f"https://{config.external_hostname}",
                     f"https://{config.external_hostname}",
                     reach_text,
                     icon="mdi:web",
                 )
-            ]
+            )
+        links += self._origin_rows(config)
+        if links:
+            tunnel["links"] = links
         if status.last_error or state in (cf.STATE_ERROR, cf.STATE_DEGRADED):
             tunnel["notice"] = notice(
                 status.last_error or "The connector is running but has no edge connection.",
                 "error" if state == cf.STATE_ERROR else "warn",
             )
+        elif self.verify.get("state") in (VERIFY_FAILED, VERIFY_ROLLED_BACK):
+            tunnel["notice"] = notice(str(self.verify.get("message")), "error")
         elif self.reach and self.reach[1] == "error":
             tunnel["notice"] = notice(self.reach[0], "error")
         settings: dict[str, object] = {
@@ -759,15 +1046,20 @@ class App:
             self.next_phone_check = now + PHONE_CHECK_SECONDS
             self.refresh_phones()
         self._setup()
+        self._watch_origin()
         self.daemon.poll()
         if self.daemon.ready:
             self.watch()  # not set up yet is not an outage
+        self._verify_step()
         self._check_reach()
+        self._publish_status()
 
     def run(self) -> None:
         """Start the connector and run the loop until stopped."""
 
         self.daemon.start()
+        if self.daemon.ready:
+            self._begin_verify("starting", rollback=False)
         last_save = time.monotonic()
         try:
             while not self.stopping.is_set():
