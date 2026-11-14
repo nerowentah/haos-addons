@@ -1,4 +1,4 @@
-"""Atomic file writes with explicit permissions (shared by the apps in this repo).
+"""Atomic, owner-only file writes (shared by the apps in this repo).
 
 Edit this file in ``shared/app`` only, then run ``python tools/sync_shared.py``.
 """
@@ -9,30 +9,27 @@ import os
 import tempfile
 from pathlib import Path
 
-PRIVATE = 0o600  # owner only: state, credentials, private keys
-# Readable by everyone: only for data that is public anyway and that other apps
-# or Home Assistant read from /ssl (certificate chains, status files). Never
-# for a key, a token or state. Nothing here is ever writable by group or others.
-PUBLIC = 0o644
-MODES = (PRIVATE, PUBLIC)
+# Every file is readable and writable by its owner only: state, credentials,
+# private keys, and also the certificates and status files in /ssl. Home
+# Assistant and the apps that read those run as root, so nothing needs more.
+PRIVATE = 0o600
+HAS_MODES = os.name == "posix"  # Windows (where the tests also run) has no such permission bits
 
 
-def atomic_write(path: Path, data: bytes | str, mode: int = PRIVATE) -> bool:
+def atomic_write(path: Path, data: bytes | str) -> bool:
     """Replace ``path`` with ``data`` in one step; False when it already held exactly that.
 
     The data goes to a temporary file with an unpredictable name in the same
-    folder (created owner-only), is flushed to disk, gets ``mode`` and is then
-    renamed over ``path``: a reader sees the old file or the new one, never a
-    partial one, and the content is never readable with wider permissions than
-    ``mode``. Raises OSError when the file cannot be written, and ValueError
-    for a ``mode`` other than PRIVATE or PUBLIC.
+    folder (created owner-only), is flushed to disk and is then renamed over
+    ``path``: a reader sees the old file or the new one, never a partial one,
+    and the content is never readable by anyone but the owner. A file that
+    holds the same data with wider permissions is written again, which
+    tightens it. Raises OSError when the file cannot be written.
     """
 
-    if mode not in MODES:
-        raise ValueError("mode must be safefile.PRIVATE or safefile.PUBLIC")
     payload = data.encode("utf-8") if isinstance(data, str) else data
     try:
-        same_mode = os.name != "posix" or (path.stat().st_mode & 0o777) == mode  # Windows (tests) has no modes
+        same_mode = not HAS_MODES or (path.stat().st_mode & 0o777) == PRIVATE
         if same_mode and path.read_bytes() == payload:
             return False
     except OSError:
@@ -44,7 +41,8 @@ def atomic_write(path: Path, data: bytes | str, mode: int = PRIVATE) -> bool:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(tmp, mode)
+        if HAS_MODES:
+            os.chmod(tmp, PRIVATE)  # mkstemp already made it owner-only; this states it
         os.replace(tmp, path)
     except OSError:
         Path(tmp).unlink(missing_ok=True)

@@ -31,7 +31,7 @@ from config import (
     load_options,
     parse_hostname,
 )
-from safefile import PUBLIC, atomic_write
+from safefile import atomic_write
 from store import Store
 from supervisor import (
     Supervisor,
@@ -713,7 +713,7 @@ class App:
         if text == self._published:
             return
         try:
-            atomic_write(self.status_file, text, PUBLIC)  # other apps read it
+            atomic_write(self.status_file, text)  # SSL Cert Manager reads it (as root, like this app)
         except OSError:
             return  # /ssl not mapped: nothing to share
         self._published = text
