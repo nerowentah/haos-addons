@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6
+
+- **Image security updates.** The image now applies Alpine's package updates when it is built (this release picks up fixes for krb5 and zlib), and the unused `tempio` binary from the base image is removed. No functional change.
+
 ## 0.1.5
 
 - **Stricter internal checks.** The app's code now passes strict type checking: options, panel requests and saved reviews are validated where they enter the app. No visible change.

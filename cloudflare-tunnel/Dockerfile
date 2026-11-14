@@ -16,7 +16,11 @@ ARG CLOUDFLARED_VERSION=2026.11.0
 ARG CLOUDFLARED_AMD64_SHA256=51f7c68b57ed7269164075d7e789efce5b59355982f06392deeb037d982a51fd
 ARG CLOUDFLARED_ARM64_SHA256=abe54a006acf9faf2d19ee9d953cb0d0804e92f59c5382a162e57b84d086f56f
 
-RUN apk add --no-cache python3
+# apk upgrade: the security fixes Alpine published after the base image was built.
+# tempio (a Go template tool in the base image) is not used by this app.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache python3 \
+    && rm -f /usr/bin/tempio
 
 WORKDIR /app
 

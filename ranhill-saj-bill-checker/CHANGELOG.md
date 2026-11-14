@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.9
+
+- **Image security updates.** The image now applies Alpine's package updates when it is built (this release picks up fixes for krb5 and zlib), and the unused `tempio` binary from the base image is removed. No functional change.
+
 ## 0.2.8
 
 - **Stricter internal checks.** The app's code now passes strict type checking: options, panel requests, the saved state and the MQTT broker details are validated where they enter the app. No visible change; entity ids, MQTT topics and the saved state keep their format.

@@ -1038,7 +1038,7 @@ def _log_accounts(config: Config) -> None:
             "Account '%s' (%s tariff, cycle starts day %d): %s",
             account.name,
             account.tariff,
-            # codeql[py/clear-text-logging-sensitive-data] billing day only, not account data
+            # Label, tariff and day of the month only: no password or account number is logged.
             account.billing_start_day,
             " + ".join(sources),
         )

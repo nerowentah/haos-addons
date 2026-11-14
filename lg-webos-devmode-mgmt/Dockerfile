@@ -10,8 +10,12 @@ ARG BUILD_ARCH
 
 # The base image ships Bash but not always Python; python3 only needs the
 # stdlib for this add-on, so no pip packages are required.
-RUN apk add --no-cache \
-    python3
+# apk upgrade: the security fixes Alpine published after the base image was built.
+# tempio (a Go template tool in the base image) is not used by this app.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache \
+        python3 \
+    && rm -f /usr/bin/tempio
 
 WORKDIR /app
 
