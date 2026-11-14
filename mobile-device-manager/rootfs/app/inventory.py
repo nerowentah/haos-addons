@@ -5,32 +5,37 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from typing import Final, Literal
 
 MOBILE_APP = "mobile_app"
-FLAG_STALE = "stale"
-FLAG_NOT_LOADED = "not_loaded"
-FLAG_DUPLICATE = "duplicate"
-FLAG_NO_NOTIFY = "no_notify"
-LINK_KINDS = ("automation", "script", "scene")
+type Flag = Literal["stale", "not_loaded", "duplicate", "no_notify"]
+FLAG_STALE: Final = "stale"
+FLAG_NOT_LOADED: Final = "not_loaded"
+FLAG_DUPLICATE: Final = "duplicate"
+FLAG_NO_NOTIFY: Final = "no_notify"
+type LinkKind = Literal["automation", "script", "scene"]
+LINK_KINDS: tuple[LinkKind, ...] = ("automation", "script", "scene")
+type Reason = Literal["device", "notify"]  # a registry link, a call of the device's notify service
 MIN_GROUP = 2
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Link:
     """Something that uses a device: an automation, script or scene."""
 
-    kind: str
+    kind: LinkKind
     entity_id: str
     name: str
     path: str | None
-    reasons: set[str] = field(default_factory=set)  # "device" (registry link) and/or "notify" (service call)
+    reasons: frozenset[Reason] = frozenset()
 
 
 @dataclass(slots=True)
 class Device:
-    """One Companion-app registration."""
+    """One Companion-app registration (links and flags are filled in after it is built)."""
 
     device_id: str
     entry_id: str
@@ -44,7 +49,7 @@ class Device:
     battery: str | None = None
     entity_ids: list[str] = field(default_factory=list)
     links: list[Link] = field(default_factory=list)
-    flags: set[str] = field(default_factory=set)
+    flags: set[Flag] = field(default_factory=set)
 
     @property
     def removable(self) -> bool:
@@ -142,41 +147,56 @@ def build_devices(entries: object, devices: object, entities: object, states: ob
     return sorted(result, key=lambda d: d.name.lower())
 
 
-def edit_path(kind: str, entity_id: str, state: dict[str, object] | None) -> str | None:
+def edit_path(kind: LinkKind, entity_id: str, state: Mapping[str, object] | None) -> str | None:
     """Frontend path that edits an automation/script/scene (None when it is not UI-editable)."""
 
     attrs = (state or {}).get("attributes") or {}
     item_id = attrs.get("id") if isinstance(attrs, dict) else None
     if kind == "script":
-        return f"/config/script/edit/{entity_id.split('.', 1)[1]}"
+        return f"/config/script/edit/{entity_id.partition('.')[2]}"
     if kind in ("automation", "scene") and item_id:
         return f"/config/{kind}/edit/{item_id}"
     return None
 
 
-def _friendly(entity_id: str, state: dict[str, object] | None) -> str:
+def _friendly(entity_id: str, state: Mapping[str, object] | None) -> str:
     attrs = (state or {}).get("attributes") or {}
     name = attrs.get("friendly_name") if isinstance(attrs, dict) else None
     return str(name or entity_id)
 
 
-def links_from_related(related: object, states: dict[str, dict[str, object]]) -> list[Link]:
+def _link_kind(entity_id: str) -> LinkKind | None:
+    domain = entity_id.partition(".")[0]
+    for kind in LINK_KINDS:
+        if kind == domain:
+            return kind
+    return None
+
+
+def links_from_related(related: object, states: Mapping[str, Mapping[str, object]]) -> list[Link]:
     """Links from a ``search/related`` result (device or entity references)."""
 
     links: list[Link] = []
     if not isinstance(related, dict):
         return links
     for kind in LINK_KINDS:
-        for raw_id in related.get(kind) or []:
+        ids = related.get(kind)
+        for raw_id in ids if isinstance(ids, list) else []:
             entity_id = str(raw_id)
             state = states.get(entity_id)
             links.append(
-                Link(kind, entity_id, _friendly(entity_id, state), edit_path(kind, entity_id, state), {"device"})
+                Link(
+                    kind,
+                    entity_id,
+                    _friendly(entity_id, state),
+                    edit_path(kind, entity_id, state),
+                    frozenset({"device"}),
+                )
             )
     return links
 
 
-def notify_references(service: str, configs: dict[str, object]) -> list[str]:
+def notify_references(service: str, configs: Mapping[str, object]) -> list[str]:
     """Entity ids of automations/scripts whose stored config calls ``notify.<service>``."""
 
     pattern = re.compile(rf"(?<![a-z0-9_]){re.escape(service)}(?![a-z0-9_])")
@@ -189,23 +209,27 @@ def merge_links(*groups: list[Link]) -> list[Link]:
     merged: dict[str, Link] = {}
     for group in groups:
         for link in group:
-            if link.entity_id in merged:
-                merged[link.entity_id].reasons |= link.reasons
-            else:
-                merged[link.entity_id] = Link(link.kind, link.entity_id, link.name, link.path, set(link.reasons))
+            known = merged.get(link.entity_id)
+            merged[link.entity_id] = link if known is None else replace(known, reasons=known.reasons | link.reasons)
     return sorted(merged.values(), key=lambda link: (LINK_KINDS.index(link.kind), link.name.lower()))
 
 
-def notify_links(service: str | None, configs: dict[str, object], states: dict[str, dict[str, object]]) -> list[Link]:
+def notify_links(
+    service: str | None, configs: Mapping[str, object], states: Mapping[str, Mapping[str, object]]
+) -> list[Link]:
     """Links for automations/scripts that call the device's notify service."""
 
     if not service:
         return []
     links = []
     for entity_id in notify_references(service, configs):
-        kind = entity_id.split(".", 1)[0]
+        kind = _link_kind(entity_id)
+        if kind is None:
+            continue
         state = states.get(entity_id)
-        links.append(Link(kind, entity_id, _friendly(entity_id, state), edit_path(kind, entity_id, state), {"notify"}))
+        links.append(
+            Link(kind, entity_id, _friendly(entity_id, state), edit_path(kind, entity_id, state), frozenset({"notify"}))
+        )
     return links
 
 

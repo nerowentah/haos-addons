@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 CONFIG_PATH = Path("/data/options.json")
 
 TRACE = 5
 NOTICE = 25
-LOG_LEVELS = {
+type LogLevel = Literal["trace", "debug", "info", "notice", "warning", "error", "fatal"]
+LOG_LEVELS: dict[LogLevel, int] = {
     "trace": TRACE,
     "debug": logging.DEBUG,
     "info": logging.INFO,
@@ -22,34 +24,37 @@ LOG_LEVELS = {
 }
 
 
-def parse_log_level(raw: dict[str, object]) -> str:
+def parse_log_level(raw: dict[str, object]) -> LogLevel:
     """The ``log_level`` option, lower-cased ("info" when missing or unknown)."""
 
     value = str(raw.get("log_level") or "info").strip().lower()
-    return value if value in LOG_LEVELS else "info"
+    for level in LOG_LEVELS:
+        if level == value:
+            return level
+    return "info"
 
 
-def apply_log_level(name: str) -> None:
-    """Set the root logger to ``name`` (one of LOG_LEVELS)."""
+def apply_log_level(name: LogLevel) -> None:
+    """Set the root logger to ``name``."""
 
     logging.addLevelName(TRACE, "TRACE")
     logging.addLevelName(NOTICE, "NOTICE")
-    logging.getLogger().setLevel(LOG_LEVELS.get(name, logging.INFO))
+    logging.getLogger().setLevel(LOG_LEVELS[name])
 
 
 class ConfigError(ValueError):
     """Raised when the app configuration is invalid."""
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Config:
-    """Parsed app options."""
+    """Parsed app options (never changed in place: new options make a new Config)."""
 
     scan_minutes: int = 30
     stale_days: int = 30
     notify_on_attention: bool = True
-    ignored_devices: list[str] = field(default_factory=list)
-    log_level: str = "info"
+    ignored_devices: tuple[str, ...] = ()
+    log_level: LogLevel = "info"
 
 
 def load_options(path: Path = CONFIG_PATH) -> dict[str, object]:
@@ -82,8 +87,8 @@ def load_config(raw: dict[str, object]) -> Config:
         scan_minutes=_int(raw, "scan_minutes", 30, 5, 10080),
         stale_days=_int(raw, "stale_days", 30, 1, 365),
         notify_on_attention=notify if isinstance(notify, bool) else True,
-        ignored_devices=sorted({str(v).strip() for v in ignored if str(v).strip()})
+        ignored_devices=tuple(sorted({str(v).strip() for v in ignored if str(v).strip()}))
         if isinstance(ignored, list)
-        else [],
+        else (),
         log_level=parse_log_level(raw),
     )

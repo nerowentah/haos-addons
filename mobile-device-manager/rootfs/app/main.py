@@ -29,6 +29,7 @@ from supervisor import (
     merge_s6_environment,
 )
 from webui import (
+    PanelArgs,
     PanelError,
     PanelServer,
     SecretError,
@@ -53,8 +54,12 @@ STORE_SAVE_SECONDS = 60
 FAILURES_BEFORE_NOTIFY = 3
 WEB_DIR = Path(__file__).resolve().parent / "web"
 NOTIFICATION_ID = "mobile_device_manager"
-KIND_ICON = {"automation": "mdi:robot", "script": "mdi:script-text", "scene": "mdi:palette"}
-KIND_DASHBOARD = {
+KIND_ICON: dict[inventory.LinkKind, str] = {
+    "automation": "mdi:robot",
+    "script": "mdi:script-text",
+    "scene": "mdi:palette",
+}
+KIND_DASHBOARD: dict[inventory.LinkKind, str] = {
     "automation": "/config/automation/dashboard",
     "script": "/config/script/dashboard",
     "scene": "/config/scene/dashboard",
@@ -133,7 +138,7 @@ class App:
             raw = copy.deepcopy(base)
             mutate(raw)
             try:
-                config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+                config = load_config(self.secrets.resolve_options(raw))
             except (ConfigError, SecretError) as err:
                 raise PanelError(str(err)) from err
             try:
@@ -153,7 +158,7 @@ class App:
         if raw == self.raw_options:
             return
         try:
-            config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+            config = load_config(self.secrets.resolve_options(raw))
         except (ConfigError, SecretError) as err:
             _LOGGER.error("Ignoring updated options until they are fixed: %s", err)  # noqa: TRY400 - no traceback needed
             self.raw_options = raw
@@ -359,21 +364,22 @@ class App:
             return
         raise PanelError("Unknown setting")
 
-    def panel_action(self, action_id: str, args: dict[str, object]) -> str | None:
+    def panel_action(self, action_id: str, args: PanelArgs) -> str | None:
         """Handle a panel button."""
 
-        device_id = str(args.get("device") or "")
         if action_id == "rescan":
             self.next_scan = 0.0
             self.wake.set()
             return "Scanning..."
         if action_id == "remove":
-            return self.remove(device_id)
+            return self.remove(args.ident("device"))
         if action_id == "ignore":
-            ignore = bool(args.get("value", True))
+            device_id = args.ident("device")
+            ignore = args.flag("value", default=True)
 
             def mutate(raw: dict[str, object]) -> None:
-                current = {str(v) for v in raw.get("ignored_devices") or []}  # type: ignore[union-attr]
+                stored = raw.get("ignored_devices")
+                current = {str(v) for v in stored} if isinstance(stored, list) else set()
                 current = current | {device_id} if ignore else current - {device_id}
                 raw["ignored_devices"] = sorted(current)
 
@@ -615,7 +621,7 @@ def main() -> None:
     secrets = SecretRefs()
     raw_options = initial_options(load_options, supervisor.fetch_options, secrets)
     try:
-        config = load_config(secrets.resolve(raw_options))  # type: ignore[arg-type]
+        config = load_config(secrets.resolve_options(raw_options))
     except (ConfigError, SecretError):
         _LOGGER.exception("Invalid configuration")
         raise SystemExit(1) from None

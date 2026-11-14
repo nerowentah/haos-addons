@@ -50,7 +50,7 @@ ENTITIES = [
     {"entity_id": "sensor.tablet_x1_battery_level", "device_id": "d2"},
     {"entity_id": "sensor.tablet_x1_battery_level_2", "device_id": "d3"},
 ]
-STATES = [
+STATES: list[dict[str, object]] = [
     {
         "entity_id": "sensor.alex_phone_battery_level",
         "state": "80",
@@ -119,7 +119,7 @@ class FlagTest(unittest.TestCase):
 
 class LinkTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.states = {s["entity_id"]: s for s in STATES}
+        self.states = {str(s["entity_id"]): s for s in STATES}
 
     def test_related_links_with_edit_paths(self) -> None:
         related = {
@@ -149,6 +149,11 @@ class LinkTest(unittest.TestCase):
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0].reasons, {"device", "notify"})
 
+    def test_malformed_related_and_unknown_kinds_are_skipped(self) -> None:
+        self.assertEqual(inventory.links_from_related({"automation": "automation.leave_home"}, self.states), [])
+        configs = {"sensor.odd": {"action": "notify.mobile_app_tablet_x1"}}
+        self.assertEqual(inventory.notify_links("mobile_app_tablet_x1", configs, self.states), [])
+
     def test_remove_guard_and_summary(self) -> None:
         device = build()[1]
         self.assertTrue(device.removable)
@@ -164,7 +169,7 @@ class ConfigTest(unittest.TestCase):
     def test_defaults_and_clamping(self) -> None:
         cfg = config.load_config({"scan_minutes": 1, "stale_days": 999, "ignored_devices": ["b", " a ", "", "a"]})
         self.assertEqual((cfg.scan_minutes, cfg.stale_days), (5, 365))
-        self.assertEqual(cfg.ignored_devices, ["a", "b"])
+        self.assertEqual(cfg.ignored_devices, ("a", "b"))
         self.assertTrue(cfg.notify_on_attention)
 
 

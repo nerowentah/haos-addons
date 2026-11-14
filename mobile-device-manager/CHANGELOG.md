@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.10
+
+- **Stricter internal checks.** The app's code now passes strict type checking: options, panel requests and Home Assistant's replies are validated where they enter the app. No visible change.
+- **Fix:** an unexpected reply from Home Assistant's websocket is reported as a failed scan instead of stopping the app.
+- **Panel:** a button request without a device is refused with a clear message.
+
 ## 0.1.9
 
 - **Shared panel update (security):** the panel only accepts changes that come from its own page (a request from another web site is refused), every page it serves carries a Content-Security-Policy and may only be shown inside Home Assistant, and stalled or oversized requests are dropped. No visible change in this app.
