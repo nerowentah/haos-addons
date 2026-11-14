@@ -1,0 +1,97 @@
+name: Scan images
+
+# Weekly Trivy scan of the published :latest images. Two scans per image:
+#   1. the image itself: Alpine packages and anything Trivy finds on its own;
+#   2. the Python distributions inside it, listed by .github/scripts/pylibs_sbom.py.
+#      Trivy leaves out Python modules installed by apk, so without this list
+#      no PyPI advisory would be matched against them.
+# Results are uploaded as SARIF and appear under code scanning, next to CodeQL.
+# Accepted findings: .github/trivy/trivyignore.yaml (see SECURITY.md).
+
+on:
+  schedule:
+    - cron: "17 5 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # app folder and the image its config.yaml names.
+        include:
+          - app: api-key-manager
+            image: ghcr.io/nerowentah/api-key-manager
+          - app: cloudflare-tunnel
+            image: ghcr.io/nerowentah/cloudflare-tunnel
+          - app: lg-webos-devmode-mgmt
+            image: ghcr.io/nerowentah/lg-webos-auto-renew
+          - app: mobile-device-manager
+            image: ghcr.io/nerowentah/mobile-device-manager
+          - app: ranhill-saj-bill-checker
+            image: ghcr.io/nerowentah/ranhill-saj-bill-checker
+          - app: ssl-cert-manager
+            image: ghcr.io/nerowentah/ssl-cert-manager
+          - app: tnb-usage-checker
+            image: ghcr.io/nerowentah/power-tnb
+    env:
+      IMAGE: ${{ matrix.image }}:latest
+      APP: ${{ matrix.app }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pull the image
+        run: docker pull "$IMAGE"
+
+      - name: Scan the image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE }}
+          scanners: vuln
+          vuln-type: os,library
+          format: sarif
+          output: trivy-image.sarif
+          trivyignores: .github/trivy/trivyignore.yaml
+
+      - name: List the Python distributions in the image
+        # -I: isolated mode, so nothing in the image's working directory is imported.
+        run: |
+          docker run --rm -i --network none --entrypoint python3 "$IMAGE" -I - "$APP" \
+            < .github/scripts/pylibs_sbom.py > pylibs.cdx.json
+          python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))["components"]), "distributions")' pylibs.cdx.json
+
+      - name: Scan the Python distributions
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: sbom
+          scan-ref: pylibs.cdx.json
+          scanners: vuln
+          format: sarif
+          output: trivy-pylibs.sarif
+          trivyignores: .github/trivy/trivyignore.yaml
+          skip-setup-trivy: true
+
+      - name: Upload the image results
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image-${{ matrix.app }}
+
+      - name: Upload the Python results
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: trivy-pylibs.sarif
+          category: trivy-pylibs-${{ matrix.app }}

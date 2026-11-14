@@ -55,3 +55,25 @@ reproduce. Leave out real tokens, passwords, account numbers and hostnames.
   happens in an image.
 - CI runs ruff (including the flake8-bandit rules), every app's tests and
   CodeQL on each pull request.
+- The published `:latest` images are scanned with Trivy every week
+  (`.github/workflows/scan-images.yaml`): the Alpine packages, and the Python
+  modules those packages install, matched against the PyPI advisories. The
+  results appear under code scanning next to CodeQL's.
+
+## Known advisories
+
+SSL Cert Manager installs Alpine 3.24's `py3-cryptography`, currently 47.0.0.
+Four advisories name that version. None of them can be reached in the image:
+
+| Advisory | What it is about | Why it does not apply |
+| --- | --- | --- |
+| GHSA-537c-gmf6-5ccf | The OpenSSL copy built into the PyPI wheels | Alpine's package uses the system OpenSSL, which `apk` keeps patched; no wheel is installed. |
+| CVE-2026-69247 | Error and timing oracle in PKCS#7 EnvelopedData decryption | Nothing in the image decrypts PKCS#7. |
+| CVE-2026-69248 | Wildcard names escape name constraints in the X.509 path verifier (`cryptography.x509.verification`) | The app does not use that verifier: it parses certificates and checks single signatures. TLS connections are verified by Python's `ssl` module with OpenSSL. |
+| CVE-2026-69249 | Slow rejection of chains with duplicate self-signed certificates, in the same verifier | Same as above. |
+
+The Alpine packages are not pinned to a version, so a rebuild picks up
+Alpine's fixed package as soon as it is published. Until then the four ids are
+listed in `.github/trivy/trivyignore.yaml`, limited to version 47.0.0 and with
+an expiry date, so the weekly scan reports them again if either changes. CI
+itself tests against a fixed release (`requirements-dev.txt`).

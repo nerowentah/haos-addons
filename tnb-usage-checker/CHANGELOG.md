@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.5
+
+- **Code scanning:** the start-up line that lists each account (label, tariff, billing day, data sources) is marked as reviewed. It never contained a password or an account number; the scanner flagged it because the same record also holds the myTNB password. No functional change.
+
 ## 0.5.4
 
 - **Passwords and keys are wrapped as secrets.** The myTNB password and the Calendarific API key are only revealed in the request that needs them; they cannot show up in a log line or a debug dump. The MQTT password is masked in logs too.

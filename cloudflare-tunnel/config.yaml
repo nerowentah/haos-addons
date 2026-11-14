@@ -1,5 +1,5 @@
 name: "Cloudflare Tunnel"
-version: "0.3.4"
+version: "0.3.5"
 slug: "cloudflare_tunnel"
 description: >-
   Connect Home Assistant to the Internet through a Cloudflare Tunnel without

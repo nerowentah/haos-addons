@@ -1,0 +1,35 @@
+# Findings the image scan (.github/workflows/scan-images.yaml) leaves out.
+# Each entry is limited to one package version and expires, so the scan
+# reports it again when Alpine ships another version or the date passes.
+# SECURITY.md ("Known advisories") has the reasoning.
+vulnerabilities:
+  - id: GHSA-537c-gmf6-5ccf
+    purls:
+      - "pkg:pypi/cryptography@47.0.0"
+    expired_at: 2027-03-31
+    statement: >-
+      About the OpenSSL copy built into the PyPI wheels. Alpine's
+      py3-cryptography uses the system OpenSSL; no wheel is installed.
+
+  - id: CVE-2026-69247
+    purls:
+      - "pkg:pypi/cryptography@47.0.0"
+    expired_at: 2027-03-31
+    statement: >-
+      PKCS#7 EnvelopedData decryption oracle. Nothing in the image decrypts PKCS#7.
+
+  - id: CVE-2026-69248
+    purls:
+      - "pkg:pypi/cryptography@47.0.0"
+    expired_at: 2027-03-31
+    statement: >-
+      Name-constraint escape in cryptography.x509.verification. The app does
+      not use that verifier.
+
+  - id: CVE-2026-69249
+    purls:
+      - "pkg:pypi/cryptography@47.0.0"
+    expired_at: 2027-03-31
+    statement: >-
+      Slow chain building in cryptography.x509.verification. The app does not
+      use that verifier.
