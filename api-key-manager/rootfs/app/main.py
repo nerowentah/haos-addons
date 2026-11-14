@@ -28,6 +28,7 @@ from supervisor import (
     merge_s6_environment,
 )
 from webui import (
+    PanelArgs,
     PanelError,
     PanelServer,
     SecretError,
@@ -56,15 +57,20 @@ MAX_SESSIONS_SHOWN = 20
 WEB_DIR = Path(__file__).resolve().parent / "web"
 NOTIFICATION_ID = "api_key_manager"
 USERS_PATH = "/config/users"
-VIEW_DEFAULTS = {"show_approved": True, "show_sessions": False}
+VIEW_DEFAULTS: dict[str, bool] = {"show_approved": True, "show_sessions": False}
+KEY_ID_MAX_CHARS = 200
 
-STATE_BADGE = {
+STATE_BADGE: dict[review.State, tuple[str, str]] = {
     review.STATE_UNREVIEWED: ("Unreviewed", "warn"),
     review.STATE_APPROVED: ("Approved", "ok"),
     review.STATE_SUSPICIOUS: ("Suspicious", "error"),
 }
-STATE_RANK = {review.STATE_SUSPICIOUS: 0, review.STATE_UNREVIEWED: 1, review.STATE_APPROVED: 2}
-SERIOUS_FLAGS = frozenset({review.FLAG_INACTIVE_OWNER, review.FLAG_EXPIRED})
+STATE_RANK: dict[review.State, int] = {
+    review.STATE_SUSPICIOUS: 0,
+    review.STATE_UNREVIEWED: 1,
+    review.STATE_APPROVED: 2,
+}
+SERIOUS_FLAGS: frozenset[review.Flag] = frozenset({review.FLAG_INACTIVE_OWNER, review.FLAG_EXPIRED})
 
 
 def _ago(moment: datetime | None, now: datetime) -> str | None:
@@ -101,8 +107,8 @@ def _short(key_id: str) -> str:
     return key_id[:8]
 
 
-def _flag_text(flag: str, key: Key, config: Config) -> str:
-    return {
+def _flag_text(flag: review.Flag, key: Key, config: Config) -> str:
+    texts: dict[review.Flag, str] = {
         review.FLAG_INACTIVE_OWNER: "Its user is deactivated, so it no longer works, but it is still stored.",
         review.FLAG_EXPIRED: f"Expired on {_date(key.expires_at)}.",
         review.FLAG_NEVER_USED: "Never used since it was created.",
@@ -110,7 +116,8 @@ def _flag_text(flag: str, key: Key, config: Config) -> str:
         review.FLAG_VAGUE: "The description doesn't say who or what uses it.",
         review.FLAG_DUPLICATE: "Another key of this user has the same description.",
         review.FLAG_ADMIN: "Full administrator rights: its user is an owner or administrator.",
-    }[flag]
+    }
+    return texts[flag]
 
 
 def _revoke_hint(user: User) -> str:
@@ -140,7 +147,7 @@ class App:
         self.reader = reader or AuthReader()
         self.version = VERSION
         self.snapshot: Snapshot | None = None
-        self.flags: dict[str, list[str]] = {}
+        self.flags: dict[str, list[review.Flag]] = {}
         self.last_read: datetime | None = None
         self.read_error: str | None = None
         self.read_failures = 0
@@ -187,7 +194,7 @@ class App:
             raw = copy.deepcopy(base)
             mutate(raw)
             try:
-                config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+                config = load_config(self.secrets.resolve_options(raw))
             except (ConfigError, SecretError) as err:
                 raise PanelError(str(err)) from err
             try:
@@ -207,7 +214,7 @@ class App:
         if raw == self.raw_options:
             return
         try:
-            config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+            config = load_config(self.secrets.resolve_options(raw))
         except (ConfigError, SecretError) as err:
             _LOGGER.error("Ignoring updated options until they are fixed: %s", err)  # noqa: TRY400 - no traceback needed
             self.raw_options = raw
@@ -344,7 +351,7 @@ class App:
             return
         raise PanelError("Unknown setting")
 
-    def panel_action(self, action_id: str, args: dict[str, object]) -> str | None:
+    def panel_action(self, action_id: str, args: PanelArgs) -> str | None:
         """Handle a panel button."""
 
         if action_id == "reread":
@@ -352,24 +359,28 @@ class App:
             self.next_read = 0.0
             self.wake.set()
             return "Reading the keys again..."
-        key = self._key(str(args.get("key") or ""))
+        key = self._key(args.ident("key", max_len=KEY_ID_MAX_CHARS))
         label = key.name or "(no description)"
         if action_id == "review":
-            state = str(args.get("state") or "")
-            if state not in review.STATES:
+            state = review.parse_state(args.get("state"))
+            if state is None:
                 raise PanelError("Unknown review state")
             with self.lock:
                 review.set_state(self.store.section("reviews"), key.key_id, state)
                 self.store.dirty = True
             _LOGGER.info("Key %s marked %s", _short(key.key_id), state)
-            return {
+            done: dict[review.State, str] = {
                 review.STATE_APPROVED: f"Approved '{label}'",
                 review.STATE_SUSPICIOUS: f"Marked '{label}' as suspicious",
                 review.STATE_UNREVIEWED: f"'{label}' is unreviewed again",
-            }[state]
+            }
+            return done[state]
         if action_id == "note":
+            note = args.get("text")
+            if note is not None and not isinstance(note, str):
+                raise PanelError("The note must be text")
             with self.lock:
-                text = review.set_note(self.store.section("reviews"), key.key_id, str(args.get("text") or ""))
+                text = review.set_note(self.store.section("reviews"), key.key_id, note or "")
                 self.store.dirty = True
             return "Note saved" if text else "Note removed"
         if action_id == "revoke_help":
@@ -378,9 +389,11 @@ class App:
         raise PanelError("Unknown action")
 
     # -- Panel view model ------------------------------------------------------------------
-    def _key_card(self, key: Key, user: User, reviews: dict[str, object], config: Config, now: datetime) -> dict:
+    def _key_card(
+        self, key: Key, user: User, reviews: dict[str, object], config: Config, now: datetime
+    ) -> dict[str, object]:
         entry = review.review_of(reviews, key.key_id)
-        state = entry["state"]
+        state = entry.state
         flags = self.flags.get(key.key_id, [])
         text, tone = STATE_BADGE[state]
         card: dict[str, object] = {
@@ -396,11 +409,10 @@ class App:
             ],
         }
         rows = []
-        if entry["note"]:
-            rows.append(row(entry["note"], "Review note", icon="mdi:note-text"))
-        if entry["reviewed_at"]:
-            reviewed = datetime.fromisoformat(entry["reviewed_at"])
-            rows.append(row(f"{text} {_ago(reviewed, now)}", "Review", icon="mdi:shield-check"))
+        if entry.note:
+            rows.append(row(entry.note, "Review note", icon="mdi:note-text"))
+        if entry.reviewed_at is not None:
+            rows.append(row(f"{text} {_ago(entry.reviewed_at, now)}", "Review", icon="mdi:shield-check"))
         if rows:
             card["links"] = rows
         messages = [_flag_text(f, key, config) for f in flags]
@@ -431,18 +443,20 @@ class App:
         actions.append(
             action(
                 "note",
-                "Edit note" if entry["note"] else "Add note",
+                "Edit note" if entry.note else "Add note",
                 args,
                 icon="mdi:note-edit",
                 prompt=f"Note for '{key.name or 'this key'}' (who uses it and why). Leave empty to remove it.",
-                prompt_value=entry["note"],
+                prompt_value=entry.note,
             )
         )
         actions.append(action("revoke_help", "How to revoke", args, icon="mdi:key-remove"))
         card["actions"] = actions
         return card
 
-    def _user_card(self, user: User, keys: list[Key], sessions: list[Key], hidden: int, now: datetime) -> dict:
+    def _user_card(
+        self, user: User, keys: list[Key], sessions: list[Key], hidden: int, now: datetime
+    ) -> dict[str, object]:
         status = "Active" if user.is_active else "Deactivated"
         parts = [f"@{user.username}" if user.username else "", user.role, status]
         if user.local_only:
@@ -486,7 +500,7 @@ class App:
             reviews = dict(self.store.section("reviews"))
         users = list(snapshot.users) if snapshot else []
         keys = [k for k in snapshot.keys if k.kind == KIND_LONG_LIVED] if snapshot else []
-        states = [review.review_of(reviews, k.key_id)["state"] for k in keys]
+        states = [review.review_of(reviews, k.key_id).state for k in keys]
         attention = sum(
             1
             for k, s in zip(keys, states, strict=True)
@@ -528,7 +542,7 @@ class App:
         for user in users:
             own = snapshot.keys_of(user.user_id, KIND_LONG_LIVED) if snapshot else []
             sessions = snapshot.keys_of(user.user_id, KIND_SESSION) if snapshot else []
-            rank = {k.key_id: STATE_RANK[review.review_of(reviews, k.key_id)["state"]] for k in own}
+            rank = {k.key_id: STATE_RANK[review.review_of(reviews, k.key_id).state] for k in own}
             visible = [k for k in own if show_approved or rank[k.key_id] != STATE_RANK[review.STATE_APPROVED]]
             visible.sort(key=lambda k: rank[k.key_id])  # stable: newest first within a state
             cards = [self._user_card(user, own, sessions, len(own) - len(visible), now)]
@@ -637,7 +651,7 @@ def main() -> None:
     secrets = SecretRefs()
     raw_options = initial_options(load_options, supervisor.fetch_options, secrets)
     try:
-        config = load_config(secrets.resolve(raw_options))  # type: ignore[arg-type]
+        config = load_config(secrets.resolve_options(raw_options))
     except (ConfigError, SecretError):
         _LOGGER.exception("Invalid configuration")
         raise SystemExit(1) from None

@@ -79,6 +79,19 @@ jobs:
           MYPYPATH: shared/app:shared/tests/stubs:tools
         run: mypy shared/app shared/tests tools
 
+      - name: Type check (strict) the apps
+        # One run per app: every app has a module named config, main, store...
+        # An app joins STRICT_APPS in the pull request that makes it strict-clean.
+        env:
+          STRICT_APPS: api-key-manager
+        run: |
+          set -e
+          for app in $STRICT_APPS; do
+            echo "::group::$app"
+            MYPYPATH="$app/rootfs/app" mypy "$app/rootfs/app" "$app/tests"
+            echo "::endgroup::"
+          done
+
       - name: Ruff lint
         run: ruff check .
 

@@ -14,14 +14,19 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Final, Literal
 
 _LOGGER = logging.getLogger(__name__)
 
 AUTH_PATH = Path(os.environ.get("AKM_AUTH_PATH", "/homeassistant/.storage/auth"))
 
-KIND_LONG_LIVED = "long_lived"
-KIND_SESSION = "session"
-TOKEN_TYPES = {"long_lived_access_token": KIND_LONG_LIVED, "normal": KIND_SESSION}  # "system" is skipped
+type Kind = Literal["long_lived", "session"]
+KIND_LONG_LIVED: Final = "long_lived"
+KIND_SESSION: Final = "session"
+TOKEN_TYPES: dict[str, Kind] = {  # "system" is skipped
+    "long_lived_access_token": KIND_LONG_LIVED,
+    "normal": KIND_SESSION,
+}
 ADMIN_GROUP = "system-admin"
 READ_ONLY_GROUP = "system-read-only"
 SECRET_FIELDS = frozenset({"token", "jwt_key", "password"})
@@ -61,7 +66,7 @@ class Key:
 
     key_id: str
     user_id: str
-    kind: str
+    kind: Kind
     name: str  # the description given when the token was created (client_name)
     client_id: str
     created_at: datetime | None
@@ -77,7 +82,7 @@ class Snapshot:
     users: tuple[User, ...]
     keys: tuple[Key, ...]
 
-    def keys_of(self, user_id: str, kind: str) -> list[Key]:
+    def keys_of(self, user_id: str, kind: Kind) -> list[Key]:
         """A user's keys of one kind, newest first."""
 
         found = [k for k in self.keys if k.user_id == user_id and k.kind == kind]
@@ -101,6 +106,12 @@ def _time(value: object) -> datetime | None:
     except ValueError:
         return None
     return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def _seconds(value: object) -> timedelta | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return timedelta(seconds=float(value))
+    return None
 
 
 def _list(data: dict[str, object], name: str) -> list[dict[str, object]]:
@@ -131,7 +142,8 @@ def parse(text: str) -> Snapshot:
     for raw in _list(data, "users"):
         if raw.get("system_generated"):
             continue
-        groups = {str(g) for g in raw.get("group_ids") or [] if isinstance(g, str)}  # type: ignore[union-attr]
+        group_ids = raw.get("group_ids")
+        groups = {g for g in group_ids if isinstance(g, str)} if isinstance(group_ids, list) else set()
         user_id = str(raw.get("id") or "")
         if not user_id:
             continue
@@ -158,9 +170,8 @@ def parse(text: str) -> Snapshot:
             continue
         created = _time(raw.get("created_at"))
         if kind == KIND_LONG_LIVED:
-            lifetime = raw.get("access_token_expiration")
-            valid = isinstance(lifetime, (int, float)) and not isinstance(lifetime, bool)
-            expires = created + timedelta(seconds=float(lifetime)) if created and valid else None  # type: ignore[arg-type]
+            lifetime = _seconds(raw.get("access_token_expiration"))
+            expires = created + lifetime if created is not None and lifetime is not None else None
         else:
             expires = _time(raw.get("expire_at"))
         keys.append(

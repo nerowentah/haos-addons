@@ -74,8 +74,9 @@ class ReviewStateTest(unittest.TestCase):
         reviews: dict[str, object] = {}
         review.set_state(reviews, "k1", review.STATE_APPROVED, NOW)
         self.assertEqual(review.set_note(reviews, "k1", "  used by\n Grafana  "), "used by Grafana")
+        self.assertEqual(review.review_of(reviews, "k1"), review.Review("approved", "used by Grafana", NOW))
         self.assertEqual(
-            review.review_of(reviews, "k1"),
+            reviews["k1"],  # the saved form is unchanged
             {"state": "approved", "note": "used by Grafana", "reviewed_at": "2026-11-09T00:00:00+00:00"},
         )
         review.set_state(reviews, "k1", review.STATE_UNREVIEWED)
@@ -83,9 +84,16 @@ class ReviewStateTest(unittest.TestCase):
         self.assertEqual(reviews, {})  # nothing left to keep
 
     def test_unknown_state_is_rejected(self) -> None:
-        with self.assertRaises(ValueError):
-            review.set_state({}, "k1", "maybe")
-        self.assertEqual(review.review_of({"k1": {"state": "maybe"}}, "k1")["state"], review.STATE_UNREVIEWED)
+        self.assertIsNone(review.parse_state("maybe"))
+        self.assertIsNone(review.parse_state(["approved"]))
+        self.assertEqual(review.parse_state("approved"), review.STATE_APPROVED)
+        self.assertEqual(review.review_of({"k1": {"state": "maybe"}}, "k1").state, review.STATE_UNREVIEWED)
+
+    def test_malformed_review_time_is_dropped(self) -> None:
+        entry = review.review_of({"k1": {"state": "approved", "reviewed_at": "yesterday"}}, "k1")
+        self.assertEqual((entry.state, entry.reviewed_at), (review.STATE_APPROVED, None))
+        naive = review.review_of({"k1": {"state": "approved", "reviewed_at": "2026-11-09T00:00:00"}}, "k1")
+        self.assertEqual(naive.reviewed_at, NOW)
 
     def test_note_is_capped(self) -> None:
         self.assertEqual(len(review.set_note({}, "k1", "x" * 2000)), review.NOTE_MAX_CHARS)

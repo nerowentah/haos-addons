@@ -4,24 +4,45 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Collection
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from typing import Final, Literal
 
 from auth_store import KIND_LONG_LIVED, Key, Snapshot, User
 
-STATE_UNREVIEWED = "unreviewed"
-STATE_APPROVED = "approved"
-STATE_SUSPICIOUS = "suspicious"
-STATES = (STATE_UNREVIEWED, STATE_APPROVED, STATE_SUSPICIOUS)
+type State = Literal["unreviewed", "approved", "suspicious"]
+STATE_UNREVIEWED: Final = "unreviewed"
+STATE_APPROVED: Final = "approved"
+STATE_SUSPICIOUS: Final = "suspicious"
+STATES: tuple[State, ...] = (STATE_UNREVIEWED, STATE_APPROVED, STATE_SUSPICIOUS)
 
-FLAG_INACTIVE_OWNER = "inactive_owner"
-FLAG_EXPIRED = "expired"
-FLAG_NEVER_USED = "never_used"
-FLAG_UNUSED = "unused"
-FLAG_VAGUE = "vague_description"
-FLAG_DUPLICATE = "duplicate_description"
-FLAG_ADMIN = "admin_rights"
+type Flag = Literal[
+    "inactive_owner",
+    "expired",
+    "never_used",
+    "unused",
+    "vague_description",
+    "duplicate_description",
+    "admin_rights",
+]
+FLAG_INACTIVE_OWNER: Final = "inactive_owner"
+FLAG_EXPIRED: Final = "expired"
+FLAG_NEVER_USED: Final = "never_used"
+FLAG_UNUSED: Final = "unused"
+FLAG_VAGUE: Final = "vague_description"
+FLAG_DUPLICATE: Final = "duplicate_description"
+FLAG_ADMIN: Final = "admin_rights"
 # Most serious first: the card badge shows the first flag that applies.
-FLAG_ORDER = (FLAG_INACTIVE_OWNER, FLAG_EXPIRED, FLAG_NEVER_USED, FLAG_UNUSED, FLAG_VAGUE, FLAG_DUPLICATE, FLAG_ADMIN)
+FLAG_ORDER: tuple[Flag, ...] = (
+    FLAG_INACTIVE_OWNER,
+    FLAG_EXPIRED,
+    FLAG_NEVER_USED,
+    FLAG_UNUSED,
+    FLAG_VAGUE,
+    FLAG_DUPLICATE,
+    FLAG_ADMIN,
+)
 # Flags that ask for attention (admin rights alone is informational).
 ATTENTION_FLAGS = frozenset(FLAG_ORDER) - {FLAG_ADMIN}
 
@@ -34,7 +55,7 @@ NEVER_USED_GRACE = timedelta(days=1)
 NOTE_MAX_CHARS = 500
 
 
-def is_vague(description: str, extra_words: list[str] | tuple[str, ...] = ()) -> bool:
+def is_vague(description: str, extra_words: Collection[str] = ()) -> bool:
     """True when a description says nothing about who or what uses the key.
 
     Empty, shorter than 4 characters, or made only of generic words ("test token", "API key 2").
@@ -55,11 +76,11 @@ def key_flags(  # noqa: PLR0913 - every input a flag needs
     unused_days: int,
     *,
     duplicates: set[str] | None = None,
-    extra_vague: list[str] | tuple[str, ...] = (),
-) -> list[str]:
+    extra_vague: Collection[str] = (),
+) -> list[Flag]:
     """Flags for one long-lived key, most serious first."""
 
-    flags: set[str] = set()
+    flags: set[Flag] = set()
     if not user.is_active:
         flags.add(FLAG_INACTIVE_OWNER)
     if key.expires_at is not None and key.expires_at <= now:
@@ -81,12 +102,12 @@ def key_flags(  # noqa: PLR0913 - every input a flag needs
 
 
 def all_flags(
-    snapshot: Snapshot, now: datetime, unused_days: int, extra_vague: list[str] | tuple[str, ...] = ()
-) -> dict[str, list[str]]:
+    snapshot: Snapshot, now: datetime, unused_days: int, extra_vague: Collection[str] = ()
+) -> dict[str, list[Flag]]:
     """Flags for every long-lived key, by key id."""
 
     users = {u.user_id: u for u in snapshot.users}
-    result: dict[str, list[str]] = {}
+    result: dict[str, list[Flag]] = {}
     for user in snapshot.users:
         keys = snapshot.keys_of(user.user_id, KIND_LONG_LIVED)
         counts = Counter(k.name.strip().lower() for k in keys if k.name.strip())
@@ -98,46 +119,78 @@ def all_flags(
     return result
 
 
-def review_of(reviews: dict[str, object], key_id: str) -> dict[str, str]:
-    """The stored review for a key ({state, note, reviewed_at}); unreviewed when missing or malformed."""
+def parse_state(value: object) -> State | None:
+    """``value`` as a review state; None when it is not one."""
 
-    entry = reviews.get(key_id)
-    if not isinstance(entry, dict):
-        return {"state": STATE_UNREVIEWED, "note": "", "reviewed_at": ""}
-    state = entry.get("state")
-    return {
-        "state": state if state in STATES else STATE_UNREVIEWED,
-        "note": str(entry.get("note") or ""),
-        "reviewed_at": str(entry.get("reviewed_at") or ""),
-    }
+    for state in STATES:
+        if state == value:
+            return state
+    return None
 
 
-def set_state(reviews: dict[str, object], key_id: str, state: str, now: datetime | None = None) -> None:
+def _moment(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class Review:
+    """What the user decided about one key, as kept in /data."""
+
+    state: State = STATE_UNREVIEWED
+    note: str = ""
+    reviewed_at: datetime | None = None
+
+    @classmethod
+    def from_json(cls, entry: object) -> Review:
+        """The stored entry ({state, note, reviewed_at}); unreviewed when it is missing or malformed."""
+
+        if not isinstance(entry, dict):
+            return cls()
+        return cls(
+            state=parse_state(entry.get("state")) or STATE_UNREVIEWED,
+            note=str(entry.get("note") or ""),
+            reviewed_at=_moment(entry.get("reviewed_at")),
+        )
+
+    def to_json(self) -> dict[str, str]:
+        """The entry to store."""
+
+        reviewed = self.reviewed_at.isoformat(timespec="seconds") if self.reviewed_at else ""
+        return {"state": self.state, "note": self.note, "reviewed_at": reviewed}
+
+
+def review_of(reviews: dict[str, object], key_id: str) -> Review:
+    """The stored review for a key; unreviewed when missing or malformed."""
+
+    return Review.from_json(reviews.get(key_id))
+
+
+def set_state(reviews: dict[str, object], key_id: str, state: State, now: datetime | None = None) -> None:
     """Record a review decision (the note is kept)."""
 
-    if state not in STATES:
-        raise ValueError(f"unknown review state {state!r}")
-    entry = review_of(reviews, key_id)
-    entry["state"] = state
-    entry["reviewed_at"] = "" if state == STATE_UNREVIEWED else (now or datetime.now(UTC)).isoformat(timespec="seconds")
-    _store(reviews, key_id, entry)
+    reviewed = None if state == STATE_UNREVIEWED else (now or datetime.now(UTC))
+    _store(reviews, key_id, replace(review_of(reviews, key_id), state=state, reviewed_at=reviewed))
 
 
 def set_note(reviews: dict[str, object], key_id: str, note: str) -> str:
     """Set (or clear) a key's note; returns the stored text (one line, at most 500 characters)."""
 
     text = " ".join(note.split())[:NOTE_MAX_CHARS]
-    entry = review_of(reviews, key_id)
-    entry["note"] = text
-    _store(reviews, key_id, entry)
+    _store(reviews, key_id, replace(review_of(reviews, key_id), note=text))
     return text
 
 
-def _store(reviews: dict[str, object], key_id: str, entry: dict[str, str]) -> None:
-    if entry["state"] == STATE_UNREVIEWED and not entry["note"]:
+def _store(reviews: dict[str, object], key_id: str, entry: Review) -> None:
+    if entry.state == STATE_UNREVIEWED and not entry.note:
         reviews.pop(key_id, None)
     else:
-        reviews[key_id] = entry
+        reviews[key_id] = entry.to_json()
 
 
 def prune(section: dict[str, object], live_ids: set[str]) -> bool:

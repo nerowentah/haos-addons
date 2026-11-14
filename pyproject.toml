@@ -28,6 +28,9 @@ extend-select = [
   "RET",  # flake8-return
   "T20",  # flake8-print
   "TRY",  # tryceratops
+  "ANN",  # flake8-annotations
+  "BLE",  # flake8-blind-except
+  "PGH003", # a "type: ignore" names its error code
 ]
 ignore = ["E501"]
 
@@ -52,6 +55,7 @@ ignore = ["E501"]
   "TRY003",
 ]
 "tnb-usage-checker/tests/*.py" = [
+  "ANN",  # until this app is strictly typed
   "TRY003",
   "S105",
   "S106",

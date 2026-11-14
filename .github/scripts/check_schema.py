@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import yaml
@@ -32,7 +33,7 @@ RE_SCHEMA_ELEMENT = re.compile(
 )
 
 
-def _leaves(node: object, path: str):
+def _leaves(node: object, path: str) -> Iterator[tuple[str, object]]:
     if isinstance(node, dict):
         for key, value in node.items():
             yield from _leaves(value, f"{path}.{key}")

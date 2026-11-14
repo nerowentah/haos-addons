@@ -20,8 +20,8 @@ import supervisor
 import webui
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "auth.json"
-STORED = {"unused_days": 90, "notify_on_new_keys": True, "vague_words": ["!secret word"]}
-RESOLVED = {**STORED, "vague_words": ["homelab"]}
+STORED: dict[str, object] = {"unused_days": 90, "notify_on_new_keys": True, "vague_words": ["!secret word"]}
+RESOLVED: dict[str, object] = {**STORED, "vague_words": ["homelab"]}
 
 
 class FakeSupervisor(supervisor.Supervisor):
@@ -56,8 +56,8 @@ class AppTest(unittest.TestCase):
         raw = webui.initial_options(lambda: copy.deepcopy(RESOLVED), self.sup.fetch_options, secrets)
         self.store = store.Store(self.dir / "state.json")
         self.app = main.App(
-            config.load_config(secrets.resolve(raw)),
-            self.sup,  # type: ignore[arg-type]
+            config.load_config(secrets.resolve_options(raw)),
+            self.sup,
             self.store,
             raw,
             auth_store.AuthReader(self.auth),
@@ -68,12 +68,15 @@ class AppTest(unittest.TestCase):
     def _state_text(self) -> str:
         return json.dumps(self.app.panel_state())
 
+    def _action(self, action_id: str, **args: object) -> str | None:
+        return self.app.panel_action(action_id, webui.PanelArgs(args))
+
     # -- Options ---------------------------------------------------------------------
     def test_live_change_resolves_references(self) -> None:
         self.sup.stored["unused_days"] = 30
         self.app.check_options()
         self.assertEqual(self.app.config.unused_days, 30)
-        self.assertEqual(self.app.config.vague_words, ["homelab"])
+        self.assertEqual(self.app.config.vague_words, ("homelab",))
 
     def test_panel_change_writes_references(self) -> None:
         self.app.panel_toggle("notify_on_new_keys", False)
@@ -95,8 +98,8 @@ class AppTest(unittest.TestCase):
             self.assertIn(name, text)
 
     def test_review_and_note_persist(self) -> None:
-        self.app.panel_action("review", {"key": "llat-grafana", "state": "approved"})
-        self.app.panel_action("note", {"key": "llat-grafana", "text": "Dashboards on the NAS"})
+        self._action("review", key="llat-grafana", state="approved")
+        self._action("note", key="llat-grafana", text="Dashboards on the NAS")
         self.store.save()
         saved = json.loads((self.dir / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(saved["reviews"]["llat-grafana"]["state"], "approved")
@@ -105,7 +108,7 @@ class AppTest(unittest.TestCase):
         self.assertNotIn("PLACEHOLDER-SECRET", (self.dir / "state.json").read_text(encoding="utf-8"))
 
     def test_hiding_approved_keys(self) -> None:
-        self.app.panel_action("review", {"key": "llat-grafana", "state": "approved"})
+        self._action("review", key="llat-grafana", state="approved")
         self.app.panel_toggle("view:show_approved", False)
         text = self._state_text()
         self.assertNotIn('"title": "Grafana"', text)
@@ -118,19 +121,27 @@ class AppTest(unittest.TestCase):
 
     def test_unknown_key_and_state_are_refused(self) -> None:
         with self.assertRaises(webui.PanelError):
-            self.app.panel_action("review", {"key": "nope", "state": "approved"})
+            self._action("review", key="nope", state="approved")
         with self.assertRaises(webui.PanelError):
-            self.app.panel_action("review", {"key": "llat-grafana", "state": "maybe"})
+            self._action("review", key="llat-grafana", state="maybe")
         with self.assertRaises(webui.PanelError):
-            self.app.panel_action("review", {"key": "session-browser", "state": "approved"})
+            self._action("review", key="session-browser", state="approved")
+        with self.assertRaises(webui.PanelError):
+            self._action("review", state="approved")
+        with self.assertRaises(webui.PanelError):
+            self._action("note", key="llat-grafana", text=["not", "text"])
+
+    def test_malformed_saved_review_does_not_break_the_panel(self) -> None:
+        self.store.section("reviews")["llat-grafana"] = {"state": "approved", "reviewed_at": "not a date"}
+        self.assertIn("Approved", self._state_text())
 
     def test_revoke_help_names_the_owner(self) -> None:
-        self.assertIn("Sam Sample", self.app.panel_action("revoke_help", {"key": "llat-grafana"}) or "")
+        self.assertIn("Sam Sample", self._action("revoke_help", key="llat-grafana") or "")
 
     # -- New keys and deleted keys --------------------------------------------------
     def test_new_key_is_notified_once_and_deleted_key_pruned(self) -> None:
         self.assertEqual(self.sup.sent, [])  # nothing is new on the first read
-        self.app.panel_action("review", {"key": "llat-old", "state": "suspicious"})
+        self._action("review", key="llat-old", state="suspicious")
         doc = json.loads(self.auth.read_text(encoding="utf-8"))
         tokens = doc["data"]["refresh_tokens"]
         added = dict(tokens[0], id="llat-new", client_name="Home Assistant Assist satellite")

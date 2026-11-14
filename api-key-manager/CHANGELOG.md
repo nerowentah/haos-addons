@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5
+
+- **Stricter internal checks.** The app's code now passes strict type checking: options, panel requests and saved reviews are validated where they enter the app. No visible change.
+- **Fix:** a damaged review date in the saved state no longer stops the panel from loading; that review is shown without its date.
+- **Panel:** a button request without a key, or with a note that is not text, is refused with a clear message.
+
 ## 0.1.4
 
 - **Shared panel update (security):** the panel only accepts changes that come from its own page (a request from another web site is refused), every page it serves carries a Content-Security-Policy and may only be shown inside Home Assistant, and stalled or oversized requests are dropped. No visible change in this app.
