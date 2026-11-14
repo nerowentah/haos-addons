@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.5
+
+- **`cloudflared` 2026.11.0** (was 2026.10.7), downloaded at build time and checked against the SHA-256 digests GitHub publishes for the release. No change to options or the panel.
+
 ## 0.3.4
 
 - **The tunnel token is wrapped as a secret.** It is only revealed where it is put into cloudflared's environment; it cannot show up in a log line or a debug dump. The Cloudflare API token from the sign-in is masked in logs too.

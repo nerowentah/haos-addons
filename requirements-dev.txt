@@ -6,9 +6,15 @@ ruff==0.17.5
 mypy==2.4.1
 
 # Libraries: the versions of the Alpine 3.24 packages the images install
-# (py3-paho-mqtt, py3-websocket-client, py3-cryptography, py3-yaml), so the
-# tests run against what ships. Update them together with the base image.
+# (py3-paho-mqtt, py3-websocket-client, py3-yaml), so the tests run against
+# what ships. Update them together with the base image.
 paho-mqtt==1.6.1
 websocket-client==1.9.0
-cryptography==47.0.0
 pyyaml==6.0.3
+
+# cryptography is the exception: Alpine 3.24 ships py3-cryptography 47.0.0, but
+# CI installs the PyPI wheel, and the wheels before 50.0.0 carry open advisories
+# (GHSA-537c-gmf6-5ccf, CVE-2026-69247, CVE-2026-69248, CVE-2026-69249). CI runs
+# a fixed release; SECURITY.md explains why the shipped 47.0.0 is not affected.
+# Go back to mirroring Alpine once its package is 50.0.0 or later.
+cryptography==50.0.2

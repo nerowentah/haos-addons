@@ -68,7 +68,8 @@ tools/sync_shared.py       copies shared/app/ into the apps (--check: fail when 
                            retry-signing.yaml (re-runs builds that failed only because Sigstore was down),
                            cleanup-packages.yaml (deletes ghcr packages no app uses anymore,
                            and prunes old untagged versions),
-                           codeql.yaml (static analysis of the Python, the panel script and the workflows)
+                           codeql.yaml (static analysis of the Python, the panel script and the workflows),
+                           scan-images.yaml (weekly Trivy scan of the published images)
 .github/dependabot.yml     weekly updates for actions, base images and CI tools
 requirements-dev.txt       pinned CI tools and test libraries (pip install -r requirements-dev.txt)
 SECURITY.md                what the apps are trusted with, and how to report a problem
