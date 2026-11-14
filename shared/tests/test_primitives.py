@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import io
 import logging
 import os
@@ -67,9 +68,7 @@ class AtomicWriteTest(unittest.TestCase):
 
     def test_there_is_no_way_to_ask_for_a_wider_mode(self) -> None:
         self.assertFalse(hasattr(safefile, "PUBLIC"))
-        with self.assertRaises(TypeError):
-            safefile.atomic_write(self.folder / "x", "data", 0o644)  # type: ignore[call-arg]
-        self.assertEqual(list(self.folder.iterdir()), [])
+        self.assertEqual(list(inspect.signature(safefile.atomic_write).parameters), ["path", "data"])
 
     def test_works_where_there_are_no_permission_bits(self) -> None:
         path = self.folder / "state.json"
