@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.11
+
+- **Image security updates.** The image now applies Alpine's package updates when it is built (this release picks up fixes for krb5 and zlib), and the unused `tempio` binary from the base image is removed. No functional change.
+
 ## 0.1.10
 
 - **Stricter internal checks.** The app's code now passes strict type checking: options, panel requests and Home Assistant's replies are validated where they enter the app. No visible change.

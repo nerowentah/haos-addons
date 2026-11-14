@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5
+
+- **Image security updates.** The image now applies Alpine's package updates when it is built (this release picks up fixes for krb5 and zlib), and the unused `tempio` binary from the base image is removed. No functional change.
+- **Known advisories** for the Python modules Alpine ships with certbot (urllib3, anyio, setuptools, cryptography) are reviewed and listed in the repository's `SECURITY.md`; none can be reached in this app.
+
 ## 0.1.4
 
 - **The Cloudflare API token is wrapped as a secret.** It is only revealed where certbot's credentials file is written and where Cloudflare's API is called; it cannot show up in a log line or a debug dump.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.6
+
+- **Image security updates.** The image now applies Alpine's package updates when it is built (this release picks up fixes for krb5 and zlib), and the unused `tempio` binary from the base image is removed. No functional change.
+
 ## 0.5.5
 
 - **Code scanning:** the start-up line that lists each account (label, tariff, billing day, data sources) is marked as reviewed. It never contained a password or an account number; the scanner flagged it because the same record also holds the myTNB password. No functional change.

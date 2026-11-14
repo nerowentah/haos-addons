@@ -9,9 +9,13 @@ ARG BUILD_VERSION
 ARG BUILD_ARCH
 
 # Alpine packages only (no pip): the site client is stdlib; paho-mqtt for MQTT discovery.
-RUN apk add --no-cache \
-    python3 \
-    py3-paho-mqtt
+# apk upgrade: the security fixes Alpine published after the base image was built.
+# tempio (a Go template tool in the base image) is not used by this app.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache \
+        python3 \
+        py3-paho-mqtt \
+    && rm -f /usr/bin/tempio
 
 WORKDIR /app
 

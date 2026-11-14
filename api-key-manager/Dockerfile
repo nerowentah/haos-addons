@@ -9,7 +9,11 @@ ARG BUILD_VERSION
 ARG BUILD_ARCH
 
 # Python standard library only: no pip, no extra packages.
-RUN apk add --no-cache python3
+# apk upgrade: the security fixes Alpine published after the base image was built.
+# tempio (a Go template tool in the base image) is not used by this app.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache python3 \
+    && rm -f /usr/bin/tempio
 
 WORKDIR /app
 

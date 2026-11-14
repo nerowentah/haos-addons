@@ -69,7 +69,7 @@ tools/sync_shared.py       copies shared/app/ into the apps (--check: fail when 
                            cleanup-packages.yaml (deletes ghcr packages no app uses anymore,
                            and prunes old untagged versions),
                            codeql.yaml (static analysis of the Python, the panel script and the workflows),
-                           scan-images.yaml (weekly Trivy scan of the published images)
+                           scan-images.yaml (Trivy scan of the published images, weekly and after each publish)
 .github/dependabot.yml     weekly updates for actions, base images and CI tools
 requirements-dev.txt       pinned CI tools and test libraries (pip install -r requirements-dev.txt)
 SECURITY.md                what the apps are trusted with, and how to report a problem

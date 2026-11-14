@@ -11,8 +11,12 @@ ARG BUILD_ARCH
 # python3 + cryptography: certificate parsing, keys and signing.
 # certbot + its Cloudflare DNS plugin: Let's Encrypt over DNS-01 (no open port).
 # nginx: the optional HTTPS proxy in front of Home Assistant.
-RUN apk add --no-cache python3 py3-cryptography certbot certbot-dns-cloudflare nginx \
-    && certbot --version && nginx -v
+# apk upgrade: the security fixes Alpine published after the base image was built.
+# tempio (a Go template tool in the base image) is not used by this app.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache python3 py3-cryptography certbot certbot-dns-cloudflare nginx \
+    && certbot --version && nginx -v \
+    && rm -f /usr/bin/tempio
 
 WORKDIR /app
 

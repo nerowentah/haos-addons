@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.13
+
+- **Image security updates.** The image now applies Alpine's package updates when it is built (this release picks up fixes for krb5 and zlib), and the unused `tempio` binary from the base image is removed. No functional change.
+
 ## 1.7.12
 
 - **Session tokens are wrapped as secrets.** A TV's renewal address (which carries the session token) is only revealed where the request is sent; it cannot show up in a log line or a debug dump.

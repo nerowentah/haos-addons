@@ -33,3 +33,91 @@ vulnerabilities:
     statement: >-
       Slow chain building in cryptography.x509.verification. The app does not
       use that verifier.
+
+  # urllib3, anyio, setuptools: installed by Alpine with certbot (SSL Cert Manager).
+  - id: CVE-2026-97687
+    purls:
+      - "pkg:pypi/urllib3@2.7.0"
+    expired_at: 2027-03-31
+    statement: >-
+      Mix-up of HTTPS proxy and target TLS settings. No proxy is configured.
+
+  - id: CVE-2026-97688
+    purls:
+      - "pkg:pypi/urllib3@2.7.0"
+    expired_at: 2027-03-31
+    statement: >-
+      A malicious server can stall or bloat a streamed response. Only certbot uses
+      urllib3, towards Let's Encrypt and the Cloudflare API over verified TLS.
+
+  - id: CVE-2026-97689
+    purls:
+      - "pkg:pypi/urllib3@2.7.0"
+    expired_at: 2027-03-31
+    statement: >-
+      A malicious server can stall or bloat a streamed response. Only certbot uses
+      urllib3, towards Let's Encrypt and the Cloudflare API over verified TLS.
+
+  - id: CVE-2026-63374
+    purls:
+      - "pkg:pypi/anyio@0.0.0"
+    expired_at: 2027-03-31
+    statement: >-
+      Host name check in connect_tcp() and TLSStream.wrap(). anyio is only a
+      dependency of httpx, whose synchronous client (the one in use) does not go
+      through anyio. Alpine's package reports version 0.0.0 (it is 4.12.1).
+
+  - id: CVE-2026-64847
+    purls:
+      - "pkg:pypi/anyio@0.0.0"
+    expired_at: 2027-03-31
+    statement: >-
+      anyio process-pool workers. Nothing starts an anyio process pool.
+
+  - id: CVE-2026-59890
+    purls:
+      - "pkg:pypi/setuptools@82.0.1"
+    expired_at: 2027-03-31
+    statement: >-
+      Build-time handling of packages. Nothing is built or installed in the running image.
+
+  - id: GHSA-xmj3-9gf7-h52w
+    purls:
+      - "pkg:pypi/setuptools@82.0.1"
+    expired_at: 2027-03-31
+    statement: >-
+      Build-time handling of packages. Nothing is built or installed in the running image.
+
+  # Libraries compiled into cloudflared (Cloudflare Tunnel).
+  - id: CVE-2026-78661
+    purls:
+      - "pkg:golang/golang.org/x/net@v0.61.0"
+    expired_at: 2027-03-31
+    statement: >-
+      cloudflared 2026.11.0 is the latest release; the library is compiled into
+      Cloudflare's binary and is updated with it.
+
+  - id: CVE-2026-97045
+    purls:
+      - "pkg:golang/golang.org/x/net@v0.61.0"
+    expired_at: 2027-03-31
+    statement: >-
+      cloudflared 2026.11.0 is the latest release; the library is compiled into
+      Cloudflare's binary and is updated with it.
+
+  - id: GO-2026-5932
+    purls:
+      - "pkg:golang/golang.org/x/crypto@v0.58.0"
+    expired_at: 2027-03-31
+    statement: >-
+      cloudflared 2026.11.0 is the latest release; the library is compiled into
+      Cloudflare's binary and is updated with it.
+
+  - id: CVE-2026-128085
+    purls:
+      - "pkg:golang/go.opentelemetry.io/otel/sdk@v1.45.0"
+      - "pkg:golang/go.opentelemetry.io/otel/trace@v1.45.0"
+    expired_at: 2027-03-31
+    statement: >-
+      cloudflared 2026.11.0 is the latest release; the library is compiled into
+      Cloudflare's binary and is updated with it.
