@@ -7,6 +7,7 @@
 - **The Supervisor token is masked** if it ever reaches a log line.
 - **Outbound requests** to the Cloudflare API and the DNS-over-HTTPS lookup refuse redirects to plain http and oversized answers.
 - **Tunnel routing files** (`config.yml` and its backup) are readable by the app only.
+- **`/ssl/cloudflare-tunnel/status.json` is owner-only** (mode 0600; it was world-readable). SSL Cert Manager runs as root and reads it as before.
 
 ## 0.3.2
 

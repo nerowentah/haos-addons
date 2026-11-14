@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -39,6 +40,16 @@ class FilesTest(unittest.TestCase):
         self.assertEqual(len(chain), 2)
         mode = (self.files.certs_dir / "home-example-com" / "privkey.pem").stat().st_mode & 0o777
         self.assertIn(mode, (0o600, 0o666))  # 0o666 on Windows, where chmod only knows read-only
+
+    @unittest.skipUnless(os.name == "posix", "file modes are a POSIX feature")
+    def test_everything_published_is_owner_only(self) -> None:
+        self.sync(["home-example-com"], "home-example-com")
+        written = [p for p in self.ssl.rglob("*") if p.is_file()]
+        self.assertTrue(any(p.name == "fullchain.pem" for p in written))
+        self.assertTrue(any(p.name == "status.json" for p in written))
+        for path in written:
+            with self.subTest(file=path.name):
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_publish_default_and_root(self) -> None:
         result = self.sync(["home-example-com"], "home-example-com")

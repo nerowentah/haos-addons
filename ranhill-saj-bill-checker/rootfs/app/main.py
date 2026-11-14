@@ -31,7 +31,7 @@ from config import (
     mask_number,
 )
 from ranhill import AccountNotFoundError, Bill, ParseError, SajClient, SajError
-from safefile import PRIVATE, atomic_write
+from safefile import atomic_write
 from store import Store
 from supervisor import (
     Supervisor,
@@ -648,7 +648,7 @@ class App:
         if not page:
             return
         try:
-            atomic_write(UNRECOGNISED_PAGE, page, PRIVATE)
+            atomic_write(UNRECOGNISED_PAGE, page)
             _LOGGER.warning(
                 "Saved the unrecognised page to %s (it may contain your name and address)", UNRECOGNISED_PAGE
             )
