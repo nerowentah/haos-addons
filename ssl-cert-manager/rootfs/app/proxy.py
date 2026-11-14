@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from safefile import PRIVATE, atomic_write
+from safefile import atomic_write
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -211,7 +211,7 @@ class Proxy:
         if text == self._text and self.running:
             return True
         candidate = self.conf.with_suffix(".new")
-        atomic_write(candidate, text, PRIVATE)
+        atomic_write(candidate, text)
         problem = self._test(candidate)
         if problem:
             self.error = f"nginx: {problem}"

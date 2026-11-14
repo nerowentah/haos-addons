@@ -55,21 +55,30 @@ class AtomicWriteTest(unittest.TestCase):
         self.assertEqual([p.name for p in self.folder.iterdir()], ["state.json"])
 
     @unittest.skipUnless(os.name == "posix", "file modes are a POSIX feature")
-    def test_private_by_default_and_mode_is_enforced(self) -> None:
+    def test_always_owner_only_and_wider_files_are_tightened(self) -> None:
         path = self.folder / "token"
         safefile.atomic_write(path, "secret")
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        safefile.atomic_write(path, "secret", safefile.PUBLIC)
-        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
-        path.chmod(0o666)
-        self.assertTrue(safefile.atomic_write(path, "secret", safefile.PRIVATE))  # same data, wrong mode
-        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        for wider in (0o644, 0o640, 0o666):
+            path.chmod(wider)
+            self.assertTrue(safefile.atomic_write(path, "secret"))  # same data, wider mode: written again
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertFalse(safefile.atomic_write(path, "secret"))
 
-    def test_only_the_two_known_modes_are_accepted(self) -> None:
-        for mode in (0o666, 0o777, 0o640, 0o660, 0):
-            with self.subTest(mode=oct(mode)), self.assertRaises(ValueError):
-                safefile.atomic_write(self.folder / "x", "data", mode)
+    def test_there_is_no_way_to_ask_for_a_wider_mode(self) -> None:
+        self.assertFalse(hasattr(safefile, "PUBLIC"))
+        with self.assertRaises(TypeError):
+            safefile.atomic_write(self.folder / "x", "data", 0o644)  # type: ignore[call-arg]
         self.assertEqual(list(self.folder.iterdir()), [])
+
+    def test_works_where_there_are_no_permission_bits(self) -> None:
+        path = self.folder / "state.json"
+        with mock.patch.object(safefile, "HAS_MODES", False), mock.patch("safefile.os.chmod") as chmod:
+            self.assertTrue(safefile.atomic_write(path, "one"))
+            self.assertFalse(safefile.atomic_write(path, "one"))
+            self.assertTrue(safefile.atomic_write(path, "two"))
+        chmod.assert_not_called()
+        self.assertEqual(path.read_text(encoding="utf-8"), "two")
 
     def test_the_store_saves_through_it(self) -> None:
         store = Store(self.folder / "state.json")
