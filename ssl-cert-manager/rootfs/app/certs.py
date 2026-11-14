@@ -300,7 +300,7 @@ def csr_pem(key: PrivateKey, hostnames: list[str]) -> str:
         x509.CertificateSigningRequestBuilder()
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostnames[0][:64])]))
         .add_extension(_san(hostnames), critical=False)
-        .sign(key, hashes.SHA256())  # type: ignore[arg-type]
+        .sign(key, hashes.SHA256())
     )
     return csr.public_bytes(serialization.Encoding.PEM).decode("ascii")
 
@@ -364,9 +364,9 @@ def issue(
         )
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
         .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
-        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)  # type: ignore[arg-type]
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
     )
-    return builder.sign(ca_key, algorithm), key  # type: ignore[arg-type]
+    return builder.sign(ca_key, algorithm), key
 
 
 def digest(data: bytes) -> str:

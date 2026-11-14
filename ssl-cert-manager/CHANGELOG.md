@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4
+
+- **The Cloudflare API token is wrapped as a secret.** It is only revealed where certbot's credentials file is written and where Cloudflare's API is called; it cannot show up in a log line or a debug dump.
+- **Stricter internal checks.** The app's code now passes strict type checking: options, panel requests and the saved certificate list are validated where they enter the app. No visible change; the files in `/ssl` and `status.json` keep their format.
+- **Fix:** a damaged entry in the saved certificate list is ignored instead of stopping the panel, the renewal check or the status file.
+
 ## 0.1.3
 
 - **Shared panel update (security):** the panel only accepts changes that come from its own page (a request from another web site is refused), every page it serves carries a Content-Security-Policy and may only be shown inside Home Assistant, and stalled or oversized requests are dropped. No visible change in this app.

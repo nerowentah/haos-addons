@@ -15,8 +15,11 @@ import signal
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from types import FrameType
+from typing import cast
 
 import acme as acme_mod
 import certs
@@ -39,6 +42,7 @@ from supervisor import (
     merge_s6_environment,
 )
 from webui import (
+    PanelArgs,
     PanelError,
     PanelRouter,
     PanelServer,
@@ -53,7 +57,6 @@ from webui import (
     row,
     stat,
     toggle,
-    uploaded_files,
     wait_for_valid_config,
 )
 
@@ -103,6 +106,94 @@ def _parse_iso(value: object) -> dt.datetime | None:
         return dt.datetime.fromisoformat(str(value))
     except ValueError:
         return None
+
+
+def _text(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _rows(section: dict[str, object]) -> dict[str, dict[str, object]]:
+    """A store section as a table of rows.
+
+    The store hands out ``dict[str, object]``; this is the same dict, so
+    changes are saved. :func:`_drop_malformed` runs when the app starts and
+    removes anything that is not a row, which makes the cast true.
+    """
+
+    return cast("dict[str, dict[str, object]]", section)
+
+
+def _drop_malformed(section: dict[str, object]) -> None:
+    for key in [key for key, entry in section.items() if not isinstance(entry, dict)]:
+        del section[key]
+
+
+@dataclass(frozen=True, slots=True)
+class CertRecord:
+    """A typed, read-only view of one saved certificate row (the store keeps the row itself)."""
+
+    names: tuple[str, ...] = ()
+    source: str = ""
+    not_after: dt.datetime | None = None
+    not_after_text: str | None = None  # as saved: what the status file publishes
+    issuer: str = ""
+    fingerprint: str | None = None
+    ca_id: str = ""
+    origin_id: str = ""
+    staging: bool = False
+    error: str = ""
+    retry_at: dt.datetime | None = None
+    expiry_notified: str = ""
+
+    @classmethod
+    def from_json(cls, entry: object) -> CertRecord:
+        """Read a saved row; a missing or malformed field gets its default."""
+
+        if not isinstance(entry, dict):
+            return cls()
+        info = entry.get("info")
+        if not isinstance(info, dict):
+            info = {}
+        names = entry.get("names")
+        expires = info.get("not_after")
+        return cls(
+            names=tuple(str(name) for name in names) if isinstance(names, list) else (),
+            source=_text(entry.get("source")),
+            not_after=_parse_iso(expires),
+            not_after_text=expires if isinstance(expires, str) else None,
+            issuer=_text(info.get("issuer")),
+            fingerprint=_text(info.get("fingerprint")) or None,
+            ca_id=_text(entry.get("ca_id")),
+            origin_id=_text(entry.get("origin_id")),
+            staging=entry.get("staging") is True,
+            error=_text(entry.get("error")),
+            retry_at=_parse_iso(entry.get("retry_at")),
+            expiry_notified=_text(entry.get("expiry_notified")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CaRecord:
+    """A typed, read-only view of one saved CA row."""
+
+    label: str = ""
+    fingerprint: str = ""
+    not_after: dt.datetime | None = None
+    can_issue: bool = False
+
+    @classmethod
+    def from_json(cls, entry: object) -> CaRecord:
+        """Read a saved row; a missing or malformed field gets its default."""
+
+        if not isinstance(entry, dict):
+            return cls()
+        info = entry.get("info")
+        return cls(
+            label=_text(entry.get("label")),
+            fingerprint=_text(entry.get("fingerprint")),
+            not_after=_parse_iso(info.get("not_after")) if isinstance(info, dict) else None,
+            can_issue=entry.get("can_issue") is True,
+        )
 
 
 def make_id(name: str, taken: set[str], prefix: str = "") -> str:
@@ -169,6 +260,8 @@ class App:
         self.secrets = SecretRefs()
         self.supervisor = supervisor
         self.store = store
+        _drop_malformed(store.section("certs"))
+        _drop_malformed(store.section("cas"))
         self.files = files or files_mod.Files()
         self.acme = acme or acme_mod.Acme()
         self.origin = origin or origin_mod.OriginCa()
@@ -201,11 +294,11 @@ class App:
     # -- store sections ---------------------------------------------------------------
     @property
     def certs(self) -> dict[str, dict[str, object]]:
-        return self.store.section("certs")  # type: ignore[return-value]
+        return _rows(self.store.section("certs"))
 
     @property
     def cas(self) -> dict[str, dict[str, object]]:
-        return self.store.section("cas")  # type: ignore[return-value]
+        return _rows(self.store.section("cas"))
 
     @property
     def phones(self) -> dict[str, object]:
@@ -264,7 +357,7 @@ class App:
             raw = copy.deepcopy(base)
             mutate(raw)
             try:
-                config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+                config = load_config(self.secrets.resolve_options(raw))
             except (ConfigError, SecretError) as err:
                 raise PanelError(str(err)) from err
             try:
@@ -282,7 +375,7 @@ class App:
         if raw == self.raw_options:
             return
         try:
-            config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+            config = load_config(self.secrets.resolve_options(raw))
         except (ConfigError, SecretError) as err:
             _LOGGER.error("Ignoring updated options until they are fixed: %s", err)  # noqa: TRY400 - no traceback needed
             self.raw_options = raw
@@ -410,11 +503,11 @@ class App:
             if ca_cert is None:
                 raise certs.CertError("The private key does not belong to the CA certificate")
             certs.check_issuer(ca_cert, bundle.key)
-            todo = [(ca_cert, bundle.key)]
+            todo: list[tuple[x509.Certificate, certs.PrivateKey | None]] = [(ca_cert, bundle.key)]
         else:
             todo = [(c, None) for c in bundle.certs]
         added = []
-        known = {str(meta.get("fingerprint")): ca_id for ca_id, meta in self.cas.items()}
+        known = {CaRecord.from_json(meta).fingerprint: ca_id for ca_id, meta in self.cas.items()}
         for cert, key in todo:
             summary = certs.info(cert)
             ca_id = known.get(summary.fingerprint)
@@ -429,7 +522,7 @@ class App:
                     "label": label,
                     "fingerprint": summary.fingerprint,
                     "info": summary.as_dict(),
-                    "can_issue": key is not None or bool(self.cas.get(ca_id, {}).get("can_issue")),
+                    "can_issue": key is not None or CaRecord.from_json(self.cas.get(ca_id)).can_issue,
                     "created": _iso(_now()),
                 }
                 self.store.dirty = True
@@ -452,19 +545,20 @@ class App:
 
     def _renew(self, cert_id: str) -> str:
         with self.lock:
-            meta = dict(self.certs.get(cert_id) or {})
+            meta = self.certs.get(cert_id)
+            record = CertRecord.from_json(meta)
         if not meta:
             raise certs.CertError("That certificate is gone; reload the page")
-        names = [str(n) for n in meta.get("names") or []]
+        names = list(record.names)
         try:
-            if meta.get("source") == SOURCE_LE:
+            if record.source == SOURCE_LE:
                 return self._letsencrypt(names, cert_id)
-            if meta.get("source") == SOURCE_ISSUED:
-                return self._issue(str(meta.get("ca_id")), names, cert_id)
+            if record.source == SOURCE_ISSUED:
+                return self._issue(record.ca_id, names, cert_id)
         except (certs.CertError, acme_mod.AcmeError, OSError) as err:
             retry = _now() + dt.timedelta(seconds=RENEW_RETRY_SECONDS)
             self._set_cert(cert_id, error=str(err), retry_at=_iso(retry))
-            self.notify("Certificate renewal failed", f"{names[0]}: {err}", f"_{cert_id}")
+            self.notify("Certificate renewal failed", f"{names[0] if names else cert_id}: {err}", f"_{cert_id}")
             raise
         raise certs.CertError("This certificate cannot be renewed by the app; import or request a new one")
 
@@ -489,21 +583,22 @@ class App:
         if meta is None:
             return "Already deleted"
         self.files.delete_cert(cert_id)
+        record = CertRecord.from_json(meta)
         note = ""
-        if meta.get("source") == SOURCE_ORIGIN and meta.get("origin_id"):
+        if record.source == SOURCE_ORIGIN and record.origin_id:
             try:
-                self.origin.revoke(self.config.cloudflare_api_token, str(meta["origin_id"]))
+                self.origin.revoke(self.config.cloudflare_api_token, record.origin_id)
                 note = " and revoked it at Cloudflare"
             except origin_mod.OriginCaError as err:
                 note = f"; revoking it at Cloudflare failed ({err}), revoke it in the dashboard"
-        return f"Deleted the certificate for {', '.join(str(n) for n in meta.get('names') or [])}{note}"
+        return f"Deleted the certificate for {', '.join(record.names)}{note}"
 
     def _delete_ca(self, ca_id: str) -> str:
         with self.lock:
             meta = self.cas.pop(ca_id, None)
             self.store.dirty = True
         self.files.delete_ca(ca_id)
-        return f"Removed {meta.get('label') if meta else 'the CA'} from the trusted CAs"
+        return f"Removed {CaRecord.from_json(meta).label or 'the CA'} from the trusted CAs"
 
     # -- Home Assistant configuration (worker thread) -------------------------------------
     def _trust_proxy(self) -> str | None:
@@ -560,8 +655,7 @@ class App:
         default = self.default_id
         if default is None:
             return None
-        info = self.certs.get(default, {}).get("info")
-        return str(info.get("fingerprint")) if isinstance(info, dict) else None
+        return CertRecord.from_json(self.certs.get(default)).fingerprint
 
     # -- the Cloudflare Tunnel app ---------------------------------------------------------
     def tunnel_status(self) -> dict[str, object] | None:
@@ -635,18 +729,18 @@ class App:
         listed = []
         for cert_id, meta in self.certs.items():
             fullchain, privkey = self.files.published(cert_id)
-            info = meta.get("info") if isinstance(meta.get("info"), dict) else {}
+            record = CertRecord.from_json(meta)
             listed.append(
                 {
                     "id": cert_id,
-                    "names": list(meta.get("names") or []),  # type: ignore[call-overload]
-                    "source": meta.get("source"),
-                    "not_after": info.get("not_after"),  # type: ignore[union-attr]
+                    "names": list(record.names),
+                    "source": record.source or None,
+                    "not_after": record.not_after_text,
                     "fullchain": str(fullchain),
                     "privkey": str(privkey),
                 }
             )
-        default_names = list(self.certs[default].get("names") or []) if default else []  # type: ignore[call-overload]
+        default_names = list(CertRecord.from_json(self.certs[default]).names) if default else []
         fullchain, privkey = self.files.published(files_mod.DEFAULT_DIR)
         return {
             "version": 1,
@@ -696,14 +790,15 @@ class App:
         with contextlib.suppress(SupervisorError, ValueError):
             self.upstream = proxy_mod.upstream_for(self.supervisor.core_info())
         fullchain, privkey = self.files.published(files_mod.DEFAULT_DIR)
-        default_site = proxy_mod.Site(list(self.certs[default].get("names") or []), str(fullchain), str(privkey))  # type: ignore[call-overload]
+        records = {cert_id: CertRecord.from_json(meta) for cert_id, meta in self.certs.items()}
+        default_site = proxy_mod.Site(list(records[default].names), str(fullchain), str(privkey))
         others = []
-        for cert_id, meta in self.certs.items():
+        for cert_id, record in records.items():
             if cert_id == default:
                 continue
             chain_path, key_path = self.files.published(cert_id)
-            others.append(proxy_mod.Site(list(meta.get("names") or []), str(chain_path), str(key_path)))  # type: ignore[call-overload]
-        fingerprints = tuple(str((m.get("info") or {}).get("fingerprint")) for m in self.certs.values())  # type: ignore[union-attr]
+            others.append(proxy_mod.Site(list(record.names), str(chain_path), str(key_path)))
+        fingerprints = tuple(record.fingerprint for record in records.values())
         key = (default, fingerprints, self.upstream)
         ranges: list[str] = []
         if self.config.proxy_real_ip == proxy_mod.REAL_IP_CLOUDFLARE:
@@ -730,23 +825,20 @@ class App:
         now = now or _now()
         limit = self.config.renew_days_before
         with self.lock:
-            items = [(cert_id, dict(meta)) for cert_id, meta in self.certs.items()]
-        for cert_id, meta in items:
-            info = meta.get("info") if isinstance(meta.get("info"), dict) else {}
-            not_after = _parse_iso(info.get("not_after"))  # type: ignore[union-attr]
-            if not_after is None:
+            items = [(cert_id, CertRecord.from_json(meta)) for cert_id, meta in self.certs.items()]
+        for cert_id, record in items:
+            if record.not_after is None:
                 continue
-            days = int((not_after - now).total_seconds() // 86400)
-            name = str((meta.get("names") or [cert_id])[0])  # type: ignore[index]
+            days = int((record.not_after - now).total_seconds() // 86400)
+            name = record.names[0] if record.names else cert_id
             if days > limit:
                 continue
-            if meta.get("source") in RENEWABLE:
-                retry = _parse_iso(meta.get("retry_at"))
-                if retry is None or retry <= now:
-                    self.enqueue(f"Renewing {name}", lambda cert_id=cert_id: self._renew(cert_id))
+            if record.source in RENEWABLE:
+                if record.retry_at is None or record.retry_at <= now:
+                    self.enqueue(f"Renewing {name}", partial(self._renew, cert_id))
                 continue
             stage = "expired" if days < 0 else "soon"
-            if meta.get("expiry_notified") != stage:
+            if record.expiry_notified != stage:
                 when = "has expired" if days < 0 else f"expires in {days} day{'s' if days != 1 else ''}"
                 self.notify(
                     "Certificate expiring",
@@ -766,7 +858,7 @@ class App:
             return
         raise PanelError("Unknown setting")
 
-    def _names(self, args: dict[str, object], *, public: bool) -> list[str]:
+    def _names(self, args: PanelArgs, *, public: bool) -> list[str]:
         try:
             names = certs.parse_names(args.get("text"))
             return certs.public_names(names) if public else names
@@ -782,7 +874,7 @@ class App:
             raise PanelError("That item is gone; reload the page")
         return item_id
 
-    def panel_action(self, action_id: str, args: dict[str, object]) -> str | None:  # noqa: PLR0911, PLR0912 - one branch per button
+    def panel_action(self, action_id: str, args: PanelArgs) -> str | None:  # noqa: PLR0911, PLR0912 - one branch per button
         kind, _, item = action_id.partition(":")  # jobs queue up; the panel shows the one running now
         if kind == "letsencrypt":
             self._need_token()
@@ -795,16 +887,16 @@ class App:
             self.enqueue(f"Requesting a Cloudflare Origin certificate for {names[0]}", lambda: self._origin_cert(names))
             return "Requesting the certificate..."
         if kind == "import_cert":
-            uploads = uploaded_files(args)
+            uploads = args.files()
             self.enqueue("Importing the certificate", lambda: self._import_cert(uploads))
             return "Importing..."
         if kind == "import_ca":
-            uploads = uploaded_files(args)
+            uploads = args.files()
             self.enqueue("Importing the CA", lambda: self._import_ca(uploads))
             return "Importing..."
         if kind == "issue":
             ca_id = self._known(self.cas, item)
-            if not self.cas[ca_id].get("can_issue"):
+            if not CaRecord.from_json(self.cas[ca_id]).can_issue:
                 raise PanelError("This CA was imported without its private key")
             names = self._names(args, public=False)
             self.enqueue(f"Issuing a certificate for {names[0]}", lambda: self._issue(ca_id, names))
@@ -850,11 +942,11 @@ class App:
     def _cert_card(
         self, cert_id: str, meta: dict[str, object], default: str | None, now: dt.datetime
     ) -> dict[str, object]:
-        info = meta.get("info") if isinstance(meta.get("info"), dict) else {}
-        not_after = _parse_iso(info.get("not_after"))  # type: ignore[union-attr]
+        record = CertRecord.from_json(meta)
+        not_after = record.not_after
         days = int((not_after - now).total_seconds() // 86400) if not_after else None
-        names = [str(n) for n in meta.get("names") or []]  # type: ignore[union-attr]
-        source = str(meta.get("source") or "")
+        names = list(record.names)
+        source = record.source
         if days is None:
             chip = badge("Unknown", "warn")
         elif days < 0:
@@ -864,7 +956,7 @@ class App:
         else:
             chip = badge(f"{days} days left", "ok")
         label = SOURCE_LABEL.get(source, source)
-        if meta.get("staging"):
+        if record.staging:
             label += " (staging: not trusted)"
         fullchain, privkey = self.files.published(cert_id)
         actions = []
@@ -889,7 +981,7 @@ class App:
             "badge": chip,
             "stats": [
                 stat("Expires", f"{not_after:%Y-%m-%d}" if not_after else "-"),
-                stat("Issuer", _short_dn(str(info.get("issuer") or "-"))),  # type: ignore[union-attr]
+                stat("Issuer", _short_dn(record.issuer or "-")),
                 stat("Renewal", "Automatic" if source in RENEWABLE else "Manual"),
             ],
             "links": [
@@ -898,8 +990,8 @@ class App:
             ],
             "actions": actions,
         }
-        if meta.get("error"):
-            card["notice"] = notice(f"Last renewal failed: {meta['error']}", "error")
+        if record.error:
+            card["notice"] = notice(f"Last renewal failed: {record.error}", "error")
         return card
 
     def _add_card(self, config: Config) -> dict[str, object]:
@@ -958,13 +1050,13 @@ class App:
         return card
 
     def _ca_cards(self, now: dt.datetime) -> list[dict[str, object]]:
-        cards = []
+        cards: list[dict[str, object]] = []
         for ca_id, meta in self.cas.items():
-            info = meta.get("info") if isinstance(meta.get("info"), dict) else {}
-            not_after = _parse_iso(info.get("not_after"))  # type: ignore[union-attr]
+            ca = CaRecord.from_json(meta)
+            not_after = ca.not_after
             expired = not_after is not None and not_after <= now
             actions = []
-            if meta.get("can_issue"):
+            if ca.can_issue:
                 actions.append(
                     action(
                         f"issue:{ca_id}",
@@ -987,13 +1079,13 @@ class App:
             )
             cards.append(
                 {
-                    "title": str(meta.get("label") or ca_id),
-                    "icon": "mdi:shield-key" if meta.get("can_issue") else "mdi:shield-check",
-                    "subtitle": "Can issue certificates" if meta.get("can_issue") else "Trusted (certificate only)",
+                    "title": ca.label or ca_id,
+                    "icon": "mdi:shield-key" if ca.can_issue else "mdi:shield-check",
+                    "subtitle": "Can issue certificates" if ca.can_issue else "Trusted (certificate only)",
                     "badge": badge("Expired", "error") if expired else badge("Valid", "ok"),
                     "stats": [
                         stat("Expires", f"{not_after:%Y-%m-%d}" if not_after else "-"),
-                        stat("Fingerprint", str(meta.get("fingerprint") or "")[:23] + "…"),
+                        stat("Fingerprint", ca.fingerprint[:23] + "…"),
                     ],
                     "actions": actions,
                 }
@@ -1030,9 +1122,9 @@ class App:
             chip = badge("Error", "error")
         else:
             chip = badge("Running" if running else "Starting", "ok" if running else "neutral")
-        names = []
+        names: list[str] = []
         for meta in self.certs.values():
-            names += [str(n) for n in meta.get("names") or [] if "*" not in str(n)]  # type: ignore[union-attr]
+            names += [name for name in CertRecord.from_json(meta).names if "*" not in name]
         card: dict[str, object] = {
             "title": "HTTPS proxy",
             "icon": "mdi:lock",
@@ -1118,7 +1210,10 @@ class App:
             card["notice"] = notice(
                 f"Restart Home Assistant to apply the {restart.get('reason') or 'changes'}.", "warn"
             )
-            card["actions"].append(  # type: ignore[union-attr]
+            buttons = card["actions"]
+            if not isinstance(buttons, list):
+                buttons = card["actions"] = []
+            buttons.append(
                 action(
                     "restart_ha",
                     "Restart Home Assistant",
@@ -1137,7 +1232,8 @@ class App:
     def _tunnel_card(self) -> dict[str, object]:
         check = self._state("tunnel_check")
         status = self.tunnel_status() or {}
-        verify = status.get("verify") if isinstance(status.get("verify"), dict) else {}
+        verify_raw = status.get("verify")
+        verify: dict[str, object] = verify_raw if isinstance(verify_raw, dict) else {}
         state = str(check.get("state") or "")
         chip = {
             "ok": badge("Reachable", "ok"),
@@ -1155,7 +1251,7 @@ class App:
         if verify:
             links.append(
                 row(
-                    str(verify.get("message") or verify.get("state")),  # type: ignore[union-attr]
+                    str(verify.get("message") or verify.get("state")),
                     "Cloudflare Tunnel's own origin check",
                     icon="mdi:cloud-check-outline",
                 )
@@ -1333,7 +1429,7 @@ def _load_config(
     raw_options = initial_options(load_options, supervisor.fetch_options, secrets)
 
     def validate(raw: dict[str, object]) -> Config:
-        return load_config(secrets.resolve(raw))  # type: ignore[arg-type]
+        return load_config(secrets.resolve_options(raw))
 
     try:
         return raw_options, validate(raw_options)
@@ -1344,8 +1440,11 @@ def _load_config(
         result = wait_for_valid_config(supervisor.fetch_options, validate, view, stop)
         if result is None:
             return None
+        raw, config = result
+        if not isinstance(config, Config):
+            raise TypeError("the options were validated into something that is not a Config") from None
         _LOGGER.info("Configuration is valid now; starting")
-        return result  # type: ignore[return-value]
+        return raw, config
 
 
 def main() -> None:

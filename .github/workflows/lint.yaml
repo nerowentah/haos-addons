@@ -83,7 +83,7 @@ jobs:
         # One run per app: every app has a module named config, main, store...
         # An app joins STRICT_APPS in the pull request that makes it strict-clean.
         env:
-          STRICT_APPS: api-key-manager mobile-device-manager ranhill-saj-bill-checker lg-webos-devmode-mgmt tnb-usage-checker cloudflare-tunnel
+          STRICT_APPS: api-key-manager mobile-device-manager ranhill-saj-bill-checker lg-webos-devmode-mgmt tnb-usage-checker cloudflare-tunnel ssl-cert-manager
         run: |
           set -e
           for app in $STRICT_APPS; do

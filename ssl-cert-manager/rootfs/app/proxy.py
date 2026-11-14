@@ -20,6 +20,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO, Protocol
 
 from safefile import PRIVATE, atomic_write
 
@@ -37,7 +38,35 @@ REAL_IP_APPS = "apps"
 REAL_IP_CLOUDFLARE = "cloudflare"
 REAL_IP_MODES = (REAL_IP_OFF, REAL_IP_APPS, REAL_IP_CLOUDFLARE)
 
-SpawnFn = Callable[[list[str]], "subprocess.Popen[bytes]"]
+
+class Process(Protocol):
+    """The part of ``subprocess.Popen`` the proxy uses (the tests hand in a stand-in)."""
+
+    @property
+    def stdout(self) -> IO[bytes] | None:
+        """The piped output."""
+
+    @property
+    def returncode(self) -> int | None:
+        """The exit code once the process has ended."""
+
+    def poll(self) -> int | None:
+        """The exit code, or None while it runs."""
+
+    def send_signal(self, sig: int) -> None:
+        """Send a signal (nginx reloads on SIGHUP)."""
+
+    def wait(self, timeout: float | None = None) -> int:
+        """Wait for the process to end."""
+
+    def terminate(self) -> None:
+        """Ask the process to stop."""
+
+    def kill(self) -> None:
+        """Stop the process now."""
+
+
+SpawnFn = Callable[[list[str]], Process]
 RunFn = Callable[[list[str]], tuple[int, str]]
 
 
@@ -161,7 +190,7 @@ def render(  # noqa: PLR0913 - the options of the proxy
     )
 
 
-def _spawn(argv: list[str]) -> subprocess.Popen[bytes]:
+def _spawn(argv: list[str]) -> Process:
     return subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)  # noqa: S603 - fixed argv
 
 
@@ -187,7 +216,7 @@ class Proxy:
         self.spawn = spawn
         self.run = run
         self.clock = clock
-        self.process: subprocess.Popen[bytes] | None = None
+        self.process: Process | None = None
         self.error: str | None = None
         self.started_at: float | None = None
         self._text: str | None = None
@@ -242,7 +271,7 @@ class Proxy:
             threading.Thread(target=self._read, args=(self.process,), daemon=True, name="nginx-log").start()
         _LOGGER.info("HTTPS proxy listening on port %d", PORT)
 
-    def _read(self, process: subprocess.Popen[bytes]) -> None:
+    def _read(self, process: Process) -> None:
         if process.stdout is None:
             return
         try:

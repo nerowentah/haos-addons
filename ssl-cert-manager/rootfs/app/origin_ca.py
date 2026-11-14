@@ -10,10 +10,12 @@ from __future__ import annotations
 import json
 import logging
 import urllib.error
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 
 import safehttp
+from redact import Secret
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,11 +59,11 @@ class OriginCa:
     def __init__(self, http: HttpFn = _http) -> None:
         self.http = http
 
-    def _call(self, method: str, path: str, token: str, body: dict[str, object] | None = None) -> dict[str, object]:
+    def _call(self, method: str, path: str, token: Secret, body: dict[str, object] | None = None) -> dict[str, object]:
         if not token:
             raise OriginCaError("Set cloudflare_api_token in the Configuration tab first")
         headers = {
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {token.reveal()}",
             "Content-Type": "application/json",
             "User-Agent": "ssl-cert-manager-app",
         }
@@ -80,7 +82,7 @@ class OriginCa:
         result = payload.get("result")
         return result if isinstance(result, dict) else {}
 
-    def create(self, token: str, hostnames: list[str], csr: str) -> tuple[str, str]:
+    def create(self, token: Secret, hostnames: list[str], csr: str) -> tuple[str, str]:
         """``(certificate_pem, cloudflare_certificate_id)`` for ``csr``."""
 
         result = self._call(
@@ -95,6 +97,6 @@ class OriginCa:
         _LOGGER.info("Cloudflare Origin certificate issued for %s", ", ".join(hostnames))
         return pem, str(result.get("id") or "")
 
-    def revoke(self, token: str, certificate_id: str) -> None:
-        self._call("DELETE", f"/certificates/{certificate_id}", token)
+    def revoke(self, token: Secret, certificate_id: str) -> None:
+        self._call("DELETE", f"/certificates/{urllib.parse.quote(certificate_id, safe='')}", token)
         _LOGGER.info("Cloudflare Origin certificate revoked")

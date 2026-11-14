@@ -56,11 +56,11 @@ def make_leaf(
     return leaf, key
 
 
-def pem(*items: object) -> str:
+def pem(*items: x509.Certificate | certs.PrivateKey) -> str:
     out = []
     for item in items:
         if isinstance(item, x509.Certificate):
             out.append(certs.cert_pem(item).decode())
         else:
-            out.append(certs.key_pem(item).decode())  # type: ignore[arg-type]
+            out.append(certs.key_pem(item).decode())
     return "".join(out)

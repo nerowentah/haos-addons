@@ -1,5 +1,5 @@
 name: "SSL Cert Manager"
-version: "0.1.3"
+version: "0.1.4"
 slug: "ssl_cert_manager"
 description: >-
   Get, import and renew TLS certificates in one place: Let's Encrypt and

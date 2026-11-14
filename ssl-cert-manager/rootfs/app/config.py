@@ -5,14 +5,18 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
+
+from redact import Secret
 
 CONFIG_PATH = Path("/data/options.json")
 
 TRACE = 5
 NOTICE = 25
-LOG_LEVELS = {
+type LogLevel = Literal["trace", "debug", "info", "notice", "warning", "error", "fatal"]
+LOG_LEVELS: dict[LogLevel, int] = {
     "trace": TRACE,
     "debug": logging.DEBUG,
     "info": logging.INFO,
@@ -24,42 +28,50 @@ LOG_LEVELS = {
 RENEW_DAYS_MIN, RENEW_DAYS_MAX, RENEW_DAYS_DEFAULT = 7, 60, 30
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _HSTS_RE = re.compile(r"^max-age=\d+(;\s*includeSubDomains)?(;\s*preload)?$", re.IGNORECASE)
-REAL_IP_MODES = ("off", "apps", "cloudflare")  # see proxy.py
+type RealIp = Literal["off", "apps", "cloudflare"]
+REAL_IP_MODES: tuple[RealIp, ...] = ("off", "apps", "cloudflare")  # see proxy.py
 
 
-def parse_log_level(raw: dict[str, object]) -> str:
+def parse_log_level(raw: dict[str, object]) -> LogLevel:
     """The ``log_level`` option, lower-cased ("info" when missing or unknown)."""
 
     value = str(raw.get("log_level") or "info").strip().lower()
-    return value if value in LOG_LEVELS else "info"
+    for level in LOG_LEVELS:
+        if level == value:
+            return level
+    return "info"
 
 
-def apply_log_level(name: str) -> None:
-    """Set the root logger to ``name`` (one of LOG_LEVELS)."""
+def apply_log_level(name: LogLevel) -> None:
+    """Set the root logger to ``name``."""
 
     logging.addLevelName(TRACE, "TRACE")
     logging.addLevelName(NOTICE, "NOTICE")
-    logging.getLogger().setLevel(LOG_LEVELS.get(name, logging.INFO))
+    logging.getLogger().setLevel(LOG_LEVELS[name])
 
 
 class ConfigError(ValueError):
     """Raised when the app configuration is invalid."""
 
 
-@dataclass(slots=True)
-class Config:
-    """Parsed app options."""
+def _no_secret() -> Secret:
+    return Secret("")
 
-    cloudflare_api_token: str = ""
+
+@dataclass(frozen=True, slots=True)
+class Config:
+    """Parsed app options (never changed in place: new options make a new Config)."""
+
+    cloudflare_api_token: Secret = field(default_factory=_no_secret)  # revealed only to certbot and Cloudflare
     acme_email: str = ""
     acme_staging: bool = False
     local_proxy: bool = False
     write_ssl_root: bool = True
     renew_days_before: int = RENEW_DAYS_DEFAULT
     proxy_hsts: str = ""
-    proxy_real_ip: str = "apps"
+    proxy_real_ip: RealIp = "apps"
     notify_on_failure: bool = True
-    log_level: str = "info"
+    log_level: LogLevel = "info"
 
 
 def load_options(path: Path = CONFIG_PATH) -> dict[str, object]:
@@ -96,11 +108,12 @@ def load_config(raw: dict[str, object]) -> Config:
     hsts = str(raw.get("proxy_hsts") or "").strip()
     if hsts and not _HSTS_RE.match(hsts):
         raise ConfigError(f"proxy_hsts '{hsts}' is not a Strict-Transport-Security value, e.g. max-age=31536000")
-    real_ip = str(raw.get("proxy_real_ip") or "apps").strip().lower()
-    if real_ip not in REAL_IP_MODES:
+    real_ip_text = str(raw.get("proxy_real_ip") or "apps").strip().lower()
+    real_ip = next((mode for mode in REAL_IP_MODES if mode == real_ip_text), None)
+    if real_ip is None:
         raise ConfigError(f"proxy_real_ip must be one of {', '.join(REAL_IP_MODES)}")
     return Config(
-        cloudflare_api_token=token,
+        cloudflare_api_token=Secret(token),
         acme_email=email,
         acme_staging=_bool(raw, "acme_staging", False),
         local_proxy=_bool(raw, "local_proxy", False),

@@ -17,6 +17,9 @@ import certs
 import origin_ca
 import proxy
 from helpers import make_ca, make_leaf, pem
+from redact import Secret
+
+TOKEN = Secret("token-0123456789-abcdefghij")
 
 
 class RenderTest(unittest.TestCase):
@@ -102,7 +105,7 @@ class ProxyProcessTest(unittest.TestCase):
                 spawned.append(FakeProcess())
                 return spawned[-1]
 
-            p = proxy.Proxy(Path(tmp), spawn=spawn, run=lambda _a: (verdict["code"], "nginx: [emerg] bad\n"))  # type: ignore[arg-type]
+            p = proxy.Proxy(Path(tmp), spawn=spawn, run=lambda _a: (verdict["code"], "nginx: [emerg] bad\n"))
             self.assertFalse(p.configure("bad"))
             self.assertEqual(p.error, "nginx: nginx: [emerg] bad")
             self.assertEqual(spawned, [])
@@ -133,9 +136,7 @@ class AcmeTest(unittest.TestCase):
                 return 0, "Successfully received certificate."
 
             client = acme.Acme(base, run=run)
-            issued = client.obtain(
-                "home-example-com", ["home.example.com"], "token-0123456789-abcdefghij", "", staging=True
-            )
+            issued = client.obtain("home-example-com", ["home.example.com"], TOKEN, "", staging=True)
             self.assertTrue(issued.fullchain.is_file())
             argv = seen["argv"]
             assert isinstance(argv, list)
@@ -151,9 +152,9 @@ class AcmeTest(unittest.TestCase):
             output = "Saving debug log\nCertbot failed to authenticate some domains\nDetail: DNS problem: NXDOMAIN\n"
             client = acme.Acme(Path(tmp), run=lambda _a: (1, output))
             with self.assertRaisesRegex(acme.AcmeError, "NXDOMAIN"):
-                client.obtain("x", ["home.example.com"], "token-0123456789-abcdefghij", "a@example.com", staging=False)
+                client.obtain("x", ["home.example.com"], TOKEN, "a@example.com", staging=False)
             with self.assertRaisesRegex(acme.AcmeError, "cloudflare_api_token"):
-                client.obtain("x", ["home.example.com"], "", "", staging=False)
+                client.obtain("x", ["home.example.com"], Secret(""), "", staging=False)
 
 
 class OriginCaTest(unittest.TestCase):
@@ -168,7 +169,7 @@ class OriginCaTest(unittest.TestCase):
 
         client = origin_ca.OriginCa(http)
         csr = certs.csr_pem(certs.new_key(), ["home.example.com"])
-        cert_pem, cert_id = client.create("token-0123456789-abcdefghij", ["home.example.com"], csr)
+        cert_pem, cert_id = client.create(TOKEN, ["home.example.com"], csr)
         self.assertEqual(cert_id, "123")
         self.assertIn("BEGIN CERTIFICATE", cert_pem)
         method, url, headers, body = calls[0]
@@ -183,7 +184,7 @@ class OriginCaTest(unittest.TestCase):
             lambda *_a: (403, b'{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}')
         )
         with self.assertRaisesRegex(origin_ca.OriginCaError, "SSL and Certificates"):
-            client.create("token-0123456789-abcdefghij", ["home.example.com"], "csr")
+            client.create(TOKEN, ["home.example.com"], "csr")
 
     def test_bundled_roots_are_cloudflare_origin_cas(self) -> None:
         bundle = certs.parse_bundle(origin_ca.roots_pem())

@@ -153,7 +153,14 @@ def _covers(entries: list[str], network: ipaddress.IPv4Network | ipaddress.IPv6N
             trusted = ipaddress.ip_network(entry, strict=False)
         except ValueError:
             continue  # !secret, a hostname... not ours to judge
-        if trusted.version == network.version and network.subnet_of(trusted):  # type: ignore[arg-type]
+        if isinstance(trusted, ipaddress.IPv4Network) and isinstance(network, ipaddress.IPv4Network):
+            if network.subnet_of(trusted):
+                return True
+        elif (
+            isinstance(trusted, ipaddress.IPv6Network)
+            and isinstance(network, ipaddress.IPv6Network)
+            and network.subnet_of(trusted)
+        ):
             return True
     return False
 

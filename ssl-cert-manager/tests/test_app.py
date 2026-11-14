@@ -27,6 +27,7 @@ import webui
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from helpers import NOW, make_ca, make_leaf, pem
+from redact import Secret
 
 TOKEN = "cf-token-0123456789abcdefghijklmnop"  # noqa: S105 - test value
 
@@ -81,7 +82,15 @@ class FakeAcme(acme.Acme):
         self.requests: list[tuple[str, list[str], bool]] = []
         self.fail: str | None = None
 
-    def obtain(self, cert_id: str, hostnames: list[str], api_token: str, email: str, *, staging: bool) -> acme.Issued:  # noqa: ARG002
+    def obtain(
+        self,
+        cert_id: str,
+        hostnames: list[str],
+        api_token: Secret,  # noqa: ARG002
+        email: str,  # noqa: ARG002
+        *,
+        staging: bool,
+    ) -> acme.Issued:
         self.requests.append((cert_id, hostnames, staging))
         if self.fail:
             raise acme.AcmeError(self.fail)
@@ -101,7 +110,7 @@ class FakeOrigin(origin_ca.OriginCa):
         self.ca = make_ca("CloudFlare Origin SSL ECC Certificate Authority")
         self.revoked: list[str] = []
 
-    def create(self, token: str, hostnames: list[str], csr: str) -> tuple[str, str]:  # noqa: ARG002
+    def create(self, token: Secret, hostnames: list[str], csr: str) -> tuple[str, str]:  # noqa: ARG002
         request = x509.load_pem_x509_csr(csr.encode())
         ca_cert, ca_key = self.ca
         cert = (
@@ -119,7 +128,7 @@ class FakeOrigin(origin_ca.OriginCa):
         )
         return pem(cert), "origin-1"
 
-    def revoke(self, token: str, certificate_id: str) -> None:  # noqa: ARG002
+    def revoke(self, token: Secret, certificate_id: str) -> None:  # noqa: ARG002
         self.revoked.append(certificate_id)
 
 
@@ -183,8 +192,15 @@ class AppTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
+    def expire_in(self, cert_id: str, *, days: int) -> None:
+        """Rewrite the saved expiry of a certificate, as if it were close to its end."""
+
+        info = self.app.certs[cert_id]["info"]
+        assert isinstance(info, dict)
+        info["not_after"] = (NOW + dt.timedelta(days=days)).isoformat()
+
     def act(self, action_id: str, args: dict[str, object] | None = None) -> str | None:
-        reply = self.app.panel_action(action_id, args or {})
+        reply = self.app.panel_action(action_id, webui.PanelArgs(args or {}))
         self.drain()
         return reply
 
@@ -231,9 +247,21 @@ class AppTest(unittest.TestCase):
         self.assertIn("private key", self.app.last_job[0])
         self.assertEqual(self.app.certs, {})
 
+    def test_damaged_saved_rows_do_not_break_the_app(self) -> None:
+        self.app.store.section("certs")["junk"] = "not a row"
+        self.app.store.section("certs")["odd"] = {"names": "home.example.com", "info": [], "retry_at": 5}
+        app = main.App(self.app.config, self.sup, self.app.store, files=self.app.files, proxy=self.app.proxy)
+        self.assertNotIn("junk", app.certs)
+        record = main.CertRecord.from_json(app.certs["odd"])
+        self.assertEqual((record.names, record.not_after, record.retry_at, record.source), ((), None, None, ""))
+        app.check_expiry()
+        json.dumps(app.panel_state())
+        json.dumps(app.status_document())
+        self.assertNotIn(TOKEN, repr(app.config))
+
     def test_upload_needs_files(self) -> None:
         with self.assertRaises(webui.PanelError):
-            self.app.panel_action("import_cert", {})
+            self.app.panel_action("import_cert", webui.PanelArgs())
 
     def test_ca_with_key_issues_local_certificates_and_renews_them(self) -> None:
         ca = make_ca("Home CA")
@@ -247,13 +275,12 @@ class AppTest(unittest.TestCase):
         bundle = (self.ssl / "ssl-cert-manager" / "trust" / "ca-bundle.pem").read_text()
         self.assertEqual(bundle.count("BEGIN CERTIFICATE"), 3)  # two Cloudflare roots + Home CA
         # Close to expiry: the loop renews it by itself.
-        meta["info"]["not_after"] = (NOW + dt.timedelta(days=5)).isoformat()  # type: ignore[index]
+        self.expire_in("homeassistant-local", days=5)
         self.app.check_expiry()
         self.drain()
-        self.assertGreater(
-            dt.datetime.fromisoformat(self.app.certs["homeassistant-local"]["info"]["not_after"]),  # type: ignore[index]
-            NOW + dt.timedelta(days=300),
-        )
+        renewed = main.CertRecord.from_json(self.app.certs["homeassistant-local"]).not_after
+        assert renewed is not None
+        self.assertGreater(renewed, NOW + dt.timedelta(days=300))
 
     def test_trust_only_ca_cannot_issue(self) -> None:
         ca = make_ca("Corp Root")
@@ -261,7 +288,7 @@ class AppTest(unittest.TestCase):
         ca_id = next(iter(self.app.cas))
         self.assertFalse(self.app.cas[ca_id]["can_issue"])
         with self.assertRaises(webui.PanelError):
-            self.app.panel_action(f"issue:{ca_id}", {"text": "a.local"})
+            self.app.panel_action(f"issue:{ca_id}", webui.PanelArgs(text="a.local"))
         self.act("import_ca", {"files": [{"name": "root.crt", "text": pem(ca[0])}]})
         self.assertEqual(len(self.app.cas), 1)  # the same CA twice is one entry
 
@@ -274,13 +301,13 @@ class AppTest(unittest.TestCase):
         self.assertIn("DNS problem", str(self.app.certs["home-example-com"]["error"]))
         self.assertEqual(self.sup.sent[-1][1], "Certificate renewal failed")
         # A failed renewal waits before the loop tries again.
-        self.app.certs["home-example-com"]["info"]["not_after"] = (NOW + dt.timedelta(days=3)).isoformat()  # type: ignore[index]
+        self.expire_in("home-example-com", days=3)
         self.app.check_expiry()
         self.assertTrue(self.app.jobs.empty())
 
     def test_lets_encrypt_refuses_local_names(self) -> None:
         with self.assertRaises(webui.PanelError):
-            self.app.panel_action("letsencrypt", {"text": "homeassistant.local"})
+            self.app.panel_action("letsencrypt", webui.PanelArgs(text="homeassistant.local"))
 
     def test_origin_certificate_is_revoked_on_delete(self) -> None:
         self.act("origin", {"text": "home.example.com"})

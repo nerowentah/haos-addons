@@ -16,6 +16,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from redact import Secret
+
 _LOGGER = logging.getLogger(__name__)
 
 CERTBOT = "/usr/bin/certbot"
@@ -117,12 +119,12 @@ class Acme:
             argv += ["-d", name]
         return argv
 
-    def obtain(self, cert_id: str, hostnames: list[str], api_token: str, email: str, *, staging: bool) -> Issued:
+    def obtain(self, cert_id: str, hostnames: list[str], api_token: Secret, email: str, *, staging: bool) -> Issued:
         """Issue (or renew) ``cert_id`` for ``hostnames``; raises AcmeError with certbot's reason."""
 
         if not api_token:
             raise AcmeError("Set cloudflare_api_token in the Configuration tab first")
-        self._write_credentials(api_token)
+        self._write_credentials(api_token.reveal())
         try:
             _LOGGER.info("Let's Encrypt: requesting %s%s", ", ".join(hostnames), " (staging)" if staging else "")
             code, output = self.run(self.argv(cert_id, hostnames, email, staging=staging))
