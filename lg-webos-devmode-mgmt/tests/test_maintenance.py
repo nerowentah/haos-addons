@@ -2,41 +2,57 @@
 
 from __future__ import annotations
 
+import io
 import sys
 import tempfile
 import time
 import unittest
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta
+from email.message import Message
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rootfs" / "app"))
 
 import maintenance
 import run
+import webui
 
-OPTIONS = {"interval_hours": 168, "retries": 0, "notify_on_failure": True, "sessions": [{"name": "TV", "token": "t"}]}
+OPTIONS: dict[str, object] = {
+    "interval_hours": 168,
+    "retries": 0,
+    "notify_on_failure": True,
+    "sessions": [{"name": "TV", "token": "t"}],
+}
 
 
 class LgMaintenanceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self._renew, self._notify = run.renew_session, run.notify_failure
+        self.addCleanup(self.tmp.cleanup)
         self.notified: list[str] = []
-        run.notify_failure = lambda session, _targets, _token: self.notified.append(session.name)
 
-    def tearDown(self) -> None:
-        run.renew_session, run.notify_failure = self._renew, self._notify
-        self.tmp.cleanup()
+        def notify(session: run.Session, _targets: list[str], _token: str) -> None:
+            self.notified.append(session.name)
+
+        self.patch(run, "notify_failure", notify)
+
+    def patch(self, target: object, name: str, replacement: object) -> None:
+        patcher = mock.patch.object(target, name, replacement)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def app(self, windows: list[str] | None = None) -> run.App:
         raw = dict(OPTIONS) if windows is None else {**OPTIONS, "maintenance_windows": windows}
         app = run.App(run.load_config(raw), raw, "token", phones_path=Path(self.tmp.name) / "phones.json")
-        app.check_options = lambda: None  # type: ignore[method-assign]
-        app.refresh_phones = lambda: None  # type: ignore[method-assign]
+        self.patch(app, "check_options", lambda: None)
+        self.patch(app, "refresh_phones", lambda: None)
         return app
 
     def test_default_window_and_option_errors(self) -> None:
-        self.assertEqual(maintenance.describe(run.load_config(OPTIONS).maintenance_windows), "daily 00:00-06:00")
+        self.assertEqual(maintenance.describe(list(run.load_config(OPTIONS).maintenance_windows)), "daily 00:00-06:00")
         with self.assertRaises(run.ConfigError):
             run.load_config({**OPTIONS, "maintenance_windows": ["often"]})
 
@@ -46,12 +62,17 @@ class LgMaintenanceTest(unittest.TestCase):
         end = (now + timedelta(hours=1)).strftime("%H:%M")
         app = self.app([f"daily {start}-{end}"])
         calls: list[str] = []
-        run.renew_session = lambda session: calls.append(session.name) or True
+
+        def renew(session: run.Session) -> bool:
+            calls.append(session.name)
+            return True
+
+        self.patch(run, "renew_session", renew)
         app._tick()
         self.assertEqual(calls, [])  # no call to LG inside the window
         self.assertGreater(app.next_run, time.time() + 50 * 60)
-        with self.assertRaises(run.PanelError):
-            app.panel_action("renew_all", {})
+        with self.assertRaises(webui.PanelError):
+            app.panel_action("renew_all", webui.PanelArgs())
 
     def test_maintenance_answer_backs_off_without_alert(self) -> None:
         app = self.app([])
@@ -59,7 +80,7 @@ class LgMaintenanceTest(unittest.TestCase):
         def down(_session: run.Session) -> bool:
             raise run.VendorMaintenanceError("LG developer site is under maintenance (HTTP 503)")
 
-        run.renew_session = down
+        self.patch(run, "renew_session", down)
         app._tick()
         status = app.status["tv"]
         self.assertTrue(status.maintenance)
@@ -73,7 +94,7 @@ class LgMaintenanceTest(unittest.TestCase):
         app._tick()
         self.assertGreater(app.next_run - time.time(), (first - time.time()) * 1.5)  # doubled
 
-        run.renew_session = lambda _session: True
+        self.patch(run, "renew_session", lambda _session: True)
         app.next_run = time.time()
         app._tick()
         self.assertFalse(app.status["tv"].maintenance)
@@ -82,18 +103,23 @@ class LgMaintenanceTest(unittest.TestCase):
         self.assertGreater(app.next_run, time.time() + 167 * 3600)  # back on the normal interval
 
     def test_http_503_is_maintenance(self) -> None:
-        import urllib.error  # noqa: PLC0415
+        opened: list[object] = []
 
-        def raise_503(*_args: object, **_kwargs: object) -> object:
-            raise urllib.error.HTTPError("https://example.invalid", 503, "Service Unavailable", {}, None)  # type: ignore[arg-type]
+        def raise_503(url: object, **_kwargs: object) -> object:
+            opened.append(url)
+            raise urllib.error.HTTPError("https://example.invalid", 503, "Service Unavailable", Message(), io.BytesIO())
 
-        original = run.urllib.request.urlopen
-        run.urllib.request.urlopen = raise_503  # type: ignore[assignment]
-        try:
-            with self.assertRaises(run.VendorMaintenanceError):
-                self._renew(run.load_config(OPTIONS).sessions[0])
-        finally:
-            run.urllib.request.urlopen = original  # type: ignore[assignment]
+        self.patch(urllib.request, "urlopen", raise_503)
+        with self.assertRaises(run.VendorMaintenanceError):
+            run.renew_session(run.load_config(OPTIONS).sessions[0])
+        self.assertEqual(opened, [f"{run.LG_DEV_ENDPOINT}?sessionToken=t"])  # the real address is what is requested
+
+    def test_renew_button_needs_a_known_tv(self) -> None:
+        app = self.app([])
+        self.assertEqual(app.panel_action("renew", webui.PanelArgs(session="tv")), "Renewing TV...")
+        for bad in ({}, {"session": 3}, {"session": "gone"}):
+            with self.assertRaises(webui.PanelError):
+                app.panel_action("renew", webui.PanelArgs(bad))
 
 
 if __name__ == "__main__":

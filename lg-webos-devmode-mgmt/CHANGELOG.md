@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.12
+
+- **Session tokens are wrapped as secrets.** A TV's renewal address (which carries the session token) is only revealed where the request is sent; it cannot show up in a log line or a debug dump.
+- **Stricter internal checks.** The app's code now passes strict type checking: options and panel requests are validated where they enter the app. `interval_hours` and `retries` are kept inside the ranges the Configuration tab allows (1-168 and 0-10). No visible change.
+- **Panel:** a Renew now request without a TV is refused with a clear message.
+
 ## 1.7.11
 
 - **Shared panel update (security):** the panel only accepts changes that come from its own page (a request from another web site is refused), every page it serves carries a Content-Security-Policy and may only be shown inside Home Assistant, and stalled or oversized requests are dropped. No visible change in this app.

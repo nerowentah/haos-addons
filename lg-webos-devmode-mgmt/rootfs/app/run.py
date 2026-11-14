@@ -14,15 +14,17 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 import maintenance
 import redact
 from safefile import PRIVATE, atomic_write
 from webui import (
+    PanelArgs,
     PanelError,
     PanelRouter,
     PanelServer,
@@ -74,35 +76,40 @@ def slugify(value: str) -> str:
     return re.sub(r"[^a-z0-9_-]+", "-", value.lower()).strip("-")
 
 
-@dataclass(slots=True)
+type LogLevel = Literal["trace", "debug", "info", "notice", "warning", "error", "fatal"]
+
+
+@dataclass(frozen=True, slots=True)
 class Session:
     """A single LG webOS device whose dev session is renewed."""
 
     name: str
-    url: str
+    url: redact.Secret  # carries the session token: revealed only where the request is sent
     enabled: bool = True
     custom_url: bool = False
-    notification_id: str = field(init=False)
 
-    def __post_init__(self) -> None:
-        self.notification_id = slugify(self.name)
+    @property
+    def notification_id(self) -> str:
+        """Id used for notifications, panel switches and the status table."""
+
+        return slugify(self.name)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Config:
-    """Parsed add-on options."""
+    """Parsed add-on options (never changed in place: new options make a new Config)."""
 
     interval_hours: int
     retries: int
     notify_on_failure: bool
-    sessions: list[Session]
-    maintenance_windows: list[maintenance.Window] = field(default_factory=list)
-    log_level: str = "info"
+    sessions: tuple[Session, ...]
+    maintenance_windows: tuple[maintenance.Window, ...] = ()
+    log_level: LogLevel = "info"
 
 
 TRACE = 5
 NOTICE = 25
-LOG_LEVELS = {
+LOG_LEVELS: dict[LogLevel, int] = {
     "trace": TRACE,
     "debug": logging.DEBUG,
     "info": logging.INFO,
@@ -113,19 +120,22 @@ LOG_LEVELS = {
 }
 
 
-def parse_log_level(raw: dict[str, object]) -> str:
+def parse_log_level(raw: dict[str, object]) -> LogLevel:
     """The ``log_level`` option, lower-cased ("info" when missing or unknown)."""
 
     value = str(raw.get("log_level") or "info").strip().lower()
-    return value if value in LOG_LEVELS else "info"
+    for level in LOG_LEVELS:
+        if level == value:
+            return level
+    return "info"
 
 
-def apply_log_level(name: str) -> None:
-    """Set the root logger to ``name`` (one of LOG_LEVELS)."""
+def apply_log_level(name: LogLevel) -> None:
+    """Set the root logger to ``name``."""
 
     logging.addLevelName(TRACE, "TRACE")
     logging.addLevelName(NOTICE, "NOTICE")
-    logging.getLogger().setLevel(LOG_LEVELS.get(name, logging.INFO))
+    logging.getLogger().setLevel(LOG_LEVELS[name])
 
 
 def setup_logging() -> None:
@@ -218,7 +228,7 @@ def load_supervisor_token() -> str:
     return ""
 
 
-def build_sessions(raw_sessions: list[object]) -> list[Session]:
+def build_sessions(raw_sessions: list[object]) -> tuple[Session, ...]:
     """Validate and normalize session options."""
 
     if not raw_sessions:
@@ -241,6 +251,7 @@ def build_sessions(raw_sessions: list[object]) -> list[Session]:
             if parts.scheme != "https" or not parts.hostname:
                 raise ConfigError(f"Session '{name}': url must be an https:// address (it carries the session token)")
         elif token:
+            redact.register(token)  # never in a log line, with or without the rest of the address
             url = f"{LG_DEV_ENDPOINT}?sessionToken={urllib.parse.quote(token, safe='')}"
         else:
             raise ConfigError(f"Session '{name}' requires either a token or a full url")
@@ -249,26 +260,29 @@ def build_sessions(raw_sessions: list[object]) -> list[Session]:
         sessions.append(
             Session(
                 name=name,
-                url=url,
+                url=redact.Secret(url),
                 enabled=enabled if isinstance(enabled, bool) else True,
                 custom_url=bool(entry.get("url")),
             )
         )
 
-    return sessions
+    return tuple(sessions)
 
 
 MOBILE_TARGET_PREFIX = "mobile_app_"
 
 
+def _int(raw: dict[str, object], key: str, default: int, low: int, high: int) -> int:
+    """A whole-number option, kept inside the range the option schema allows."""
+
+    value = raw.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return min(max(value, low), high)
+
+
 def load_config(raw_config: dict[str, object]) -> Config:
     """Validate raw options and produce a Config."""
-
-    interval_raw = raw_config.get("interval_hours", 48)
-    retries_raw = raw_config.get("retries", 3)
-
-    interval_hours = interval_raw if isinstance(interval_raw, int) else 48
-    retries = retries_raw if isinstance(retries_raw, int) else 3
 
     sessions_raw = raw_config.get("sessions")
     sessions = build_sessions(sessions_raw if isinstance(sessions_raw, list) else [])
@@ -278,12 +292,13 @@ def load_config(raw_config: dict[str, object]) -> Config:
     except maintenance.MaintenanceConfigError as err:
         raise ConfigError(f"maintenance_windows: {err}") from err
 
+    notify = raw_config.get("notify_on_failure")
     return Config(
-        interval_hours=interval_hours,
-        retries=retries,
-        notify_on_failure=bool(raw_config.get("notify_on_failure", True)),
+        interval_hours=_int(raw_config, "interval_hours", 48, 1, 168),
+        retries=_int(raw_config, "retries", 3, 0, 10),
+        notify_on_failure=notify if isinstance(notify, bool) else True,
         sessions=sessions,
-        maintenance_windows=windows,
+        maintenance_windows=tuple(windows),
         log_level=parse_log_level(raw_config),
     )
 
@@ -383,7 +398,7 @@ def renew_session(session: Session) -> bool:
 
     _LOGGER.info("Renewing dev session '%s'", session.name)
     try:
-        with urllib.request.urlopen(session.url, timeout=HTTP_TIMEOUT) as response:  # noqa: S310 - admin-supplied LG URL
+        with urllib.request.urlopen(session.url.reveal(), timeout=HTTP_TIMEOUT) as response:  # noqa: S310 - https only (build_sessions)
             body = response.read().decode("utf-8", errors="replace")
             if maintenance.looks_like_maintenance(response.status, body):
                 raise VendorMaintenanceError(f"LG developer site is under maintenance (HTTP {response.status})")
@@ -523,7 +538,9 @@ def notify_failure(session: Session, targets: list[str], supervisor_token: str) 
         for target in targets:
             try:
                 _supervisor_request(
-                    supervisor_token, f"/core/api/services/notify/{target}", {"title": title, "message": message}
+                    supervisor_token,
+                    f"/core/api/services/notify/{urllib.parse.quote(target, safe='')}",
+                    {"title": title, "message": message},
                 )
                 _LOGGER.info("Failure notification sent to '%s' for '%s'", target, session.name)
             except (urllib.error.URLError, OSError, ValueError):
@@ -568,7 +585,8 @@ def apply_toggle(options: dict[str, object], toggle_id: str, value: bool) -> Non
         key, _, field_name = rest.rpartition(":")
         matched = False
         if field_name == "enabled":
-            for row in options.get("sessions") or []:  # type: ignore[union-attr]
+            rows = options.get("sessions")
+            for row in rows if isinstance(rows, list) else []:
                 if isinstance(row, dict) and slugify(str(row.get("name") or "")) == key:
                     row["enabled"] = value
                     matched = True
@@ -650,7 +668,7 @@ class App:
             raw = copy.deepcopy(base)
             mutate(raw)
             try:
-                config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+                config = load_config(self.secrets.resolve_options(raw))
             except (ConfigError, SecretError) as err:
                 raise PanelError(str(err)) from err
             try:
@@ -670,7 +688,7 @@ class App:
         if raw == self.raw_options:
             return
         try:
-            config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+            config = load_config(self.secrets.resolve_options(raw))
         except (ConfigError, SecretError) as err:
             _LOGGER.error("Ignoring updated options until they are fixed: %s", err)  # noqa: TRY400 - no traceback needed
             self.raw_options = raw
@@ -737,7 +755,7 @@ class App:
             save_phone_prefs(self.phones, self.phones_path)
 
     # -- renewals -----------------------------------------------------------
-    def renew(self, sessions: list[Session]) -> bool:
+    def renew(self, sessions: Sequence[Session]) -> bool:
         """Renew the given sessions, recording status and notifying on failure.
 
         Returns False when LG's site answered with a maintenance page: the
@@ -772,7 +790,7 @@ class App:
     def maintenance_until(self) -> datetime | None:
         """End of the current LG maintenance window (Home Assistant's timezone), or None."""
 
-        return maintenance.window_end(self.config.maintenance_windows, datetime.now().astimezone())
+        return maintenance.window_end(list(self.config.maintenance_windows), datetime.now().astimezone())
 
     def _retry_after_maintenance(self, reason: str) -> None:
         delay = self.backoff.next_delay()
@@ -803,7 +821,7 @@ class App:
                 self.next_run = until.timestamp() + maintenance.resume_jitter_seconds()
                 _LOGGER.info(
                     "LG maintenance window (%s): renewal moved to %s",
-                    maintenance.describe(self.config.maintenance_windows),
+                    maintenance.describe(list(self.config.maintenance_windows)),
                     time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(self.next_run)),
                 )
                 return
@@ -833,14 +851,14 @@ class App:
             return
         self.update_options(lambda raw: apply_toggle(raw, toggle_id, value))
 
-    def panel_action(self, action_id: str, args: dict[str, object]) -> str | None:
+    def panel_action(self, action_id: str, args: PanelArgs) -> str | None:
         """Queue a renewal from a panel button."""
 
         if action_id == "renew_all":
             target: str | None = None
             label = "all TVs"
         elif action_id == "renew":
-            target = str(args.get("session") or "")
+            target = args.ident("session")
             match = next((s for s in self.config.sessions if s.notification_id == target), None)
             if match is None:
                 raise PanelError("That TV no longer exists; reload the page")
@@ -902,8 +920,9 @@ class App:
 
     @staticmethod
     def _maintenance_text(config: Config) -> str:
-        text = maintenance.describe(config.maintenance_windows)
-        until = maintenance.window_end(config.maintenance_windows, datetime.now().astimezone())
+        windows = list(config.maintenance_windows)
+        text = maintenance.describe(windows)
+        until = maintenance.window_end(windows, datetime.now().astimezone())
         return f"{text} (now, until {until:%H:%M})" if until else text
 
     def panel_state(self) -> dict[str, object]:
@@ -989,7 +1008,7 @@ def _load_config(
     raw_options = initial_options(load_options, lambda: fetch_options(token), secrets)
 
     def validate(raw: dict[str, object]) -> Config:
-        return load_config(secrets.resolve(raw))  # type: ignore[arg-type]
+        return load_config(secrets.resolve_options(raw))
 
     try:
         return raw_options, validate(raw_options)
@@ -1001,8 +1020,11 @@ def _load_config(
         result = wait_for_valid_config(lambda: fetch_options(token), validate, view, stop)
         if result is None:
             return None
+        raw, config = result
+        if not isinstance(config, Config):
+            raise TypeError("the options were validated into something that is not a Config") from None
         _LOGGER.info("Configuration is valid now; starting")
-        return result  # type: ignore[return-value]
+        return raw, config
 
 
 def main() -> None:
