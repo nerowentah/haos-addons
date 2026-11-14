@@ -21,7 +21,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import IO
+from typing import IO, Protocol
 
 import config as app_config
 
@@ -60,11 +60,36 @@ _ORIGIN_TLS_RE = re.compile(
 _ERROR_FIELD_RE = re.compile(r'error="([^"]+)"')
 _METRIC_RE = re.compile(r"^cloudflared_tunnel_ha_connections\s+(\d+)\b", re.MULTILINE)
 
-SpawnFn = Callable[[list[str], dict[str, str]], "subprocess.Popen[bytes]"]
+
+class Process(Protocol):
+    """The part of ``subprocess.Popen`` this app uses (the tests hand in a stand-in)."""
+
+    @property
+    def stdout(self) -> IO[bytes] | None:
+        """The piped output."""
+
+    @property
+    def returncode(self) -> int | None:
+        """The exit code once the process has ended."""
+
+    def poll(self) -> int | None:
+        """The exit code, or None while it runs."""
+
+    def wait(self, timeout: float | None = None) -> int:
+        """Wait for the process to end."""
+
+    def terminate(self) -> None:
+        """Ask the process to stop."""
+
+    def kill(self) -> None:
+        """Stop the process now."""
+
+
+SpawnFn = Callable[[list[str], dict[str, str]], Process]
 MetricsFn = Callable[[], "str | None"]
 
 
-def _spawn(argv: list[str], env: dict[str, str]) -> subprocess.Popen[bytes]:  # type: ignore[type-var]
+def _spawn(argv: list[str], env: dict[str, str]) -> Process:
     """Start a process with its output piped to us."""
 
     return subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)  # noqa: S603 - argv is built in this file, never from user input
@@ -79,7 +104,8 @@ def _metrics_page() -> str | None:
 
     try:
         with urllib.request.urlopen(f"http://{METRICS_ADDRESS}/metrics", timeout=5) as response:
-            return response.read().decode("utf-8", errors="replace")
+            page: bytes = response.read()
+            return page.decode("utf-8", errors="replace")
     except (urllib.error.URLError, OSError):
         return None
 
@@ -194,7 +220,7 @@ class Cloudflared:
         self._spawn = spawn
         self._clock = clock
         self._metrics = metrics
-        self._process: subprocess.Popen[bytes] | None = None  # type: ignore[type-var]
+        self._process: Process | None = None
         self._lock = threading.Lock()
         self._conn_count = 0
         self._ever_connected = False
@@ -226,7 +252,7 @@ class Cloudflared:
         env.pop(TOKEN_ENV, None)
         if self.config.mode == app_config.MODE_TOKEN:
             # The token is not in argv: ps output and crash dumps never contain it.
-            env[TOKEN_ENV] = self.config.tunnel_token
+            env[TOKEN_ENV] = self.config.tunnel_token.reveal()
         return env
 
     def _rejected_message(self) -> str:

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rootfs" / "app"))
@@ -28,10 +29,10 @@ def cert_pem() -> str:
     return f"-----BEGIN ARGO TUNNEL TOKEN-----\n{body}\n-----END ARGO TUNNEL TOKEN-----\n"
 
 
-def wait_until(predicate: object, seconds: float = 3.0) -> bool:
+def wait_until(predicate: Callable[[], object], seconds: float = 3.0) -> bool:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        if predicate():  # type: ignore[operator]
+        if predicate():
             return True
         time.sleep(0.01)
     return False
@@ -61,7 +62,7 @@ class AccountTest(unittest.TestCase):
                 Path(argv[argv.index("--credentials-file") + 1]).write_text(json.dumps({"TunnelID": TUNNEL_ID}))
             return process
 
-        return acc.Account(self.base, spawn=run, http_get=self.http_get), spawn  # type: ignore[arg-type]
+        return acc.Account(self.base, spawn=run, http_get=self.http_get), spawn
 
     def sign_in(self, account: acc.Account) -> None:
         account.prepare()

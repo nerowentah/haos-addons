@@ -60,6 +60,27 @@ class FakeSpawn:
         return process
 
 
+def crash(spawn: FakeSpawn) -> None:
+    """The process that was started last has exited with code 1."""
+
+    assert spawn.last is not None
+    spawn.last.returncode = 1
+
+
+class SecretTest(unittest.TestCase):
+    """The tunnel token reaches cloudflared's environment and nothing else."""
+
+    def test_token_is_only_in_the_environment(self) -> None:
+        spawn = FakeSpawn(FakeProcess(b""))
+        d = daemon(spawn, FakeClock())
+        d.start()
+        self.assertEqual(spawn.envs[0][cf.TOKEN_ENV], TOKEN)
+        self.assertNotIn(TOKEN, " ".join(spawn.argvs[0]))
+        self.assertNotIn(TOKEN, repr(d.config))
+        self.assertNotIn(TOKEN, repr(d.config.daemon_spec()))
+        d.stop()
+
+
 class FakeClock:
     def __init__(self) -> None:
         self.now = 1000.0
@@ -277,10 +298,10 @@ class RestartTest(unittest.TestCase):
         spawn = FakeSpawn(FakeProcess(b""), FakeProcess(b""))
         d = daemon(spawn, clock)
         d.start()
-        spawn.last.returncode = 1  # it crashed
+        crash(spawn)
         d.poll()  # notices the exit, schedules a restart in 1s
         self.assertEqual(d.status.state, cf.STATE_STOPPED)
-        self.assertIn("exited (code 1)", d.status.last_error)
+        self.assertIn("exited (code 1)", d.status.last_error or "")
         clock.now += 0.9
         d.poll()
         self.assertEqual(len(spawn.argvs), 1)  # not yet
@@ -318,7 +339,7 @@ class RestartTest(unittest.TestCase):
         settled(d)
         self.assertEqual(d.status.state, cf.STATE_ERROR)
         self.assertIn("token", (d.status.last_error or "").lower())
-        spawn.last.returncode = 1
+        crash(spawn)
         d.poll()  # exit noticed: schedules the slow retry
         clock.now += cf.BAD_TOKEN_RETRY_SECONDS - 1
         d.poll()

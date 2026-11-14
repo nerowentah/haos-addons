@@ -42,6 +42,7 @@ from supervisor import (
     merge_s6_environment,
 )
 from webui import (
+    PanelArgs,
     PanelError,
     PanelRouter,
     PanelServer,
@@ -70,6 +71,7 @@ STORE_SAVE_SECONDS = 60
 FAILURES_BEFORE_NOTIFY = 6  # polls: ~30s of not being connected before the phones are told
 WEB_DIR = Path(__file__).resolve().parent / "web"
 NOTIFICATION_ID = "cloudflare_tunnel"
+HOSTNAME_MAX_CHARS = 253  # the longest DNS name
 REACH_CHECK_SECONDS = 600  # how often the public hostname is tried from outside
 REACH_FIRST_CHECK_SECONDS = 20  # after a (re)connect: give DNS and the edge a moment
 ORIGIN_CHECK_SECONDS = 30  # how often SSL Cert Manager's status.json is compared with the route
@@ -311,7 +313,7 @@ class App:
             raw = copy.deepcopy(base)
             mutate(raw)
             try:
-                config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+                config = load_config(self.secrets.resolve_options(raw))
             except (ConfigError, SecretError) as err:
                 raise PanelError(str(err)) from err
             try:
@@ -331,7 +333,7 @@ class App:
         if raw == self.raw_options:
             return
         try:
-            config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+            config = load_config(self.secrets.resolve_options(raw))
         except (ConfigError, SecretError) as err:
             _LOGGER.error("Ignoring updated options until they are fixed: %s", err)  # noqa: TRY400 - no traceback needed
             self.raw_options = raw
@@ -731,7 +733,7 @@ class App:
             return
         raise PanelError("Unknown setting")
 
-    def _set_hostname(self, text: object) -> str:
+    def _set_hostname(self, text: str) -> str:
         try:
             hostname = parse_hostname(text)
         except ConfigError as err:
@@ -744,7 +746,7 @@ class App:
         self.update_options(lambda raw: raw.__setitem__("external_hostname", hostname))
         return f"Setting up {hostname}..."
 
-    def panel_action(self, action_id: str, args: dict[str, object]) -> str | None:
+    def panel_action(self, action_id: str, args: PanelArgs) -> str | None:
         """Handle a panel button (slow work is queued for the loop thread)."""
 
         if action_id == "restart":
@@ -752,7 +754,7 @@ class App:
             self.wake.set()
             return "Restarting the connector..."
         if action_id == "hostname":
-            return self._set_hostname(args.get("text"))
+            return self._set_hostname(args.text("text", max_len=HOSTNAME_MAX_CHARS))
         login_only = {"login", "retry", "overwrite_dns", "sign_out"}
         if action_id in login_only and self.config.mode != MODE_LOGIN:
             raise PanelError("This app uses a Zero Trust token; clear tunnel_token in the Configuration tab to sign in")
@@ -1118,7 +1120,7 @@ def _load_config(
     raw_options = initial_options(load_options, supervisor.fetch_options, secrets)
 
     def validate(raw: dict[str, object]) -> Config:
-        return load_config(secrets.resolve(raw))  # type: ignore[arg-type]
+        return load_config(secrets.resolve_options(raw))
 
     try:
         return raw_options, validate(raw_options)
@@ -1130,8 +1132,11 @@ def _load_config(
         result = wait_for_valid_config(supervisor.fetch_options, validate, view, stop)
         if result is None:
             return None
+        raw, config = result
+        if not isinstance(config, Config):
+            raise TypeError("the options were validated into something that is not a Config") from None
         _LOGGER.info("Configuration is valid now; starting")
-        return result  # type: ignore[return-value]
+        return raw, config
 
 
 def main() -> None:

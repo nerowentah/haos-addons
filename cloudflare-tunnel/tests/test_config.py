@@ -24,7 +24,8 @@ class LoadConfigTest(unittest.TestCase):
                 "log_level": "warning",
             }
         )
-        self.assertEqual(cfg.tunnel_token, "tok")
+        self.assertEqual(cfg.tunnel_token.reveal(), "tok")
+        self.assertNotIn("tok", repr(cfg.tunnel_token))
         self.assertFalse(cfg.notify_on_failure)
         self.assertEqual(cfg.run_parameters, ("--protocol=quic", "--tag=home"))
         self.assertEqual(cfg.log_level, "warning")

@@ -13,8 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rootfs" / "app"))
 import cloudflared as cf
 import origin_tls as otls
 
-HTTP = {"port": 8123, "ssl": False}
-HTTPS = {"port": 8123, "ssl": True}
+HTTP: dict[str, object] = {"port": 8123, "ssl": False}
+HTTPS: dict[str, object] = {"port": 8123, "ssl": True}
 
 
 class PlanTest(unittest.TestCase):
@@ -84,7 +84,9 @@ class PlanTest(unittest.TestCase):
         self.status.write_text(json.dumps({"version": 2}), encoding="utf-8")
         self.assertIsNone(otls.read_manager(self.status))
         self.status.write_text(json.dumps(self.manager()), encoding="utf-8")
-        self.assertEqual(otls.read_manager(self.status)["version"], 1)  # type: ignore[index]
+        status = otls.read_manager(self.status)
+        assert status is not None
+        self.assertEqual(status["version"], 1)
 
 
 class OriginErrorTest(unittest.TestCase):

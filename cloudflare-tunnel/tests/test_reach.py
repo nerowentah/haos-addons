@@ -21,7 +21,7 @@ def no_doh(_hostname: str) -> list[str]:
 
 
 class Fetcher:
-    def __init__(self, outcome: object = 401) -> None:
+    def __init__(self, outcome: int | BaseException = 401) -> None:
         self.outcome = outcome
         self.calls: list[tuple[str, str, str]] = []
 
@@ -29,7 +29,7 @@ class Fetcher:
         self.calls.append((address, hostname, path))
         if isinstance(self.outcome, BaseException):
             raise self.outcome
-        return int(self.outcome)  # type: ignore[call-overload]
+        return self.outcome
 
 
 class ProbeTest(unittest.TestCase):

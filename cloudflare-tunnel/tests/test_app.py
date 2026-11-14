@@ -10,6 +10,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rootfs" / "app"))
 
@@ -23,8 +24,13 @@ import store
 import supervisor
 import webui
 
-STORED = {"tunnel_token": "!secret ct", "notify_on_failure": True, "run_parameters": [], "log_level": "info"}
-RESOLVED = {**STORED, "tunnel_token": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.secret-value"}
+STORED: dict[str, object] = {
+    "tunnel_token": "!secret ct",
+    "notify_on_failure": True,
+    "run_parameters": [],
+    "log_level": "info",
+}
+RESOLVED: dict[str, object] = {**STORED, "tunnel_token": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.secret-value"}
 TOKEN = str(RESOLVED["tunnel_token"])
 
 
@@ -182,19 +188,19 @@ class AppTest(unittest.TestCase):
         secrets.learn(STORED, RESOLVED)
         self.store = store.Store(self.dir / "state.json")
         self.store.load()
-        self.daemon = FakeDaemon(config.load_config(secrets.resolve(copy.deepcopy(STORED))))
+        self.daemon = FakeDaemon(config.load_config(secrets.resolve_options(copy.deepcopy(STORED))))
         self.account = FakeAccount()
         self.ha_config = self.dir / "configuration.yaml"
         self.ha_config.write_text("default_config:\n", encoding="utf-8")
         self.probed: list[str] = []
         self.probe_code: int | None = 401
         self.app = main.App(
-            config.load_config(secrets.resolve(copy.deepcopy(STORED))),
+            config.load_config(secrets.resolve_options(copy.deepcopy(STORED))),
             self.sup,
             self.store,
             copy.deepcopy(STORED),
-            daemon=self.daemon,  # type: ignore[arg-type]
-            account=self.account,  # type: ignore[arg-type]
+            daemon=cast("cf.Cloudflared", self.daemon),  # a stand-in that never starts a process
+            account=cast("acc.Account", self.account),  # a stand-in that records the calls
             ha_config=self.ha_config,
             probe=self._probe,
             manager_status=self.dir / "ssl-cert-manager" / "status.json",
@@ -266,7 +272,7 @@ class AppTest(unittest.TestCase):
         self.assertIsNone(self.app.pending)
 
     def test_panel_restart_happens_in_the_loop_not_on_the_http_thread(self) -> None:
-        result = self.app.panel_action("restart", {})
+        result = self.app.panel_action("restart", webui.PanelArgs())
         self.assertIn("Restarting", result or "")
         self.assertEqual(self.daemon.calls, [])  # the HTTP thread never touches the process
         self.app._tick()
@@ -276,7 +282,7 @@ class AppTest(unittest.TestCase):
         with self.assertRaises(webui.PanelError):
             self.app.panel_toggle("other", True)
         with self.assertRaises(webui.PanelError):
-            self.app.panel_action("nope", {})
+            self.app.panel_action("nope", webui.PanelArgs())
 
     # -- Edits from the Configuration tab ------------------------------------------------
     def test_live_edits_are_applied(self) -> None:
@@ -300,7 +306,7 @@ class AppTest(unittest.TestCase):
     def test_a_secret_added_after_start_keeps_the_running_connector(self) -> None:
         self.sup.stored = {**STORED, "tunnel_token": "!secret added-later"}
         self.app.check_options()
-        self.assertEqual(self.app.config.tunnel_token, TOKEN)  # still the resolved start-up token
+        self.assertEqual(self.app.config.tunnel_token.reveal(), TOKEN)  # still the resolved start-up token
         self.assertNotIn("restart", self.daemon.calls)
         self.assertEqual(self.app.raw_options["tunnel_token"], "!secret added-later")
 
@@ -359,21 +365,26 @@ class AppTest(unittest.TestCase):
         self.assertEqual(len(self.sup.sent), 1)
         self.assertEqual(self.sup.sent[0][0], ["mobile_app_pixel"])
 
+    def _join(self, thread: threading.Thread | None) -> None:
+        assert thread is not None
+        thread.join(5)
+
     # -- Startup and shutdown ---------------------------------------------------------------
     def test_startup_with_a_valid_token_returns_the_config(self) -> None:
         secrets = webui.SecretRefs()
         secrets.learn(STORED, RESOLVED)
         router = webui.PanelRouter()
         result = main._load_config(self.sup, secrets, router, threading.Event())
-        self.assertIsNotNone(result)
+        assert result is not None
         raw, cfg = result
         self.assertEqual(raw["tunnel_token"], "!secret ct")  # references, never values
-        self.assertEqual(cfg.tunnel_token, TOKEN)
+        self.assertEqual(cfg.tunnel_token.reveal(), TOKEN)
+        self.assertNotIn(TOKEN, repr(cfg))
 
     def test_startup_with_an_empty_token_starts_in_login_mode(self) -> None:
         self.sup.stored = {"tunnel_token": ""}
         result = main._load_config(self.sup, webui.SecretRefs(), webui.PanelRouter(), threading.Event())
-        self.assertIsNotNone(result)
+        assert result is not None
         self.assertEqual(result[1].mode, config.MODE_LOGIN)
 
     def test_startup_with_a_bad_option_shows_setup_guidance(self) -> None:
@@ -402,7 +413,7 @@ class AppTest(unittest.TestCase):
 
     def test_sign_in_runs_on_the_loop_thread_and_shows_the_link(self) -> None:
         self._login_mode()
-        self.app.panel_action("login", {})
+        self.app.panel_action("login", webui.PanelArgs())
         self.assertEqual(self.account.calls, [])  # queued, not run on the HTTP thread
         self.app._tick()
         self.assertEqual(self.account.calls, ["login"])
@@ -418,8 +429,8 @@ class AppTest(unittest.TestCase):
         self.app._tick()
         self.assertIn('"prompt_value": "home.example.com"', self._state_text())
         with self.assertRaises(webui.PanelError):
-            self.app.panel_action("hostname", {"text": "ha.other.org"})  # outside the signed-in zone
-        self.app.panel_action("hostname", {"text": "Home.Example.com"})
+            self.app.panel_action("hostname", webui.PanelArgs(text="ha.other.org"))  # outside the signed-in zone
+        self.app.panel_action("hostname", webui.PanelArgs(text="Home.Example.com"))
         self.assertEqual(self.sup.written[-1]["external_hostname"], "home.example.com")
         self.app._tick()
         self.assertEqual(
@@ -448,7 +459,9 @@ class AppTest(unittest.TestCase):
         self._login_mode()
         self.account.signed = True
         self.app._tick()
-        self.app.panel_action("hostname", {"text": "ha.int.example.com"})  # allowed: an Advanced Certificate covers it
+        self.app.panel_action(
+            "hostname", webui.PanelArgs(text="ha.int.example.com")
+        )  # allowed: an Advanced Certificate covers it
         self.app._tick()
         self.daemon.status.set(cf.STATE_CONNECTED)
         text = self._state_text()
@@ -469,7 +482,7 @@ class AppTest(unittest.TestCase):
         self.assertIn("Replace DNS record", self._state_text())
         self.app._tick()
         self.assertEqual(sum(1 for c in self.account.calls if isinstance(c, tuple) and c[0] == "route"), 1)
-        self.app.panel_action("overwrite_dns", {})
+        self.app.panel_action("overwrite_dns", webui.PanelArgs())
         self.app._tick()
         self.assertIn(("route", "home.example.com", True), self.account.calls)
         self.assertIn("restart", self.daemon.calls)
@@ -484,7 +497,7 @@ class AppTest(unittest.TestCase):
         self.assertEqual(self.account.calls.count("create"), 1)  # no retry loop
         self.assertIn("quota exceeded", self._state_text())
         self.account.fail = None
-        self.app.panel_action("retry", {})
+        self.app.panel_action("retry", webui.PanelArgs())
         self.app._tick()
         self.assertEqual(self.account.calls.count("create"), 2)
         self.assertIn("restart", self.daemon.calls)
@@ -493,7 +506,7 @@ class AppTest(unittest.TestCase):
         self._login_mode(external_hostname="home.example.com")
         self.account.signed = True
         self.app._tick()
-        self.app.panel_action("sign_out", {})
+        self.app.panel_action("sign_out", webui.PanelArgs())
         self.app._tick()
         self.assertIn("sign_out", self.account.calls)
         self.assertIsNone(self.daemon.tunnel_id)
@@ -503,7 +516,13 @@ class AppTest(unittest.TestCase):
     def test_token_mode_refuses_the_sign_in_steps(self) -> None:
         for step in ("login", "sign_out", "overwrite_dns", "retry"):
             with self.assertRaises(webui.PanelError):
-                self.app.panel_action(step, {})
+                self.app.panel_action(step, webui.PanelArgs())
+
+    def test_hostname_button_refuses_malformed_input(self) -> None:
+        for bad in ({}, {"text": 5}, {"text": "https://home.example.com"}, {"text": "a" * 300}):
+            with self.assertRaises(webui.PanelError):
+                self.app.panel_action("hostname", webui.PanelArgs(bad))
+        self.assertEqual(self.sup.written, [])
 
     # -- Home Assistant proxy settings ---------------------------------------------------
     def test_the_proxy_settings_are_added_once_and_restart_waits_for_a_click(self) -> None:
@@ -515,7 +534,7 @@ class AppTest(unittest.TestCase):
         self.assertTrue((self.dir / f"configuration.yaml{ha_proxy.BACKUP_SUFFIX}").exists())
         self.assertEqual(self.sup.restarted, 0)
         self.assertIn("Restart Home Assistant", self._state_text())
-        self.app.panel_action("restart_ha", {})
+        self.app.panel_action("restart_ha", webui.PanelArgs())
         self.app._tick()
         self.assertEqual(self.sup.restarted, 1)
         self.assertNotIn("Restart Home Assistant", self._state_text())
@@ -547,13 +566,13 @@ class AppTest(unittest.TestCase):
         self.assertEqual(self.probed, [])  # not connected yet
         self.daemon.status.set(cf.STATE_CONNECTED)
         self.app._check_reach()
-        self.app._reach_thread.join(5)
+        self._join(self.app._reach_thread)
         self.assertEqual(self.probed, ["home.example.com"])
         self.assertIn("Reachable", self._state_text())
         self.probe_code = 400
-        self.app.panel_action("check_reach", {})
+        self.app.panel_action("check_reach", webui.PanelArgs())
         self.app._tick()
-        self.app._reach_thread.join(5)
+        self._join(self.app._reach_thread)
         self.assertIn("HTTP 400", self._state_text())
 
     # -- Origin TLS and the check after every change ---------------------------------------
@@ -629,13 +648,15 @@ class AppTest(unittest.TestCase):
         self.probe_code = 502
         self._connected()
         self.app._tick()  # connected: probe
-        self.app._verify_thread.join(5)
+        self._join(self.app._verify_thread)
         self.daemon.status.origin_error = "x509: certificate signed by unknown authority"
         self.app._tick()  # failed: rolled back, checking the old route
         self.assertIn("restore", self.account.calls)
         self.assertEqual(self.sup.sent[-1][1], "Cloudflare Tunnel change rolled back")
         self.assertIn("unknown authority", self.sup.sent[-1][2])
-        self.assertEqual(self.app.origin.service, "http://homeassistant:8123")  # type: ignore[union-attr]
+        origin = self.app.origin
+        assert origin is not None
+        self.assertEqual(origin.service, "http://homeassistant:8123")
         self.probe_code = 401
         self._connected()
         self._finish_verify()
@@ -652,7 +673,9 @@ class AppTest(unittest.TestCase):
         # ...until SSL Cert Manager changes something.
         self._manager(port=8444)
         self.app._tick()
-        self.assertEqual(self.account.calls[-1][2], "https://a1b2c3d4-ssl-cert-manager:8444")  # type: ignore[index]
+        last = self.account.calls[-1]
+        assert isinstance(last, tuple)
+        self.assertEqual(last[2], "https://a1b2c3d4-ssl-cert-manager:8444")
 
     def test_verify_mode_reports_but_never_rolls_back(self) -> None:
         self._set_up_tunnel()
@@ -681,7 +704,7 @@ class AppTest(unittest.TestCase):
     def test_check_now_changes_nothing(self) -> None:
         self._set_up_tunnel()
         calls = list(self.account.calls)
-        self.app.panel_action("check_reach", {})
+        self.app.panel_action("check_reach", webui.PanelArgs())
         self.app._tick()
         self.assertEqual(self.app.verify["state"], main.VERIFY_PENDING)
         self._finish_verify()

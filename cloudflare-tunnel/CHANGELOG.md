@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4
+
+- **The tunnel token is wrapped as a secret.** It is only revealed where it is put into cloudflared's environment; it cannot show up in a log line or a debug dump. The Cloudflare API token from the sign-in is masked in logs too.
+- **Stricter internal checks.** The app's code now passes strict type checking: options and panel requests are validated where they enter the app, and the external hostname is a checked type. No visible change; the `/ssl` status file and the connector command keep their format.
+- **Panel:** a hostname that is not text, or longer than a DNS name can be, is refused with a clear message.
+
 ## 0.3.3
 
 - **Shared panel update (security):** the panel only accepts changes that come from its own page (a request from another web site is refused), every page it serves carries a Content-Security-Policy and may only be shown inside Home Assistant, and stalled or oversized requests are dropped. No visible change in this app.

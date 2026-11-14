@@ -26,10 +26,12 @@ import re
 import shutil
 import threading
 import urllib.error
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 
 import cloudflared as cf
+import redact
 import safehttp
 from safefile import PRIVATE, atomic_write
 
@@ -92,7 +94,7 @@ class Login:
         self.state = LOGIN_IDLE
         self.url: str | None = None
         self.error: str | None = None
-        self._process: object | None = None
+        self._process: cf.Process | None = None
         self._lock = threading.Lock()
 
     @property
@@ -119,11 +121,10 @@ class Login:
         timer.start()
         _LOGGER.info("Waiting for the Cloudflare sign-in (open it from the Cloudflare Tunnel panel)")
 
-    def _read(self, process: object) -> None:
+    def _read(self, process: cf.Process) -> None:
         output: list[str] = []
-        stdout = getattr(process, "stdout", None)
         try:
-            for raw in stdout or ():
+            for raw in process.stdout or ():
                 line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
                 output.append(line)
                 found = _LOGIN_URL_RE.search(line)
@@ -132,18 +133,18 @@ class Login:
                     self.state = LOGIN_WAITING
         except (OSError, ValueError):
             pass
-        code = process.wait()  # type: ignore[attr-defined]
+        code = process.wait()
         if self._account.signed_in():
             self._finish(LOGIN_DONE)
         elif self.state != LOGIN_FAILED:
             reason = _last_message("\n".join(output))
             self._finish(LOGIN_FAILED, f"Sign-in did not finish (cloudflared exit {code}): {reason}")
 
-    def _expire(self, process: object) -> None:
+    def _expire(self, process: cf.Process) -> None:
         if self.active and process is self._process:
             self._finish(LOGIN_FAILED, "The sign-in link expired; start again")
             with contextlib.suppress(OSError):
-                process.kill()  # type: ignore[attr-defined]
+                process.kill()
 
     def _finish(self, state: str, error: str | None = None) -> None:
         self.state, self.error = state, error
@@ -231,10 +232,12 @@ class Account:
             return self._zone or None
         fields = self._cert_fields()
         zone_id, api_token = fields.get("zoneID"), fields.get("apiToken")
-        if not zone_id or not api_token:
+        if not isinstance(zone_id, str) or not isinstance(api_token, str) or not zone_id or not api_token:
             return None
+        redact.register(api_token)  # never in a log line, whatever ends up logging it
+        url = f"{CF_API}/zones/{urllib.parse.quote(zone_id, safe='')}"
         try:
-            reply = json.loads(self.http_get(f"{CF_API}/zones/{zone_id}", {"Authorization": f"Bearer {api_token}"}))
+            reply = json.loads(self.http_get(url, {"Authorization": f"Bearer {api_token}"}))
         except (urllib.error.URLError, OSError, ValueError):
             _LOGGER.debug("Could not look up the Cloudflare zone name")
             self._zone = ""  # only a pre-fill: do not retry on every pass
