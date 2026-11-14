@@ -83,7 +83,7 @@ Use **Import CA** in the **Certificate authorities** section.
 | `/ssl/ssl-cert-manager/status.json` | What other apps (Cloudflare Tunnel) need to know: certificates, names, proxy |
 | `/ssl/fullchain.pem`, `/ssl/privkey.pem` | The default certificate under the names most apps expect, while **Also write /ssl/fullchain.pem** is on |
 
-- Private keys are written with mode 0600.
+- Every file the app writes, in `/ssl` and in `/data`, has mode 0600 (readable by root only): private keys, and also the certificates, the trust bundle and `status.json`. Home Assistant and apps that run as root can read them; an add-on that runs as a non-root user cannot.
 - The app writes `/ssl/fullchain.pem` and `/ssl/privkey.pem` only when they don't exist yet, or still hold exactly what the app wrote last time. If anything else put a file there, it is left alone and the panel says so.
 - The first certificate you add becomes the default. **Make default** changes it.
 

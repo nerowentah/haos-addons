@@ -38,10 +38,10 @@ STATUS_FILE = "status.json"
 RESERVED = {DEFAULT_DIR, TRUST_DIR}
 
 
-def write_file(path: Path, data: bytes, mode: int = 0o644) -> bool:
-    """Write ``path`` atomically with ``mode``; False when it already held exactly ``data``."""
+def write_file(path: Path, data: bytes) -> bool:
+    """Write ``path`` atomically, readable by its owner only; False when it already held exactly ``data``."""
 
-    return atomic_write(path, data, mode)
+    return atomic_write(path, data)
 
 
 @dataclass(slots=True)
@@ -65,7 +65,7 @@ class Files:
     # -- the originals in /data ------------------------------------------------------
     def save_cert(self, cert_id: str, chain: list[x509.Certificate], key: certs.PrivateKey) -> None:
         folder = self.certs_dir / cert_id
-        write_file(folder / "privkey.pem", certs.key_pem(key), 0o600)
+        write_file(folder / "privkey.pem", certs.key_pem(key))
         write_file(folder / "fullchain.pem", certs.chain_pem(chain))
         write_file(folder / "chain.pem", certs.chain_pem(chain[1:]))
 
@@ -98,7 +98,7 @@ class Files:
         folder = self.cas_dir / ca_id
         write_file(folder / "cert.pem", certs.cert_pem(cert))
         if key is not None:
-            write_file(folder / "key.pem", certs.key_pem(key), 0o600)
+            write_file(folder / "key.pem", certs.key_pem(key))
 
     def load_ca(self, ca_id: str) -> tuple[x509.Certificate, certs.PrivateKey | None]:
         folder = self.cas_dir / ca_id
@@ -165,10 +165,10 @@ class Files:
                     result.changed = True
                 continue
             data = wanted[name]
-            if write_file(path, data, 0o600 if name == "privkey.pem" else 0o644):
+            if write_file(path, data):
                 result.changed = True
             owned[name] = certs.digest(data)
-        write_file(self.owned_file, json.dumps(owned).encode(), 0o600)
+        write_file(self.owned_file, json.dumps(owned).encode())
 
     # -- publish --------------------------------------------------------------------------
     def sync(  # noqa: PLR0912 - one branch per published file group
@@ -191,11 +191,11 @@ class Files:
                 result.errors.append(f"{cert_id}: {err}")
                 continue
             for name, data in files.items():
-                if write_file(self.share / cert_id / name, data, 0o600 if name == "privkey.pem" else 0o644):
+                if write_file(self.share / cert_id / name, data):
                     result.changed = True
             if cert_id == default_id:
                 for name, data in files.items():
-                    if write_file(self.share / DEFAULT_DIR / name, data, 0o600 if name == "privkey.pem" else 0o644):
+                    if write_file(self.share / DEFAULT_DIR / name, data):
                         result.changed = True
                 root = {"fullchain.pem": files["fullchain.pem"], "privkey.pem": files["privkey.pem"]}
                 self._sync_root(root if write_root else None, result)
