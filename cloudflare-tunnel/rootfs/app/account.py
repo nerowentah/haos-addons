@@ -33,7 +33,7 @@ from pathlib import Path
 import cloudflared as cf
 import redact
 import safehttp
-from safefile import PRIVATE, atomic_write
+from safefile import atomic_write
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -338,8 +338,8 @@ class Account:
         if current == text:
             return False
         if current is not None:
-            atomic_write(self.previous, current, PRIVATE)
-        atomic_write(self.ingress, text, PRIVATE)
+            atomic_write(self.previous, current)
+        atomic_write(self.ingress, text)
         _LOGGER.info("Ingress: %s → %s", hostname, service)
         return True
 

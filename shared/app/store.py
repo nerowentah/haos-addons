@@ -9,7 +9,7 @@ import json
 import logging
 from pathlib import Path
 
-from safefile import PRIVATE, atomic_write
+from safefile import atomic_write
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class Store:
         if not self.dirty:
             return
         try:
-            atomic_write(self.path, json.dumps(self.data, separators=(",", ":")), PRIVATE)
+            atomic_write(self.path, json.dumps(self.data, separators=(",", ":")))
             self.dirty = False
         except OSError:
             _LOGGER.exception("Could not save state to %s", self.path)
