@@ -4,6 +4,7 @@
 
 - **Shared panel update (security):** the panel only accepts changes that come from its own page (a request from another web site is refused), every page it serves carries a Content-Security-Policy and may only be shown inside Home Assistant, and stalled or oversized requests are dropped. No visible change in this app.
 - **State files are private.** Everything the app saves in `/data` is written atomically and readable by the app only.
+- **Files in `/ssl` are owner-only.** Certificates, chains, the CA trust bundle and `status.json` are now written with mode 0600 like the private keys (they were world-readable, 0644). Home Assistant and apps that run as root read them as before; existing files are tightened the next time the app publishes. An add-on that runs as a non-root user can no longer read them.
 - **The Supervisor token is masked** if it ever reaches a log line.
 - **Outbound requests** to the Cloudflare API and the DNS-over-HTTPS lookup refuse redirects to plain http and oversized answers.
 
