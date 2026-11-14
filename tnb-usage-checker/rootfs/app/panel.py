@@ -37,12 +37,22 @@ STATS_STATUS = {
 }
 
 
+def _number(value: object) -> float | None:
+    """A published value as a number (None while unknown, or when it is not a number)."""
+
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
+
+
 def _money(value: object) -> str | None:
-    return None if value is None else f"RM {float(value):,.2f}"  # type: ignore[arg-type]
+    number = _number(value)
+    return None if number is None else f"RM {number:,.2f}"
 
 
 def _kwh(value: object) -> str | None:
-    return None if value is None else f"{float(value):,.2f}"  # type: ignore[arg-type]
+    number = _number(value)
+    return None if number is None else f"{number:,.2f}"
 
 
 def _when(value: object) -> str | None:
@@ -269,8 +279,8 @@ def _account_card(
 def _maintenance_text(config: Config) -> str:
     """'daily 00:00-06:00 (now, until 06:00)' or 'none'."""
 
-    text = maintenance.describe(config.maintenance_windows)
-    until = maintenance.window_end(config.maintenance_windows, datetime.now(MYT))
+    text = maintenance.describe(list(config.maintenance_windows))
+    until = maintenance.window_end(list(config.maintenance_windows), datetime.now(MYT))
     return f"{text} (now, until {until:%H:%M})" if until else text
 
 
@@ -385,7 +395,8 @@ def apply_toggle(options: dict[str, object], toggle_id: str, value: bool) -> Non
     if kind == "account":
         account_id, _, field = rest.rpartition(":")
         if field in ACCOUNT_FIELDS:
-            for row in options.get("accounts") or []:  # type: ignore[union-attr]
+            rows = options.get("accounts")
+            for row in rows if isinstance(rows, list) else []:
                 if isinstance(row, dict) and slugify(str(row.get("name") or "")) == account_id:
                     row[field] = value
                     return

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
 from datetime import UTC, date, datetime
 from pathlib import Path
 from string import Template
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rootfs" / "app"))
 
@@ -34,12 +36,13 @@ class FakeSupervisor(supervisor.Supervisor):
     def __init__(self) -> None:
         super().__init__("token")
         self.notifications: list[tuple[str, str, str]] = []
-        self.posts: dict[str, object] = {}
+        self.posts: dict[str, dict[str, object]] = {}
 
     def notify(self, targets: list[str], title: str, message: str, notification_id: str) -> None:  # noqa: ARG002
         self.notifications.append((title, message, notification_id))
 
     def core_post(self, path: str, body: object) -> object:
+        assert isinstance(body, dict)
         self.posts[path] = body
         return None
 
@@ -69,7 +72,13 @@ class ScriptedSession(mytnb.MyTnbSession):
         self.responses = [_ok(r) if isinstance(r, str) else r for r in responses]
         self.requested: list[str] = []
 
-    def _send_raw(self, url, *, data=None, headers=None):  # type: ignore[override]  # noqa: ARG002
+    def _send_raw(
+        self,
+        url: str,
+        *,
+        data: dict[str, str] | None = None,  # noqa: ARG002
+        headers: dict[str, str] | None = None,  # noqa: ARG002
+    ) -> mytnb._Response:
         self.requested.append(url)
         return self.responses.pop(0)
 
@@ -97,7 +106,7 @@ class BillAppTest(unittest.TestCase):
         self.assertEqual(runtime.values["amount_due"], 88.5)
         self.assertEqual(runtime.values["due_date"], "2026-12-01")
         posted = self.sup.posts[f"/states/{mqtt_pub.entity_id('home', 'payment_due', 'binary_sensor')}"]
-        self.assertEqual(posted["state"], "on")  # type: ignore[index]
+        self.assertEqual(posted["state"], "on")
         self.assertEqual(self.titles(), ["TNB bill due"])
         self.assertIn("RM 88.50", self.sup.notifications[0][1])
         self.assertIn("01 Dec 2026", self.sup.notifications[0][1])
@@ -107,7 +116,9 @@ class BillAppTest(unittest.TestCase):
         app._bill_succeeded(runtime, mytnb.BillInfo(88.5, date(2026, 12, 1)))  # every 6 h sync: no repeat
         self.assertEqual(self.titles(), ["TNB bill due"])
 
-        self.store.section("bills")["home"]["notified_at"] = "2020-01-01T00:00:00+08:00"  # type: ignore[index]
+        saved = self.store.section("bills")["home"]
+        assert isinstance(saved, dict)
+        saved["notified_at"] = "2020-01-01T00:00:00+08:00"
         again = self.app()  # the reminder clock survives a restart
         again._bill_succeeded(again.runtimes[0], mytnb.BillInfo(88.5, date(2026, 12, 1)))
         self.assertEqual(self.titles(), ["TNB bill due", "TNB bill still unpaid"])
@@ -126,7 +137,8 @@ class BillAppTest(unittest.TestCase):
         app = self.app()
         runtime = app.runtimes[0]
         app._bill_succeeded(runtime, mytnb.BillInfo(12.3, date(2026, 12, 1)))
-        stats = {s["label"]: s["value"] for s in panel.build_state(app)["sections"][0]["cards"][0]["stats"]}  # type: ignore[index]
+        state = json.loads(json.dumps(panel.build_state(app)))
+        stats = {s["label"]: s["value"] for s in state["sections"][0]["cards"][0]["stats"]}
         self.assertEqual(stats["Amount due"], "RM 12.30")
         self.assertEqual(stats["Payment"], "Due by 01 Dec")
 
@@ -143,7 +155,9 @@ class BillFetchTest(unittest.TestCase):
         def boom(*_args: object, **_kwargs: object) -> mytnb._Response:
             raise mytnb.PortalError("timed out")
 
-        session._send_raw = boom  # type: ignore[method-assign]
+        patcher = mock.patch.object(session, "_send_raw", boom)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         with self.assertLogs("mytnb", "WARNING"):
             self.assertIsNone(session.fetch_bill())
 
@@ -153,13 +167,21 @@ class BillFetchTest(unittest.TestCase):
         self.assertEqual(len(session.requested), 1)
 
     def test_switches_to_this_account_first(self) -> None:
-        pages = [dashboard("123456789012", **CLEARED), _ok("false"), dashboard("123456789014", **CREDIT)]
+        pages: list[mytnb._Response | str] = [
+            dashboard("123456789012", **CLEARED),
+            _ok("false"),
+            dashboard("123456789014", **CREDIT),
+        ]
         session = ScriptedSession("AbC%2B12%3D%3D", pages, bill_no="123456789014")
         self.assertEqual(session.fetch_bill(), mytnb.BillInfo(-63.7))
         self.assertIn("selectedAccountID=33333333-3333-4333-8333-333333333333", session.requested[1])
 
     def test_switch_that_does_not_stick_reads_nothing(self) -> None:
-        pages = [dashboard("123456789012", **DUE), _ok("false"), dashboard("123456789012", **DUE)]
+        pages: list[mytnb._Response | str] = [
+            dashboard("123456789012", **DUE),
+            _ok("false"),
+            dashboard("123456789012", **DUE),
+        ]
         session = ScriptedSession("123456789013", pages)
         with self.assertLogs("mytnb", "WARNING"):
             self.assertIsNone(session.fetch_bill())

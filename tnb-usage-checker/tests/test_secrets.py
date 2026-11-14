@@ -17,21 +17,36 @@ import supervisor
 import webui
 
 REPO = Path(__file__).resolve().parents[2]
-STORED = {
+HOME: dict[str, object] = {
+    "name": "Home",
+    "tariff": "general",
+    "billing_start_day": 1,
+    "account_number": "123456789012",
+}
+SHOP: dict[str, object] = {
+    "name": "Shop",
+    "tariff": "general",
+    "billing_start_day": 1,
+    "account_number": "123456789013",
+    "mytnb_username": "shop@example.com",
+    "mytnb_password": "!secret shop_pw",
+}
+STORED: dict[str, object] = {
     "mytnb_username": "you@example.com",
     "mytnb_password": "!secret tnb_pw",
     "calendarific_api_key": "!secret calendarific",
     "mqtt": True,
     "accounts": [
-        {"name": "Home", "tariff": "general", "billing_start_day": 1, "account_number": "123456789012"},
-        {"name": "Shop", "tariff": "general", "billing_start_day": 1, "account_number": "123456789013",
-         "mytnb_username": "shop@example.com", "mytnb_password": "!secret shop_pw"},
+        HOME,
+        SHOP,
     ],
-}  # fmt: skip
-RESOLVED = copy.deepcopy(STORED)
-RESOLVED["mytnb_password"] = "hunter2"
-RESOLVED["calendarific_api_key"] = "key-123"
-RESOLVED["accounts"][1]["mytnb_password"] = "shop-pass"  # type: ignore[index]
+}
+RESOLVED: dict[str, object] = {
+    **copy.deepcopy(STORED),
+    "mytnb_password": "hunter2",
+    "calendarific_api_key": "key-123",
+    "accounts": [copy.deepcopy(HOME), {**SHOP, "mytnb_password": "shop-pass"}],
+}
 
 
 class SecretRefsTest(unittest.TestCase):
@@ -104,8 +119,8 @@ class AppSecretsTest(unittest.TestCase):
         secrets = webui.SecretRefs()
         raw = webui.initial_options(lambda: copy.deepcopy(RESOLVED), self.sup.fetch_options, secrets)
         self.app = main.App(
-            config.load_config(secrets.resolve(raw)), self.sup, store.Store(Path(tmp.name) / "s.json"), raw
-        )  # type: ignore[arg-type]
+            config.load_config(secrets.resolve_options(raw)), self.sup, store.Store(Path(tmp.name) / "s.json"), raw
+        )
         self.app.secrets = secrets
         self.app.broker_found = False
 
@@ -113,14 +128,16 @@ class AppSecretsTest(unittest.TestCase):
         self.sup.stored["afa_rate"] = 0.01
         self.app.check_options()
         self.assertEqual(self.app.config.afa_rate, 0.01)
-        self.assertEqual(self.app.config.accounts[0].mytnb_password, "hunter2")
-        self.assertEqual(self.app.config.accounts[1].mytnb_password, "shop-pass")
+        self.assertEqual(self.app.config.accounts[0].mytnb_password.reveal(), "hunter2")
+        self.assertEqual(self.app.config.accounts[1].mytnb_password.reveal(), "shop-pass")
+        self.assertNotIn("hunter2", repr(self.app.config))
+        self.assertNotIn("key-123", repr(self.app.config))
 
     def test_panel_switch_writes_references_not_values(self) -> None:
         self.app.panel_toggle("mqtt", False)
         written = self.sup.written[-1]
         self.assertEqual(written["mytnb_password"], "!secret tnb_pw")
-        self.assertEqual(written["accounts"][1]["mytnb_password"], "!secret shop_pw")  # type: ignore[index]
+        self.assertEqual(written["accounts"], STORED["accounts"])
         self.assertNotIn("hunter2", str(written))
         self.assertIs(written["mqtt"], False)
 
@@ -134,7 +151,7 @@ class AppSecretsTest(unittest.TestCase):
         self.sup.stored["mytnb_password"] = "!secret brand_new"
         with self.assertLogs("power_tnb", "ERROR"):
             self.app.check_options()
-        self.assertEqual(self.app.config.accounts[0].mytnb_password, "hunter2")
+        self.assertEqual(self.app.config.accounts[0].mytnb_password.reveal(), "hunter2")
 
     def test_overrides_migration_writes_references(self) -> None:
         self.sup.stored["notification_overrides"] = [{"name": "mobile_app_a", "notify": False}]

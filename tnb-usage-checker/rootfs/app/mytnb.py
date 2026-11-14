@@ -21,10 +21,12 @@ import time
 import urllib.parse
 import urllib.request
 import zlib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
 import maintenance
+from redact import Secret
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -174,8 +176,8 @@ def _mask(value: str) -> str:
     return f"••••{value[-4:]}"
 
 
-def _names(values: object) -> str:
-    items = sorted({_scrub(str(v)) for v in values})  # type: ignore[attr-defined]
+def _names(values: Iterable[object]) -> str:
+    items = sorted({_scrub(str(v)) for v in values})
     more = f" +{len(items) - LOG_LIST_ITEMS}" if len(items) > LOG_LIST_ITEMS else ""
     return ", ".join(items[:LOG_LIST_ITEMS]) + more if items else "-"
 
@@ -269,7 +271,7 @@ class _KeepAliveClient:
                 if attempt == 2:  # noqa: PLR2004 - second try on a fresh connection
                     raise
                 continue
-            self._jar.extract_cookies(response, request)  # type: ignore[arg-type]
+            self._jar.extract_cookies(response, request)
             return response, raw
         raise AssertionError("unreachable")
 
@@ -434,9 +436,9 @@ class MyTnbSession:
     so the smartliving dashboard is always bound to the right meter.
     """
 
-    def __init__(self, username: str, password: str, ca_no: str, bill_no: str = "") -> None:
+    def __init__(self, username: str, password: Secret | str, ca_no: str, bill_no: str = "") -> None:
         self._username = username
-        self._password = password
+        self._password = password if isinstance(password, Secret) else Secret(password)
         self.ca_no = ca_no
         self._smartmeter_path = SMARTMETER_PATH.format(ca_no=ca_no)
         self._jar = http.cookiejar.CookieJar()
@@ -509,7 +511,9 @@ class MyTnbSession:
         self.sdpudcid = None
 
         _LOGGER.debug("Login trace for account %s (debug_login is on)", _mask(self.ca_no))
-        response = self._send(LOGIN_URL, data={"Email": self._username, "Password": self._password}, step="login")
+        response = self._send(
+            LOGIN_URL, data={"Email": self._username, "Password": self._password.reveal()}, step="login"
+        )
         fields = {name: html.unescape(value) for name, value in FORM_FIELD_RE.findall(response.body)}
         if not fields:
             raise CredentialsError("Login returned no SSO form fields (wrong email or password?)")

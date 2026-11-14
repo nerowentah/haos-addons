@@ -6,9 +6,11 @@ import json
 import logging
 import urllib.error
 import urllib.parse
+from collections.abc import Iterable
 from datetime import date, timedelta
 
 import safehttp
+from redact import Secret
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,15 +46,17 @@ def fetch_calendarific(api_key: str, year: int, country: str = "MY") -> set[date
         return set()
 
     result: set[date] = set()
-    holidays = (payload.get("response") or {}).get("holidays") if isinstance(payload, dict) else None
-    for item in holidays or []:
+    response = payload.get("response") if isinstance(payload, dict) else None
+    holidays = response.get("holidays") if isinstance(response, dict) else None
+    for item in holidays if isinstance(holidays, list) else []:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "").lower()
         # TNB only recognises the first day of Hari Raya Haji.
         if "haji" in name and "day 2" in name:
             continue
-        iso = str(((item.get("date") or {}).get("iso")) or "")[:10]
+        when = item.get("date")
+        iso = str((when.get("iso") if isinstance(when, dict) else None) or "")[:10]
         try:
             result.add(date.fromisoformat(iso))
         except ValueError:
@@ -63,9 +67,9 @@ def fetch_calendarific(api_key: str, year: int, country: str = "MY") -> set[date
 class HolidayCalendar:
     """Merges fixed, manual and (optionally) Calendarific holidays."""
 
-    def __init__(self, extra: list[date], api_key: str = "") -> None:
+    def __init__(self, extra: Iterable[date], api_key: Secret | str = "") -> None:
         self._extra = set(extra)
-        self._api_key = api_key
+        self._api_key = api_key if isinstance(api_key, Secret) else Secret(api_key)
         self._fetched: dict[int, set[date]] = {}
 
     def refresh(self, year: int) -> None:
@@ -73,7 +77,7 @@ class HolidayCalendar:
 
         if not self._api_key:
             return
-        fetched = fetch_calendarific(self._api_key, year)
+        fetched = fetch_calendarific(self._api_key.reveal(), year)
         if fetched:
             self._fetched[year] = fetched
             _LOGGER.info("Loaded %d Calendarific holiday(s) for %s", len(fetched), year)

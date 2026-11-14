@@ -61,7 +61,6 @@ ignore = ["E501"]
   "TRY003",
 ]
 "tnb-usage-checker/tests/*.py" = [
-  "ANN",  # until this app is strictly typed
   "TRY003",
   "S105",
   "S106",

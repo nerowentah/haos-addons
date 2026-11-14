@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.4
+
+- **Passwords and keys are wrapped as secrets.** The myTNB password and the Calendarific API key are only revealed in the request that needs them; they cannot show up in a log line or a debug dump. The MQTT password is masked in logs too.
+- **Stricter internal checks.** The app's code now passes strict type checking: options, panel requests, the saved state and the MQTT broker details are validated where they enter the app. No visible change; entity ids, MQTT topics, statistics ids and the saved state keep their format.
+- **Fix:** an unexpected holiday list from Calendarific, or MQTT broker details with an unusable port, are skipped or reported in the log instead of stopping the app.
+
 ## 0.5.3
 
 - **Shared panel update (security):** the panel only accepts changes that come from its own page (a request from another web site is refused), every page it serves carries a Content-Security-Policy and may only be shown inside Home Assistant, and stalled or oversized requests are dropped. No visible change in this app.

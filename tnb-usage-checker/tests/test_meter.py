@@ -89,7 +89,7 @@ class BillingCycleTest(unittest.TestCase):
         acc.roll_over(later, "tou", 0.0)
         self.assertEqual(acc.period_start, "2026-11-05")
         self.assertEqual(len(acc.history), 1)
-        self.assertAlmostEqual(float(acc.history[0]["import_kwh"]), 4.0)
+        self.assertEqual(acc.history[0]["import_kwh"], 4.0)
         self.assertEqual(acc.peak_kwh, 0)
 
         restored = meter.AccountMeter.from_dict(acc.to_dict(), 5)
@@ -98,7 +98,7 @@ class BillingCycleTest(unittest.TestCase):
     def test_prediction_not_below_usage(self) -> None:
         acc = meter.AccountMeter(billing_start_day=1, period_start="2026-11-01", peak_kwh=100, offpeak_kwh=100)
         bill = acc.predicted_bill(datetime(2026, 11, 11, tzinfo=MYT), "general", 0.0)
-        self.assertIsNotNone(bill)
+        assert bill is not None
         self.assertAlmostEqual(bill.import_kwh, 600, places=3)  # 200 kWh in 10 days of a 30-day cycle
 
 

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rootfs" / "app"))
@@ -17,9 +18,11 @@ import mytnb
 import stats
 import store
 import supervisor
+import webui
+from meter import MYT
 
-LOGIN = {"mytnb_username": "you@example.com", "mytnb_password": "secret"}
-WINDOW = datetime(2026, 10, 1, 0, 0, tzinfo=main.MYT)
+LOGIN: dict[str, object] = {"mytnb_username": "you@example.com", "mytnb_password": "secret"}
+WINDOW = datetime(2026, 10, 1, 0, 0, tzinfo=MYT)
 
 
 def options(**extra: object) -> dict[str, object]:
@@ -78,7 +81,7 @@ class StatisticsStatusTest(unittest.TestCase):
         app = self.app()
         runtime = app.runtimes[0]
         result = stats.ImportResult(usage_rows=720, cost_rows=30)
-        with mock.patch.object(main.stats, "sync_statistics", return_value=result):
+        with mock.patch.object(stats, "sync_statistics", return_value=result):
             app._import_statistics(runtime, WINDOW, mytnb.PortalData(usage=[], cost=[]))
 
         self.assertEqual(runtime.values["stats_status"], "ok")
@@ -90,7 +93,7 @@ class StatisticsStatusTest(unittest.TestCase):
         app = self.app()
         runtime = app.runtimes[0]
         error = stats.StatsError("recorder/import_statistics: unknown_error nope")
-        with mock.patch.object(main.stats, "sync_statistics", side_effect=error):
+        with mock.patch.object(stats, "sync_statistics", side_effect=error):
             app._import_statistics(runtime, WINDOW, mytnb.PortalData(usage=[], cost=[]))
 
         self.assertEqual(runtime.values["stats_status"], "error")
@@ -100,7 +103,7 @@ class StatisticsStatusTest(unittest.TestCase):
     def test_an_unexpected_error_is_recorded_too(self) -> None:
         app = self.app()
         runtime = app.runtimes[0]
-        with mock.patch.object(main.stats, "sync_statistics", side_effect=OSError("connection refused")):
+        with mock.patch.object(stats, "sync_statistics", side_effect=OSError("connection refused")):
             app._import_statistics(runtime, WINDOW, mytnb.PortalData(usage=[], cost=[]))
 
         self.assertEqual(runtime.values["stats_status"], "error")
@@ -109,16 +112,24 @@ class StatisticsStatusTest(unittest.TestCase):
     def test_long_errors_are_truncated(self) -> None:
         app = self.app()
         runtime = app.runtimes[0]
-        with mock.patch.object(main.stats, "sync_statistics", side_effect=stats.StatsError("x" * 500)):
+        with mock.patch.object(stats, "sync_statistics", side_effect=stats.StatsError("x" * 500)):
             app._import_statistics(runtime, WINDOW, mytnb.PortalData(usage=[], cost=[]))
 
         self.assertEqual(len(str(runtime.values["stats_error"])), main.STATS_ERROR_MAX_CHARS)
+
+    def test_sync_button_needs_a_known_account(self) -> None:
+        app = self.app()
+        with mock.patch.object(app, "maintenance_until", return_value=None):
+            self.assertEqual(app.panel_action("sync", webui.PanelArgs(account="home")), "Syncing myTNB for Home...")
+            for bad in ({}, {"account": 7}, {"account": "gone"}):
+                with self.assertRaises(webui.PanelError):
+                    app.panel_action("sync", webui.PanelArgs(bad))
 
     def test_a_disabled_import_shows_off(self) -> None:
         app = self.app(statistics_enabled=False)
         runtime = app.runtimes[0]
         self.assertEqual(runtime.values["stats_status"], "off")  # before the first sync too
-        runtime.portal = FakeSession(mytnb.PortalData(usage=[], cost=[]))
+        runtime.portal = cast("mytnb.MyTnbSession", FakeSession(mytnb.PortalData(usage=[], cost=[])))  # a stand-in
         app.sync_portal(runtime)
 
         self.assertEqual(runtime.values["stats_status"], "off")

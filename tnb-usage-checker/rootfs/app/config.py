@@ -8,9 +8,11 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 import maintenance
 import tariff
+from redact import Secret
 
 CONFIG_PATH = Path("/data/options.json")
 SMARTMETER_PATH_RE = re.compile(r"/AccountManagement/SmartMeter/Index/TRIL\?caNo=([^\"'\s<>&#]+)")
@@ -21,7 +23,8 @@ TARIFFS = {tariff.TARIFF_GENERAL, tariff.TARIFF_TOU}
 
 TRACE = 5
 NOTICE = 25
-LOG_LEVELS = {
+type LogLevel = Literal["trace", "debug", "info", "notice", "warning", "error", "fatal"]
+LOG_LEVELS: dict[LogLevel, int] = {
     "trace": TRACE,
     "debug": logging.DEBUG,
     "info": logging.INFO,
@@ -32,26 +35,33 @@ LOG_LEVELS = {
 }
 
 
-def parse_log_level(raw: dict[str, object]) -> str:
+def parse_log_level(raw: dict[str, object]) -> LogLevel:
     """The ``log_level`` option, lower-cased ("info" when missing or unknown)."""
 
     value = str(raw.get("log_level") or "info").strip().lower()
-    return value if value in LOG_LEVELS else "info"
+    for level in LOG_LEVELS:
+        if level == value:
+            return level
+    return "info"
 
 
-def apply_log_level(name: str) -> None:
-    """Set the root logger to ``name`` (one of LOG_LEVELS)."""
+def apply_log_level(name: LogLevel) -> None:
+    """Set the root logger to ``name``."""
 
     logging.addLevelName(TRACE, "TRACE")
     logging.addLevelName(NOTICE, "NOTICE")
-    logging.getLogger().setLevel(LOG_LEVELS.get(name, logging.INFO))
+    logging.getLogger().setLevel(LOG_LEVELS[name])
 
 
 class ConfigError(ValueError):
     """Raised when the add-on configuration is invalid."""
 
 
-@dataclass(slots=True)
+def _no_secret() -> Secret:
+    return Secret("")
+
+
+@dataclass(frozen=True, slots=True)
 class Account:
     """One TNB account: a myTNB portal login and/or a local energy sensor."""
 
@@ -60,7 +70,7 @@ class Account:
     tariff: str
     billing_start_day: int
     mytnb_username: str = ""
-    mytnb_password: str = ""
+    mytnb_password: Secret = field(default_factory=_no_secret)  # revealed only in the login request
     ca_no: str = ""
     bill_no: str = ""  # the number printed on the bill (picks the account on the myTNB dashboard)
     import_entity: str = ""
@@ -101,23 +111,23 @@ class Account:
         return bool(self.import_entity)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Config:
-    """Parsed add-on options."""
+    """Parsed add-on options (never changed in place: new options make a new Config)."""
 
     portal_interval_hours: int
     meter_poll_seconds: int
     afa_rate: float
-    calendarific_api_key: str
-    extra_holidays: list[date]
+    calendarific_api_key: Secret  # revealed only in the request to Calendarific
+    extra_holidays: tuple[date, ...]
     notify_on_failure: bool
-    accounts: list[Account]
+    accounts: tuple[Account, ...]
     mqtt: bool = True
     debug_login: bool = False
     daily_report: bool = True
-    maintenance_windows: list[maintenance.Window] = field(default_factory=list)
+    maintenance_windows: tuple[maintenance.Window, ...] = ()
     notify_on_unpaid: bool = True
-    log_level: str = "info"
+    log_level: LogLevel = "info"
 
 
 def slugify(value: str) -> str:
@@ -198,7 +208,7 @@ def build_account(index: int, entry: object, default_login: tuple[str, str] = ("
         tariff=tariff_name,
         billing_start_day=_int(entry, "billing_start_day", 1, 1, 31),
         mytnb_username=_str(entry, "mytnb_username") or default_login[0],
-        mytnb_password=_str(entry, "mytnb_password") or default_login[1],
+        mytnb_password=Secret(_str(entry, "mytnb_password") or default_login[1]),
         ca_no=_account_number(name, entry),
         bill_no=re.sub(r"[\s-]", "", _str(entry, "account_number")),
         import_entity=_str(entry, "import_entity").lower(),
@@ -248,7 +258,9 @@ def load_config(raw: dict[str, object]) -> Config:
         raise ConfigError("Set both mytnb_username and mytnb_password at the top (or neither)")
     if username and "@" not in username:
         raise ConfigError("mytnb_username must be the email address you use to log in to myTNB")
-    accounts = [build_account(index, entry, (username, password)) for index, entry in enumerate(accounts_raw, start=1)]
+    accounts = tuple(
+        build_account(index, entry, (username, password)) for index, entry in enumerate(accounts_raw, start=1)
+    )
     seen: set[str] = set()
     for account in accounts:
         if account.account_id in seen:
@@ -259,7 +271,8 @@ def load_config(raw: dict[str, object]) -> Config:
     afa_rate = float(afa_raw) if isinstance(afa_raw, int | float) and not isinstance(afa_raw, bool) else 0.0
 
     extra_holidays: list[date] = []
-    for value in raw.get("extra_holidays") or []:  # type: ignore[union-attr]
+    holidays_raw = raw.get("extra_holidays")
+    for value in holidays_raw if isinstance(holidays_raw, list) else []:
         try:
             extra_holidays.append(date.fromisoformat(str(value).strip()))
         except ValueError as err:
@@ -274,14 +287,14 @@ def load_config(raw: dict[str, object]) -> Config:
         portal_interval_hours=_int(raw, "portal_interval_hours", 6, 1, 168),
         meter_poll_seconds=_int(raw, "meter_poll_seconds", 60, 10, 600),
         afa_rate=afa_rate,
-        calendarific_api_key=_str(raw, "calendarific_api_key"),
-        extra_holidays=extra_holidays,
-        notify_on_failure=bool(raw.get("notify_on_failure", True)),
+        calendarific_api_key=Secret(_str(raw, "calendarific_api_key")),
+        extra_holidays=tuple(extra_holidays),
+        notify_on_failure=_bool(raw, "notify_on_failure"),
         accounts=accounts,
         mqtt=_bool(raw, "mqtt"),
         debug_login=_bool(raw, "debug_login", default=False),
         daily_report=_bool(raw, "daily_report"),
-        maintenance_windows=windows,
+        maintenance_windows=tuple(windows),
         notify_on_unpaid=_bool(raw, "notify_on_unpaid"),
         log_level=parse_log_level(raw),
     )

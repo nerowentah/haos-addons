@@ -49,6 +49,7 @@ from supervisor import (
     overrides_from_options,
 )
 from webui import (
+    PanelArgs,
     PanelError,
     PanelRouter,
     PanelServer,
@@ -130,7 +131,7 @@ class App:
         self.store = store
         self.holidays = HolidayCalendar(config.extra_holidays, config.calendarific_api_key)
         self.publisher: mqtt_pub.Publisher | None = None
-        self.broker_key: tuple[object, ...] | None = None
+        self.broker: mqtt_pub.Broker | None = None
         self.broker_found: bool | None = None  # None until the first check
         self.next_mqtt_check = 0.0
         self.next_states_refresh = 0.0
@@ -167,7 +168,7 @@ class App:
 
             if account.has_meter:
                 if runtime.meter is None:
-                    runtime.meter = AccountMeter.from_dict(meters.get(account.account_id), account.billing_start_day)  # type: ignore[arg-type]
+                    runtime.meter = AccountMeter.from_dict(meters.get(account.account_id), account.billing_start_day)
                 runtime.meter.billing_start_day = account.billing_start_day
             else:
                 runtime.meter = None
@@ -231,7 +232,7 @@ class App:
             raw = copy.deepcopy(base)
             mutate(raw)
             try:
-                config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+                config = load_config(self.secrets.resolve_options(raw))
             except (ConfigError, SecretError) as err:
                 raise PanelError(str(err)) from err
             try:
@@ -251,7 +252,7 @@ class App:
         if raw == self.raw_options:
             return
         try:
-            config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+            config = load_config(self.secrets.resolve_options(raw))
         except (ConfigError, SecretError) as err:
             _LOGGER.error("Ignoring updated options until they are fixed: %s", err)  # noqa: TRY400 - no traceback needed
             self.raw_options = raw
@@ -268,11 +269,11 @@ class App:
             return
         self.update_options(lambda raw: panel.apply_toggle(raw, toggle_id, value))
 
-    def panel_action(self, action_id: str, args: dict[str, object]) -> str | None:
+    def panel_action(self, action_id: str, args: PanelArgs) -> str | None:
         """Handle a panel button."""
 
         if action_id == "sync":
-            account_id = str(args.get("account") or "")
+            account_id = args.ident("account")
             for runtime in self.runtimes:
                 if runtime.account.account_id == account_id:
                     if not runtime.account.portal_active:
@@ -393,8 +394,9 @@ class App:
                 self.next_states_refresh = time.monotonic() + 10
             return
         try:
-            broker = self.supervisor.mqtt_service()
-        except SupervisorError as err:
+            service = self.supervisor.mqtt_service()
+            broker = None if service is None else mqtt_pub.Broker.from_service(service)
+        except (SupervisorError, ValueError) as err:
             _LOGGER.warning("Could not check for an MQTT broker: %s", err)
             return  # keep whatever is in use
         found = broker is not None
@@ -406,8 +408,7 @@ class App:
         self.broker_found = found
         if broker is None:
             return  # an existing publisher keeps reconnecting, so entity ids never flip sinks
-        key = tuple(broker.get(k) for k in ("host", "port", "username", "password", "ssl"))
-        if self.publisher is not None and key == self.broker_key:
+        if self.publisher is not None and broker == self.broker:
             return
         if self.publisher is not None:
             _LOGGER.info("MQTT broker settings changed; reconnecting")
@@ -415,7 +416,7 @@ class App:
         else:
             _LOGGER.info("MQTT broker found; switching entities to MQTT discovery")
             self._delete_rest_entities()
-        self.broker_key = key
+        self.broker = broker
         self.publisher = mqtt_pub.Publisher(broker, self._request_republish)
         self.publisher.start()
         self.republish.set()
@@ -439,7 +440,7 @@ class App:
         self.store.dirty = True
         publisher.stop()
         self.publisher = None
-        self.broker_key = None
+        self.broker = None
 
     # -- Home Assistant states API (used while there is no MQTT) ------------------
     def _rest_entities(self) -> list[str]:
@@ -447,7 +448,7 @@ class App:
         return [str(v) for v in value] if isinstance(value, list) else []
 
     def _post_state(self, entity_id: str, state: str, attributes: dict[str, object]) -> bool:
-        body = {"state": state, "attributes": attributes}
+        body: dict[str, object] = {"state": state, "attributes": attributes}
         if self.posted.get(entity_id) == body:
             return True  # unchanged: skip the HTTP round trip
         try:
@@ -706,7 +707,7 @@ class App:
     def maintenance_until(self, now: datetime | None = None) -> datetime | None:
         """End of the current myTNB maintenance window (Malaysia time), or None outside one."""
 
-        return maintenance.window_end(self.config.maintenance_windows, now or datetime.now(MYT))
+        return maintenance.window_end(list(self.config.maintenance_windows), now or datetime.now(MYT))
 
     def _defer_for_maintenance_window(self, runtime: AccountRuntime, now: datetime) -> bool:
         """Inside a maintenance window: don't call myTNB; try again shortly after it ends."""
@@ -718,7 +719,7 @@ class App:
         runtime.next_portal = time.monotonic() + wait
         _LOGGER.info(
             "myTNB maintenance window (%s): '%s' syncs after %s",
-            maintenance.describe(self.config.maintenance_windows),
+            maintenance.describe(list(self.config.maintenance_windows)),
             runtime.account.name,
             until.strftime("%a %H:%M"),
         )
@@ -831,16 +832,17 @@ class App:
         )
         _LOGGER.info("Portal '%s': amount due RM %.2f", account.name, bill.amount_due)
         saved = self.store.section("bills")
-        row = saved.get(account.account_id) if isinstance(saved.get(account.account_id), dict) else {}
-        previous = row.get("amount_due")  # type: ignore[union-attr]
+        saved_row = saved.get(account.account_id)
+        row: dict[str, object] = saved_row if isinstance(saved_row, dict) else {}
+        previous = row.get("amount_due")
         now = datetime.now(MYT)
         kind = unpaid.unpaid_notice(
             float(previous) if isinstance(previous, int | float) else None,
             bill.amount_due,
-            unpaid.parse_time(row.get("notified_at")),  # type: ignore[union-attr]
+            unpaid.parse_time(row.get("notified_at")),
             now,
         )
-        notified_at = row.get("notified_at")  # type: ignore[union-attr]
+        notified_at = row.get("notified_at")
         if kind is not None:
             _LOGGER.info("Account '%s': %s bill notice", account.name, kind)
             title, message = unpaid.notice_text(kind, "TNB", account.name, bill.amount_due, bill.due_date)
@@ -1049,7 +1051,7 @@ def _load_config(
     raw_options = initial_options(load_options, supervisor.fetch_options, secrets)
 
     def validate(raw: dict[str, object]) -> Config:
-        return load_config(secrets.resolve(raw))  # type: ignore[arg-type]
+        return load_config(secrets.resolve_options(raw))
 
     try:
         return raw_options, validate(raw_options)
@@ -1061,8 +1063,11 @@ def _load_config(
         result = wait_for_valid_config(supervisor.fetch_options, validate, view, stop)
         if result is None:
             return None
+        raw, config = result
+        if not isinstance(config, Config):
+            raise TypeError("the options were validated into something that is not a Config") from None
         _LOGGER.info("Configuration is valid now; starting")
-        return result  # type: ignore[return-value]
+        return raw, config
 
 
 def main() -> None:

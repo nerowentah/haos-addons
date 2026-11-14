@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import redact
 from config import Account
 
 if TYPE_CHECKING:
@@ -259,10 +260,42 @@ def holiday_config(version: str) -> dict[str, object]:
     }
 
 
+DEFAULT_PORT = 1883
+MAX_PORT = 65535
+
+
+@dataclass(frozen=True, slots=True)
+class Broker:
+    """The MQTT broker the Supervisor offers (the password never shows in a repr or a log line)."""
+
+    host: str
+    port: int = DEFAULT_PORT
+    username: str = ""
+    password: str = field(default="", repr=False)
+    ssl: bool = False
+
+    @classmethod
+    def from_service(cls, service: Mapping[str, object]) -> Broker:
+        """Validate the Supervisor's ``/services/mqtt`` reply; ValueError when it cannot be used."""
+
+        host = service.get("host")
+        if not isinstance(host, str) or not host.strip():
+            raise ValueError("the broker has no host name")
+        port = service.get("port") or DEFAULT_PORT
+        if isinstance(port, str) and port.isdigit():
+            port = int(port)
+        if isinstance(port, bool) or not isinstance(port, int) or not 0 < port <= MAX_PORT:
+            raise ValueError("the broker's port is not a port number")
+        password = str(service.get("password") or "")
+        if password:
+            redact.register(password)
+        return cls(host.strip(), port, str(service.get("username") or ""), password, service.get("ssl") is True)
+
+
 class Publisher:
     """Wraps the paho client: LWT availability, retained discovery and states."""
 
-    def __init__(self, broker: dict[str, object], on_ha_online: Callable[[], None]) -> None:
+    def __init__(self, broker: Broker, on_ha_online: Callable[[], None]) -> None:
         # paho (and ssl) are only loaded once a broker exists, keeping MQTT-less installs lighter.
         import paho.mqtt.client as mqtt  # noqa: PLC0415 - lazy import
 
@@ -273,17 +306,17 @@ class Publisher:
             self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="power_tnb")
         except AttributeError:  # paho-mqtt 1.x
             self._client = mqtt.Client(client_id="power_tnb")
-        if broker.get("username"):
-            self._client.username_pw_set(str(broker["username"]), str(broker.get("password") or ""))
-        if broker.get("ssl"):
+        if broker.username:
+            self._client.username_pw_set(broker.username, broker.password)
+        if broker.ssl:
             self._client.tls_set()
         self._client.will_set(AVAILABILITY_TOPIC, "offline", qos=1, retain=True)
         self._client.on_connect = self._handle_connect
         self._client.on_disconnect = self._handle_disconnect
         self._client.on_message = self._handle_message
         self._client.reconnect_delay_set(min_delay=1, max_delay=60)
-        self._host = str(broker["host"])
-        self._port = int(broker.get("port") or 1883)
+        self._host = broker.host
+        self._port = broker.port
 
     @property
     def connected(self) -> bool:

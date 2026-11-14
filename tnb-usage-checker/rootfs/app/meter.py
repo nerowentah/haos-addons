@@ -145,7 +145,7 @@ class AccountMeter:
     history: list[dict[str, object]] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict[str, object] | None, billing_start_day: int) -> AccountMeter:
+    def from_dict(cls, data: object, billing_start_day: int) -> AccountMeter:
         """Restore a meter from the store (tolerates missing or malformed fields)."""
 
         meter = cls(billing_start_day=billing_start_day)
@@ -263,7 +263,7 @@ class AccountMeter:
         elapsed_days = (now.astimezone(MYT) - start_dt).total_seconds() / 86400
         used = self.peak_kwh + self.offpeak_kwh
 
-        recent = [float(h.get("import_kwh") or 0.0) for h in self.history[-HISTORY_FOR_PREDICTION:]]
+        recent = [_opt_float(h.get("import_kwh")) or 0.0 for h in self.history[-HISTORY_FOR_PREDICTION:]]
         history_kwh = sum(recent) / len(recent) if recent else None
         trend_kwh = used / elapsed_days * cycle_days if elapsed_days >= 0.5 else None  # noqa: PLR2004 - half a day
 
@@ -297,7 +297,11 @@ class AccountMeter:
 
 
 def _opt_float(value: object) -> float | None:
+    """A saved number (or numeric text) as a float; None for anything else."""
+
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return None
     try:
-        return None if value is None else float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+        return float(value)
+    except ValueError:
         return None

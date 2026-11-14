@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rootfs" / "app"))
 
@@ -14,13 +16,22 @@ import panel
 import report
 from main import AccountRuntime
 
-LOGIN = {"mytnb_username": "you@example.com", "mytnb_password": "secret"}
+LOGIN: dict[str, object] = {"mytnb_username": "you@example.com", "mytnb_password": "secret"}
 TODAY = date(2026, 11, 8)
 
 
 def account(**extra: object) -> config.Account:
     entry = {"name": "Home", "tariff": "general", "billing_start_day": 23, **extra}
     return config.load_config({**LOGIN, "accounts": [entry]}).accounts[0]
+
+
+def account_card(
+    runtime: AccountRuntime, acct: config.Account, history: dict[date, float] | None = None
+) -> dict[str, Any]:
+    """The card as the page receives it (through JSON)."""
+
+    card: dict[str, Any] = json.loads(json.dumps(panel._account_card(runtime, acct, history or {}, TODAY)))
+    return card
 
 
 class AccountCardTest(unittest.TestCase):
@@ -31,7 +42,7 @@ class AccountCardTest(unittest.TestCase):
             values={"portal_cost_cycle": 110.62, "portal_usage_cycle": 248.99, "portal_status": "ok"},
         )
         history = {date(2026, 11, 5): 9.72, date(2026, 11, 6): 10.89}
-        card = panel._account_card(runtime, acct, history, TODAY)
+        card = account_card(runtime, acct, history)
 
         self.assertEqual(card["id"], "account:home")
         self.assertEqual([h["value"] for h in card["hero"]], ["RM 110.62", "248.99"])
@@ -64,7 +75,7 @@ class AccountCardTest(unittest.TestCase):
                 "stats_last_import": "2026-11-08T09:00:00+08:00",
             },
         )
-        card = panel._account_card(runtime, acct, {}, TODAY)
+        card = account_card(runtime, acct)
         tiles = {s["label"]: s["value"] for s in card["stats"]}
         self.assertEqual(tiles["Energy import"], "Failed")
         self.assertEqual(tiles["Last import"], "08 Nov 09:00")
@@ -74,26 +85,26 @@ class AccountCardTest(unittest.TestCase):
 
     def test_a_healthy_import_has_no_notice(self) -> None:
         acct = account(account_number="123456789012")
-        card = panel._account_card(AccountRuntime(account=acct, values={"stats_status": "ok"}), acct, {}, TODAY)
+        card = account_card(AccountRuntime(account=acct, values={"stats_status": "ok"}), acct)
         self.assertIsNone(card["notice"])
 
     def test_switched_off_statistics_are_visible(self) -> None:
         acct = account(account_number="123456789012", statistics_enabled=False)
-        card = panel._account_card(AccountRuntime(account=acct, values={}), acct, {}, TODAY)
+        card = account_card(AccountRuntime(account=acct, values={}), acct)
         tiles = {s["label"]: s["value"] for s in card["stats"]}
         self.assertEqual(tiles["Energy import"], "Off")
         self.assertIn("Import is off", card["links"][0]["description"])
 
     def test_a_meter_only_account_has_no_energy_links(self) -> None:
         acct = account(import_entity="sensor.grid_energy")
-        card = panel._account_card(AccountRuntime(account=acct, values={}), acct, {}, TODAY)
+        card = account_card(AccountRuntime(account=acct, values={}), acct)
         self.assertEqual(card["links"], [])
         self.assertNotIn("Energy import", [s["label"] for s in card["stats"]])
 
     def test_sensor_account_leads_with_the_bill_estimate(self) -> None:
         acct = account(import_entity="sensor.grid_energy")
         runtime = AccountRuntime(account=acct, values={"bill_estimate": 87.5, "cycle_import": 301.2})
-        card = panel._account_card(runtime, acct, {}, TODAY)
+        card = account_card(runtime, acct)
         self.assertEqual(card["hero"][0]["label"], "Bill estimate")
         self.assertEqual(card["hero"][0]["value"], "RM 87.50")
         self.assertIsNone(card["chart"])  # no myTNB data, no chart
@@ -101,7 +112,7 @@ class AccountCardTest(unittest.TestCase):
 
     def test_no_history_no_chart(self) -> None:
         acct = account(account_number="123456789012")
-        card = panel._account_card(AccountRuntime(account=acct, values={}), acct, {}, TODAY)
+        card = account_card(AccountRuntime(account=acct, values={}), acct)
         self.assertIsNone(card["chart"])
         self.assertEqual(card["hero"][0]["value"], "-")
 

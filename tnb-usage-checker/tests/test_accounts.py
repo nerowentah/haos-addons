@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import http.client
+import http.cookiejar
 import io
+import json
 import sys
 import threading
+import time
 import unittest
+from collections.abc import Iterator
+from email.message import Message
 from pathlib import Path
 from typing import ClassVar
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rootfs" / "app"))
 
@@ -73,7 +80,7 @@ class AccountResolutionTest(unittest.TestCase):
         self.assertIn("mytnb_username", str(ctx.exception))
 
     def test_bad_inputs(self) -> None:
-        cases = [
+        cases: list[dict[str, object]] = [
             {"accounts": [account("Home", account_number="12345")]},  # too short
             {"mytnb_username": "you@example.com", "accounts": [account("Home", account_number="123456789012")]},
             {
@@ -112,7 +119,13 @@ class _FakeSession(mytnb.MyTnbSession):
         self.pages = pages
         self.requested: list[str] = []
 
-    def _send_raw(self, url, *, data=None, headers=None):  # type: ignore[override]  # noqa: ARG002
+    def _send_raw(
+        self,
+        url: str,
+        *,
+        data: dict[str, str] | None = None,  # noqa: ARG002
+        headers: dict[str, str] | None = None,  # noqa: ARG002
+    ) -> mytnb._Response:
         self.requested.append(url)
         for prefix, response in self.pages.items():
             if url.startswith(prefix):
@@ -129,11 +142,9 @@ TRIL = "/AccountManagement/SmartMeter/Index/TRIL?caNo="
 
 class PortalLoginTest(unittest.TestCase):
     def setUp(self) -> None:
-        self._sleep = mytnb.time.sleep
-        mytnb.time.sleep = lambda _s: None
-
-    def tearDown(self) -> None:
-        mytnb.time.sleep = self._sleep
+        patcher = mock.patch.object(time, "sleep", lambda _s: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def pages(self, account_page: str, dashboard: str) -> dict[str, mytnb._Response]:
         return {
@@ -158,7 +169,9 @@ class PortalLoginTest(unittest.TestCase):
             '<input id="CA_NO" name="CA_NO" type="hidden" value="AbC%3D" /></form>'
             '<input id="btnProceed" form="formSmartMeterRequest" type="submit" value="Go" />'
         )
-        action, fields = mytnb.find_handoff_form(page)  # type: ignore[misc]
+        found = mytnb.find_handoff_form(page)
+        assert found is not None
+        action, fields = found
         self.assertEqual(action, "https://smartliving.myaccount.mytnb.com.my/login?renew")
         self.assertEqual(fields, {"USERTOKEN": "tok&en", "CA_NO": "AbC%3D"})
 
@@ -197,7 +210,7 @@ class PortalLoginTest(unittest.TestCase):
         )
         session = _FakeSession("123456789012", self.pages(page, '{"sdpudcid":"4242"}'))
         session._jar.set_cookie(
-            mytnb.http.cookiejar.Cookie(
+            http.cookiejar.Cookie(
                 0,
                 "ASP.NET_SessionId",
                 "cookievalue",
@@ -216,7 +229,9 @@ class PortalLoginTest(unittest.TestCase):
                 {},
             )
         )
-        session._jar.clear = lambda: None  # keep the planted cookie through login()
+        patcher = mock.patch.object(session._jar, "clear", lambda: None)  # keep the planted cookie through login()
+        patcher.start()
+        self.addCleanup(patcher.stop)
         mytnb.set_debug(True)
         try:
             with self.assertLogs("mytnb", "DEBUG") as logs:
@@ -237,12 +252,12 @@ class _FakeHTTPResponse:
         self._headers = headers
         self._body = body
         raw = "".join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n"
-        self.msg = mytnb.http.client.parse_headers(io.BytesIO(raw.encode()))
+        self.msg = http.client.parse_headers(io.BytesIO(raw.encode()))
 
     def getheader(self, name: str, default: str | None = None) -> str | None:
         return self._headers.get(name, default)
 
-    def info(self):
+    def info(self) -> Message:
         return self.msg
 
     def read(self) -> bytes:
@@ -279,12 +294,10 @@ class _FakeConnection:
 
 class KeepAliveClientTest(unittest.TestCase):
     def setUp(self) -> None:
-        self._conn = mytnb.http.client.HTTPSConnection
-        mytnb.http.client.HTTPSConnection = _FakeConnection  # type: ignore[misc]
+        patcher = mock.patch.object(http.client, "HTTPSConnection", _FakeConnection)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         _FakeConnection.sent, _FakeConnection.opened = [], 0
-
-    def tearDown(self) -> None:
-        mytnb.http.client.HTTPSConnection = self._conn  # type: ignore[misc]
 
     def test_redirect_chain_reuses_connection_keeps_cookies_and_casing(self) -> None:
         host = "smartliving.myaccount.mytnb.com.my"
@@ -324,7 +337,7 @@ class MaskTest(unittest.TestCase):
 
 class SetupModeTest(unittest.TestCase):
     def test_waits_until_options_are_valid(self) -> None:
-        answers = iter(
+        answers: Iterator[dict[str, object]] = iter(
             [
                 {"accounts": [account("Home", **LOGIN)]},
                 {**LOGIN, "accounts": [account("Home", account_number="123456789012")]},
@@ -334,7 +347,7 @@ class SetupModeTest(unittest.TestCase):
         result = webui.wait_for_valid_config(lambda: next(answers), config.load_config, view, threading.Event(), 0)
         self.assertIsNotNone(result)
         self.assertIn("account_number", view.error)  # the view shows the latest problem while waiting
-        state = view.panel_state()
+        state = json.loads(json.dumps(view.panel_state()))
         self.assertEqual(state["sections"][0]["cards"][0]["title"], "Configuration needs attention")
 
     def test_stops_when_asked(self) -> None:

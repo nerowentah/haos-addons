@@ -61,11 +61,13 @@ class PhoneListTest(unittest.TestCase):
         self.assertEqual(merged, {"mobile_app_a": False, "mobile_app_b": True})
 
     def test_effective_targets(self) -> None:
-        phones = {"mobile_app_a": False}
+        phones: dict[str, object] = {"mobile_app_a": False}
         self.assertEqual(supervisor.effective_targets(["mobile_app_a", "mobile_app_b"], phones), ["mobile_app_b"])
 
     def test_migration_reads_old_rows(self) -> None:
-        raw = {"notification_overrides": [{"name": "mobile_app_a", "notify": False}, {"name": " "}, "junk"]}
+        raw: dict[str, object] = {
+            "notification_overrides": [{"name": "mobile_app_a", "notify": False}, {"name": " "}, "junk"]
+        }
         self.assertEqual(supervisor.overrides_from_options(raw), {"mobile_app_a": False})
         self.assertEqual(supervisor.overrides_from_options({}), {})
 
@@ -88,8 +90,21 @@ class StatesApiTest(unittest.TestCase):
         self.assertEqual(mqtt_pub.state_value(sensor, 12.3456), "12.35")
         self.assertEqual(mqtt_pub.state_value(sensor, None), "unknown")
 
+    def test_broker_reply_is_validated(self) -> None:
+        broker = mqtt_pub.Broker.from_service(
+            {"host": "core-mosquitto", "port": 1883, "username": "addons", "password": "PLACEHOLDER", "ssl": False}
+        )
+        self.assertEqual(
+            (broker.host, broker.port, broker.username, broker.ssl), ("core-mosquitto", 1883, "addons", False)
+        )
+        self.assertNotIn("PLACEHOLDER", repr(broker))
+        self.assertEqual(mqtt_pub.Broker.from_service({"host": "broker", "port": "8883", "ssl": True}).port, 8883)
+        for bad in ({}, {"host": 5}, {"host": "broker", "port": "mqtt"}, {"host": "broker", "port": 70000}):
+            with self.assertRaises(ValueError):
+                mqtt_pub.Broker.from_service(bad)
+
     def test_mqtt_option_defaults_on(self) -> None:
-        raw = {"accounts": [{"name": "Home", "tariff": "general", "import_entity": "sensor.grid"}]}
+        raw: dict[str, object] = {"accounts": [{"name": "Home", "tariff": "general", "import_entity": "sensor.grid"}]}
         self.assertTrue(config.load_config(raw).mqtt)
         self.assertFalse(config.load_config({**raw, "mqtt": False}).mqtt)
 

@@ -6,9 +6,11 @@ import json
 import sys
 import types
 import unittest
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar, Self
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rootfs" / "app"))
@@ -26,13 +28,16 @@ def point(hours: float, value: float, start: datetime = WINDOW) -> EnergyPoint:
     return EnergyPoint(start + timedelta(hours=hours), value)
 
 
+Handler = Callable[[str, dict[str, Any]], object]
+
+
 class RecordingClient(stats.StatsClient):
     """StatsClient whose websocket calls are answered by a handler."""
 
-    def __init__(self, handler=None) -> None:
+    def __init__(self, handler: Handler | None = None) -> None:
         super().__init__("token")
-        self.calls: list[tuple[str, dict[str, object]]] = []
-        self.handler = handler or (lambda _type, _payload: {})
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.handler: Handler = handler or (lambda _type, _payload: {})
 
     def call(self, message_type: str, **payload: object) -> object:
         self.calls.append((message_type, payload))
@@ -57,12 +62,20 @@ class FakeSocket:
         self.closed = True
 
 
-def connect(socket: FakeSocket):
+def connect(socket: FakeSocket) -> AbstractContextManager[object]:
     """Make ``import websocket`` inside ``StatsClient.__enter__`` return ``socket``."""
 
     module = types.ModuleType("websocket")
-    module.create_connection = lambda *_args, **_kwargs: socket  # type: ignore[attr-defined]
+    vars(module)["create_connection"] = lambda *_args, **_kwargs: socket
     return mock.patch.dict(sys.modules, {"websocket": module})
+
+
+def connected(incoming: list[object]) -> tuple[stats.StatsClient, FakeSocket]:
+    """A client that is already talking to a scripted socket."""
+
+    client, socket = stats.StatsClient("token"), FakeSocket(incoming)
+    mock.patch.object(client, "_ws", socket).start()  # stands in for websocket.WebSocket
+    return client, socket
 
 
 class BucketTest(unittest.TestCase):
@@ -106,7 +119,7 @@ class SyncStatisticsTest(unittest.TestCase):
             self.error = type(self).next_error
             type(self).instances.append(self)
 
-        def __enter__(self):
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *_exc: object) -> None:
@@ -195,7 +208,7 @@ class SyncStatisticsTest(unittest.TestCase):
 
 
 class BaselineTest(unittest.TestCase):
-    def client(self, handler) -> RecordingClient:
+    def client(self, handler: Handler) -> RecordingClient:
         return RecordingClient(handler)
 
     def test_a_new_statistic_starts_at_zero(self) -> None:
@@ -278,10 +291,10 @@ class ImportStatisticsTest(unittest.TestCase):
 
         self.assertEqual(len(client.calls), 1)
         metadata = client.calls[0][1]["metadata"]
-        self.assertEqual(metadata["mean_type"], 0)  # type: ignore[index]
-        self.assertEqual(metadata["unit_class"], "energy")  # type: ignore[index]
-        self.assertNotIn("has_mean", metadata)  # type: ignore[operator]
-        self.assertEqual(metadata["source"], "power_tnb")  # type: ignore[index]
+        self.assertEqual(metadata["mean_type"], 0)
+        self.assertEqual(metadata["unit_class"], "energy")
+        self.assertNotIn("has_mean", metadata)
+        self.assertEqual(metadata["source"], "power_tnb")
 
     def test_legacy_shapes_are_only_fallbacks(self) -> None:
         client = self.client(2)
@@ -291,10 +304,10 @@ class ImportStatisticsTest(unittest.TestCase):
         first = client.calls[0][1]["metadata"]
         second = client.calls[1][1]["metadata"]
         third = client.calls[2][1]["metadata"]
-        self.assertEqual(first["unit_class"], "energy")  # type: ignore[index]
-        self.assertNotIn("unit_class", second)  # type: ignore[operator]
-        self.assertNotIn("mean_type", third)  # type: ignore[operator]
-        self.assertIs(third["has_mean"], False)  # type: ignore[index]
+        self.assertEqual(first["unit_class"], "energy")
+        self.assertNotIn("unit_class", second)
+        self.assertNotIn("mean_type", third)
+        self.assertIs(third["has_mean"], False)
 
     def test_all_shapes_failing_raises_the_last_error(self) -> None:
         client = self.client(3)
@@ -324,20 +337,18 @@ class WebsocketTest(unittest.TestCase):
             stats.StatsClient("token").__enter__()
 
     def test_call_ignores_unrelated_messages(self) -> None:
-        client = stats.StatsClient("token")
-        client._ws = FakeSocket(
+        client, socket = connected(
             [
                 {"id": 99, "type": "event", "event": {}},
                 {"id": 1, "type": "result", "success": True, "result": {"ok": True}},
             ]
         )
         self.assertEqual(client.call("recorder/statistics_during_period", statistic_ids=[USAGE_ID]), {"ok": True})
-        self.assertEqual(client._ws.sent[0]["id"], 1)
-        self.assertEqual(client._ws.sent[0]["statistic_ids"], [USAGE_ID])
+        self.assertEqual(socket.sent[0]["id"], 1)
+        self.assertEqual(socket.sent[0]["statistic_ids"], [USAGE_ID])
 
     def test_call_reports_errors(self) -> None:
-        client = stats.StatsClient("token")
-        client._ws = FakeSocket(
+        client, _socket = connected(
             [{"id": 1, "type": "result", "success": False, "error": {"code": "unknown_error", "message": "nope"}}]
         )
         with self.assertRaises(stats.StatsError) as caught:

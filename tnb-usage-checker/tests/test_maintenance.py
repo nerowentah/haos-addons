@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import random
 import sys
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import cast
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rootfs" / "app"))
 
@@ -14,6 +17,7 @@ import config
 import maintenance
 import mytnb
 from meter import MYT
+from redact import Secret
 
 
 def at(text: str) -> datetime:
@@ -106,12 +110,12 @@ class BackoffTest(unittest.TestCase):
 
 class TnbWiringTest(unittest.TestCase):
     def test_option_default_and_validation(self) -> None:
-        base = {"mytnb_username": "you@example.com", "mytnb_password": "x"}
+        base: dict[str, object] = {"mytnb_username": "you@example.com", "mytnb_password": "x"}
         acct = [{"name": "Home", "tariff": "general", "billing_start_day": 1, "account_number": "123456789012"}]
         cfg = config.load_config({**base, "accounts": acct})
-        self.assertEqual(maintenance.describe(cfg.maintenance_windows), "daily 00:00-06:00")
+        self.assertEqual(maintenance.describe(list(cfg.maintenance_windows)), "daily 00:00-06:00")
         cfg = config.load_config({**base, "accounts": acct, "maintenance_windows": []})
-        self.assertEqual(cfg.maintenance_windows, [])
+        self.assertEqual(cfg.maintenance_windows, ())
         with self.assertRaises(config.ConfigError) as ctx:
             config.load_config({**base, "accounts": acct, "maintenance_windows": ["sometimes"]})
         self.assertIn("maintenance_windows", str(ctx.exception))
@@ -120,10 +124,12 @@ class TnbWiringTest(unittest.TestCase):
         session = mytnb.MyTnbSession("you@example.com", "pw", "123456789012")
 
         class Client:
-            def open(self, url, body, headers):  # noqa: ARG002
+            def open(self, url: str, _body: bytes | None, _headers: dict[str, str]) -> mytnb._Response:
                 return mytnb._Response(503, "<title>Down</title>", "text/html", url)
 
-        session._client = Client()  # type: ignore[assignment]
+        patcher = mock.patch.object(session, "_client", Client())  # stands in for the keep-alive client
+        patcher.start()
+        self.addCleanup(patcher.stop)
         with self.assertRaises(mytnb.MaintenanceError):
             session._send_raw(mytnb.LOGIN_URL, data={"Email": "e", "Password": "p"})
         self.assertTrue(issubclass(mytnb.MaintenanceError, mytnb.PortalError))
@@ -137,11 +143,11 @@ class TnbWiringTest(unittest.TestCase):
                 portal_interval_hours=6,
                 meter_poll_seconds=60,
                 afa_rate=0.0,
-                calendarific_api_key="",
-                extra_holidays=[],
+                calendarific_api_key=Secret(""),
+                extra_holidays=(),
                 notify_on_failure=True,
-                accounts=[],
-                maintenance_windows=maintenance.parse_windows(None),
+                accounts=(),
+                maintenance_windows=tuple(maintenance.parse_windows(None)),
             )
             maintenance_until = main.App.maintenance_until
 
@@ -155,13 +161,14 @@ class TnbWiringTest(unittest.TestCase):
             }
         ).accounts[0]
         runtime = main.AccountRuntime(account=acct)
-        before = main.time.monotonic()
-        deferred = main.App._defer_for_maintenance_window(FakeApp(), runtime, at("2026-11-08 05:00"))  # type: ignore[arg-type]
+        app = cast("main.App", FakeApp())  # only the config and maintenance_until are used
+        before = time.monotonic()
+        deferred = main.App._defer_for_maintenance_window(app, runtime, at("2026-11-08 05:00"))
         self.assertTrue(deferred)
         wait = runtime.next_portal - before
         self.assertGreaterEqual(wait, timedelta(hours=1).total_seconds() + 59)  # until 06:00 + jitter
         self.assertLessEqual(wait, timedelta(hours=1).total_seconds() + 601)
-        self.assertFalse(main.App._defer_for_maintenance_window(FakeApp(), runtime, at("2026-11-08 12:00")))  # type: ignore[arg-type]
+        self.assertFalse(main.App._defer_for_maintenance_window(app, runtime, at("2026-11-08 12:00")))
 
 
 if __name__ == "__main__":
