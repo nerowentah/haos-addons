@@ -22,7 +22,7 @@ from typing import Literal
 
 import maintenance
 import redact
-from safefile import PRIVATE, atomic_write
+from safefile import atomic_write
 from webui import (
     PanelArgs,
     PanelError,
@@ -489,7 +489,7 @@ def save_phone_prefs(prefs: dict[str, bool], path: Path = PHONES_PATH) -> None:
     """Write the phone switches atomically."""
 
     try:
-        atomic_write(path, json.dumps(prefs, sort_keys=True), PRIVATE)
+        atomic_write(path, json.dumps(prefs, sort_keys=True))
     except OSError:
         _LOGGER.exception("Could not save phone settings")
 
