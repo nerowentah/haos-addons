@@ -9,10 +9,10 @@ from config import Account, mask_number, slugify
 from webui import PanelError, action, badge, notice, stat, toggle
 
 if TYPE_CHECKING:
-    from main import AccountRuntime, App
+    from main import AccountRuntime, App, Status
 
 ACCOUNT_FIELDS = {"enabled"}
-STATUS_BADGES = {
+STATUS_BADGES: dict[Status, dict[str, str]] = {
     "ok": badge("Checked", "ok"),
     "pending": badge("Waiting for first check"),
     "not_found": badge("Account not found", "error"),
@@ -21,46 +21,45 @@ STATUS_BADGES = {
 }
 
 
-def money(value: object) -> str | None:
+def money(value: float | None) -> str | None:
     """``RM 1,234.56``; a credit shows as ``RM -12.30``."""
 
-    return None if value is None else f"RM {float(value):,.2f}"  # type: ignore[arg-type]
+    return None if value is None else f"RM {value:,.2f}"
 
 
-def when(value: object) -> str | None:
+def when(value: str | None) -> str | None:
     """Local short date/time of an ISO timestamp."""
 
     if not value:
         return None
     try:
-        moment = datetime.fromisoformat(str(value)).astimezone()
+        moment = datetime.fromisoformat(value).astimezone()
     except ValueError:
-        return str(value)
+        return value
     return moment.strftime("%d %b %H:%M")
 
 
-def payment_text(due: object) -> str | None:
+def payment_text(due: bool | None) -> str | None:
     """``Due`` / ``Paid`` for the payment-due flag (None while unknown)."""
 
     return None if due is None else ("Due" if due else "Paid")
 
 
 def _account_card(runtime: AccountRuntime, account: Account) -> dict[str, object]:
-    values = runtime.values
-    status = str(values.get("status") or "pending")
+    status = runtime.status
     stats = [
-        stat("Amount due", money(values.get("amount_due"))),
-        stat("Payment", payment_text(values.get("payment_due"))),
+        stat("Amount due", money(runtime.amount_due)),
+        stat("Payment", payment_text(runtime.payment_due)),
         stat("Account no.", mask_number(account.account_number)),
         stat("Account holder", runtime.holder or None),
-        stat("Last checked", when(values.get("last_checked"))),
-        stat("Amount changed", when(values.get("amount_changed"))),
+        stat("Last checked", when(runtime.last_checked)),
+        stat("Amount changed", when(runtime.amount_changed)),
     ]
     card: dict[str, object] = {
         "title": account.name,
         "icon": "mdi:water",
         "subtitle": "Ranhill SAJ water account · Quick Payment lookup",
-        "badge": badge("Paused", "off") if not account.enabled else STATUS_BADGES.get(status, badge(status)),
+        "badge": badge("Paused", "off") if not account.enabled else STATUS_BADGES[status],
         "off": not account.enabled,
         "stats": stats,
         "toggles": [
@@ -168,7 +167,8 @@ def apply_toggle(options: dict[str, object], toggle_id: str, value: bool) -> Non
     if kind == "account":
         account_id, _, field = rest.rpartition(":")
         if field in ACCOUNT_FIELDS:
-            for row in options.get("accounts") or []:  # type: ignore[union-attr]
+            rows = options.get("accounts")
+            for row in rows if isinstance(rows, list) else []:
                 if isinstance(row, dict) and slugify(str(row.get("name") or "")) == account_id:
                     row[field] = value
                     return

@@ -6,6 +6,12 @@ strict = true
 warn_unreachable = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 
+[[tool.mypy.overrides]]
+# paho-mqtt 1.6.1 (what Alpine ships) has no type information, and the code
+# also accepts the 2.x API, which the 1.6 stubs would reject.
+module = ["paho", "paho.*"]
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 120
 target-version = "py313"

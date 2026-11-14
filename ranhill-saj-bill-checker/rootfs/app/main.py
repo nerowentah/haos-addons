@@ -10,11 +10,12 @@ import random
 import signal
 import threading
 import time
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import FrameType
+from typing import Final, Literal, Protocol
 
 import mqtt_pub
 import panel
@@ -43,6 +44,7 @@ from supervisor import (
     notification_id,
 )
 from webui import (
+    PanelArgs,
     PanelError,
     PanelRouter,
     PanelServer,
@@ -73,13 +75,22 @@ STATES_REFRESH_SECONDS = 300
 WEB_DIR = Path(__file__).resolve().parent / "web"
 UNRECOGNISED_PAGE = Path("/data/last_unrecognised_page.html")
 
-STATUS_OK = "ok"
-STATUS_PENDING = "pending"
-STATUS_NOT_FOUND = "not_found"
-STATUS_LAYOUT = "layout_changed"
-STATUS_ERROR = "error"
+type Status = Literal["ok", "pending", "not_found", "layout_changed", "error"]
+STATUS_OK: Final = "ok"
+STATUS_PENDING: Final = "pending"
+STATUS_NOT_FOUND: Final = "not_found"
+STATUS_LAYOUT: Final = "layout_changed"
+STATUS_ERROR: Final = "error"
+STATUSES: tuple[Status, ...] = (STATUS_OK, STATUS_PENDING, STATUS_NOT_FOUND, STATUS_LAYOUT, STATUS_ERROR)
 RETIRED_OPTIONS = ("poll_interval_hours",)
-PERSISTED_KEYS = ("amount_due", "payment_due", "amount_changed", "status", "last_checked")
+
+
+class BillSource(Protocol):
+    """Looks up one account's bill (the Ranhill SAJ client, or a stand-in in the tests)."""
+
+    def lookup(self, account_number: str, /) -> Bill:
+        """The bill of ``account_number``; raises SajError."""
+        ...
 
 
 def now_iso() -> str:
@@ -88,12 +99,20 @@ def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def _stamp(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
 @dataclass(slots=True)
 class AccountRuntime:
     """Live state for one account."""
 
     account: Account
-    values: dict[str, object] = field(default_factory=dict)
+    amount_due: float | None = None
+    payment_due: bool | None = None
+    amount_changed: str | None = None  # ISO timestamp
+    status: Status = STATUS_PENDING
+    last_checked: str | None = None  # ISO timestamp
     holder: str = ""  # masked
     next_check: float = 0.0
     failures: int = 0
@@ -101,20 +120,44 @@ class AccountRuntime:
     last_error: str = ""
     unpaid_notified_at: str = ""  # when the last unpaid-bill notice went out
 
+    @property
+    def values(self) -> dict[str, object]:
+        """The state as published (MQTT state topic, states API) and saved."""
+
+        return {
+            "amount_due": self.amount_due,
+            "payment_due": self.payment_due,
+            "amount_changed": self.amount_changed,
+            "status": self.status,
+            "last_checked": self.last_checked,
+        }
+
     def to_dict(self) -> dict[str, object]:
         """What survives a restart (no raw account number or name)."""
 
-        return {
-            **{k: self.values.get(k) for k in PERSISTED_KEYS},
-            "holder": self.holder,
-            "unpaid_notified_at": self.unpaid_notified_at or None,
-        }
+        return {**self.values, "holder": self.holder, "unpaid_notified_at": self.unpaid_notified_at or None}
+
+    def restore(self, row: Mapping[str, object]) -> None:
+        """Take over what ``to_dict`` saved; anything of the wrong type is left at its default."""
+
+        amount = row.get("amount_due")
+        if isinstance(amount, int | float) and not isinstance(amount, bool):
+            self.amount_due = float(amount)
+        due = row.get("payment_due")
+        if isinstance(due, bool):
+            self.payment_due = due
+        self.amount_changed = _stamp(row.get("amount_changed"))
+        self.last_checked = _stamp(row.get("last_checked"))
+        saved_status = row.get("status")
+        self.status = next((s for s in STATUSES if s == saved_status), STATUS_PENDING)
+        self.holder = str(row.get("holder") or "")
+        self.unpaid_notified_at = str(row.get("unpaid_notified_at") or "")
 
     def seconds_until_due(self) -> float | None:
         """Seconds left of the weekly interval after the last good check (None: check soon)."""
 
-        checked = unpaid.parse_time(self.values.get("last_checked"))
-        if self.values.get("status") != STATUS_OK or checked is None:
+        checked = unpaid.parse_time(self.last_checked)
+        if self.status != STATUS_OK or checked is None:
             return None
         elapsed = (datetime.now().astimezone() - checked).total_seconds()
         return CHECK_INTERVAL_SECONDS - elapsed if 0 <= elapsed < CHECK_INTERVAL_SECONDS else None
@@ -129,7 +172,7 @@ class App:
         supervisor: Supervisor,
         store: Store,
         raw_options: dict[str, object] | None = None,
-        client_factory: Callable[[], SajClient] = SajClient,
+        client_factory: Callable[[], BillSource] = SajClient,
     ) -> None:
         self.config = config
         self.raw_options = raw_options or {}  # as stored: !secret references, never their values
@@ -139,7 +182,7 @@ class App:
         self.store = store
         self.client_factory = client_factory
         self.publisher: mqtt_pub.Publisher | None = None
-        self.broker_key: tuple[object, ...] | None = None
+        self.broker: mqtt_pub.Broker | None = None
         self.broker_found: bool | None = None  # None until the first check
         self.next_mqtt_check = 0.0
         self.next_states_refresh = 0.0
@@ -182,13 +225,10 @@ class App:
         self.config = config
 
     def _new_runtime(self, account: Account, saved: dict[str, object], *, fresh: bool) -> AccountRuntime:
-        runtime = AccountRuntime(account=account, values=dict.fromkeys(PERSISTED_KEYS))
-        runtime.values["status"] = STATUS_PENDING
+        runtime = AccountRuntime(account=account)
         row = saved.get(account.account_id)
         if not fresh and isinstance(row, dict) and row.get("number") == mask_number(account.account_number):
-            runtime.values.update({k: row.get(k) for k in PERSISTED_KEYS if row.get(k) is not None})
-            runtime.holder = str(row.get("holder") or "")
-            runtime.unpaid_notified_at = str(row.get("unpaid_notified_at") or "")
+            runtime.restore(row)
         return runtime
 
     def _save_runtime(self, runtime: AccountRuntime) -> None:
@@ -254,7 +294,7 @@ class App:
             raw = copy.deepcopy(base)
             mutate(raw)
             try:
-                config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+                config = load_config(self.secrets.resolve_options(raw))
             except (ConfigError, SecretError) as err:
                 raise PanelError(str(err)) from err
             try:
@@ -274,7 +314,7 @@ class App:
         if raw == self.raw_options:
             return
         try:
-            config = load_config(self.secrets.resolve(raw))  # type: ignore[arg-type]
+            config = load_config(self.secrets.resolve_options(raw))
         except (ConfigError, SecretError) as err:
             _LOGGER.error("Ignoring updated options until they are fixed: %s", err)  # noqa: TRY400 - no traceback needed
             self.raw_options = raw
@@ -291,11 +331,11 @@ class App:
             return
         self.update_options(lambda raw: panel.apply_toggle(raw, toggle_id, value))
 
-    def panel_action(self, action_id: str, args: dict[str, object]) -> str | None:
+    def panel_action(self, action_id: str, args: PanelArgs) -> str | None:
         """Handle a panel button."""
 
         if action_id == "check":
-            account_id = str(args.get("account") or "")
+            account_id = args.ident("account")
             for runtime in self.runtimes:
                 if runtime.account.account_id == account_id:
                     if not runtime.account.enabled:
@@ -384,8 +424,9 @@ class App:
                 self.next_states_refresh = time.monotonic() + 10
             return
         try:
-            broker = self.supervisor.mqtt_service()
-        except SupervisorError as err:
+            service = self.supervisor.mqtt_service()
+            broker = None if service is None else mqtt_pub.Broker.from_service(service)
+        except (SupervisorError, ValueError) as err:
             _LOGGER.warning("Could not check for an MQTT broker: %s", err)
             return  # keep whatever is in use
         found = broker is not None
@@ -397,8 +438,7 @@ class App:
         self.broker_found = found
         if broker is None:
             return  # an existing publisher keeps reconnecting, so entity ids never flip sinks
-        key = tuple(broker.get(k) for k in ("host", "port", "username", "password", "ssl"))
-        if self.publisher is not None and key == self.broker_key:
+        if self.publisher is not None and broker == self.broker:
             return
         if self.publisher is not None:
             _LOGGER.info("MQTT broker settings changed; reconnecting")
@@ -406,7 +446,7 @@ class App:
         else:
             _LOGGER.info("MQTT broker found; switching entities to MQTT discovery")
             self._delete_rest_entities()
-        self.broker_key = key
+        self.broker = broker
         self.publisher = mqtt_pub.Publisher(broker, self._request_republish)
         self.publisher.start()
         self.republish.set()
@@ -425,12 +465,12 @@ class App:
             return
         topics = self.store.data.get("discovery_topics")
         for topic in topics if isinstance(topics, list) else []:
-            publisher.publish_json(topic, None)
+            publisher.publish_json(str(topic), None)
         self.store.data["discovery_topics"] = []
         self.store.dirty = True
         publisher.stop()
         self.publisher = None
-        self.broker_key = None
+        self.broker = None
 
     @property
     def _use_states_api(self) -> bool:
@@ -442,7 +482,7 @@ class App:
         return [str(v) for v in value] if isinstance(value, list) else []
 
     def _post_state(self, entity_id: str, state: str, attributes: dict[str, object]) -> None:
-        body = {"state": state, "attributes": attributes}
+        body: dict[str, object] = {"state": state, "attributes": attributes}
         if self.posted.get(entity_id) == body:
             return  # unchanged: skip the HTTP round trip
         try:
@@ -520,7 +560,8 @@ class App:
                 self.publisher.publish_json(topic, mqtt_pub.sensor_config(runtime.account, sensor, VERSION))
                 published.append(topic)
         previous = self.store.data.get("discovery_topics")
-        for stale in set(previous if isinstance(previous, list) else []) - set(published):
+        known = {str(topic) for topic in previous} if isinstance(previous, list) else set()
+        for stale in known - set(published):
             self.publisher.publish_json(stale, None)
             _LOGGER.info("Removed a stale entity from MQTT discovery")
         self.store.data["discovery_topics"] = published
@@ -568,24 +609,17 @@ class App:
     def _succeeded(self, runtime: AccountRuntime, bill: Bill, interval: int) -> None:
         account = runtime.account
         checked = now_iso()
-        previous = runtime.values.get("amount_due")
-        if previous is None or round(float(previous), 2) != bill.amount_due:  # type: ignore[arg-type]
-            runtime.values["amount_changed"] = checked
+        previous = runtime.amount_due
+        if previous is None or round(previous, 2) != bill.amount_due:
+            runtime.amount_changed = checked
             if previous is not None:
                 _LOGGER.info(
-                    "Account '%s': amount due changed from RM %.2f to RM %.2f",
-                    account.name,
-                    float(previous),  # type: ignore[arg-type]
-                    bill.amount_due,
+                    "Account '%s': amount due changed from RM %.2f to RM %.2f", account.name, previous, bill.amount_due
                 )
-        runtime.values.update(
-            {
-                "amount_due": bill.amount_due,
-                "payment_due": unpaid.is_due(bill.amount_due),
-                "status": STATUS_OK,
-                "last_checked": checked,
-            }
-        )
+        runtime.amount_due = bill.amount_due
+        runtime.payment_due = unpaid.is_due(bill.amount_due)
+        runtime.status = STATUS_OK
+        runtime.last_checked = checked
         runtime.holder = mask_name(bill.holder) if bill.holder else ""
         _LOGGER.info("Account '%s': amount due RM %.2f", account.name, bill.amount_due)
         self._bill_notice(runtime, previous, bill.amount_due)
@@ -600,16 +634,11 @@ class App:
         self._save_runtime(runtime)
         self.publish_state(runtime)
 
-    def _bill_notice(self, runtime: AccountRuntime, previous: object, amount: float) -> None:
+    def _bill_notice(self, runtime: AccountRuntime, previous: float | None, amount: float) -> None:
         """Tell the phones about a new or still-unpaid bill (and once when it is paid)."""
 
         now = datetime.now().astimezone()
-        kind = unpaid.unpaid_notice(
-            float(previous) if isinstance(previous, int | float) else None,
-            amount,
-            unpaid.parse_time(runtime.unpaid_notified_at),
-            now,
-        )
+        kind = unpaid.unpaid_notice(previous, amount, unpaid.parse_time(runtime.unpaid_notified_at), now)
         if kind is None:
             return
         _LOGGER.info("Account '%s': %s bill notice", runtime.account.name, kind)
@@ -617,11 +646,11 @@ class App:
         self.notify(runtime.account, title, message, bill=True)
         runtime.unpaid_notified_at = "" if kind == unpaid.PAID else now.isoformat(timespec="seconds")
 
-    def _failed(self, runtime: AccountRuntime, status: str, reason: str, retry_seconds: int) -> None:
+    def _failed(self, runtime: AccountRuntime, status: Status, reason: str, retry_seconds: int) -> None:
         account = runtime.account
         runtime.failures += 1
-        runtime.values["status"] = status
-        runtime.values["last_checked"] = now_iso()
+        runtime.status = status
+        runtime.last_checked = now_iso()
         runtime.last_error = reason
         runtime.next_check = time.monotonic() + retry_seconds
         _LOGGER.error(
@@ -632,7 +661,7 @@ class App:
         should_notify = status != STATUS_ERROR or runtime.failures >= TRANSIENT_FAILURES_BEFORE_NOTIFY
         if should_notify and not runtime.failure_notified:
             runtime.failure_notified = True
-            hints = {
+            hints: dict[Status, str] = {
                 STATUS_NOT_FOUND: "Check the account number in the app's Configuration tab.",
                 STATUS_LAYOUT: "The Ranhill SAJ website may have changed; see the app log.",
             }
@@ -743,7 +772,7 @@ def _load_config(
     raw_options = initial_options(load_options, supervisor.fetch_options, secrets)
 
     def validate(raw: dict[str, object]) -> Config:
-        return load_config(secrets.resolve(raw))  # type: ignore[arg-type]
+        return load_config(secrets.resolve_options(raw))
 
     try:
         return raw_options, validate(raw_options)
@@ -755,8 +784,11 @@ def _load_config(
         result = wait_for_valid_config(supervisor.fetch_options, validate, view, stop)
         if result is None:
             return None
+        raw, config = result
+        if not isinstance(config, Config):
+            raise TypeError("the options were validated into something that is not a Config") from None
         _LOGGER.info("Configuration is valid now; starting")
-        return result  # type: ignore[return-value]
+        return raw, config
 
 
 def main() -> None:

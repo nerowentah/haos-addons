@@ -7,6 +7,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 CONFIG_PATH = Path("/data/options.json")
 # 8 digits, 1 letter, 7 digits, e.g. 91234582-J2542356 (Ranhill SAJ's own example on the bill page).
@@ -15,7 +16,8 @@ ACCOUNT_EXAMPLE = "12345678-A1234567"
 
 TRACE = 5
 NOTICE = 25
-LOG_LEVELS = {
+type LogLevel = Literal["trace", "debug", "info", "notice", "warning", "error", "fatal"]
+LOG_LEVELS: dict[LogLevel, int] = {
     "trace": TRACE,
     "debug": logging.DEBUG,
     "info": logging.INFO,
@@ -26,28 +28,31 @@ LOG_LEVELS = {
 }
 
 
-def parse_log_level(raw: dict[str, object]) -> str:
+def parse_log_level(raw: dict[str, object]) -> LogLevel:
     """The ``log_level`` option, lower-cased ("info" when missing or unknown)."""
 
     value = str(raw.get("log_level") or "info").strip().lower()
-    return value if value in LOG_LEVELS else "info"
+    for level in LOG_LEVELS:
+        if level == value:
+            return level
+    return "info"
 
 
-def apply_log_level(name: str) -> None:
-    """Set the root logger to ``name`` (one of LOG_LEVELS)."""
+def apply_log_level(name: LogLevel) -> None:
+    """Set the root logger to ``name``."""
 
     logging.addLevelName(TRACE, "TRACE")
     logging.addLevelName(NOTICE, "NOTICE")
-    logging.getLogger().setLevel(LOG_LEVELS.get(name, logging.INFO))
+    logging.getLogger().setLevel(LOG_LEVELS[name])
 
 
 class ConfigError(ValueError):
     """Raised when the app configuration is invalid."""
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Account:
-    """One Ranhill SAJ water account."""
+    """One Ranhill SAJ water account (``account_number`` is validated and normalised)."""
 
     name: str
     account_id: str
@@ -55,15 +60,15 @@ class Account:
     enabled: bool = True
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Config:
-    """Parsed app options."""
+    """Parsed app options (never changed in place: new options make a new Config)."""
 
     notify_on_failure: bool
-    accounts: list[Account]
+    accounts: tuple[Account, ...]
     mqtt: bool = True
     notify_on_unpaid: bool = True
-    log_level: str = "info"
+    log_level: LogLevel = "info"
 
 
 def slugify(value: str) -> str:
@@ -90,9 +95,11 @@ def _str(entry: dict[str, object], key: str) -> str:
     return str(entry.get(key) or "").strip()
 
 
-def _bool(entry: dict[str, object], key: str, default: bool = True) -> bool:
+def _bool(entry: dict[str, object], key: str) -> bool:
+    """A switch that is on unless it is set to false."""
+
     value = entry.get(key)
-    return value if isinstance(value, bool) else default
+    return value if isinstance(value, bool) else True
 
 
 def normalize_account_number(value: str) -> str:
@@ -131,7 +138,7 @@ def load_config(raw: dict[str, object]) -> Config:
     accounts_raw = raw.get("accounts")
     if not isinstance(accounts_raw, list) or not accounts_raw:
         raise ConfigError("No accounts configured; add at least one account with a name and an account_number")
-    accounts = [build_account(index, entry) for index, entry in enumerate(accounts_raw, start=1)]
+    accounts = tuple(build_account(index, entry) for index, entry in enumerate(accounts_raw, start=1))
     seen_ids: set[str] = set()
     seen_numbers: set[str] = set()
     for account in accounts:

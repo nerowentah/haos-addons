@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.8
+
+- **Stricter internal checks.** The app's code now passes strict type checking: options, panel requests, the saved state and the MQTT broker details are validated where they enter the app. No visible change; entity ids, MQTT topics and the saved state keep their format.
+- **Fix:** damaged values in the saved state (for example an amount that is not a number) are ignored instead of stopping the panel or the next check.
+- **Fix:** MQTT broker details with an unusable port are reported in the log and the app keeps using what it had, instead of stopping.
+- **The MQTT password is masked** if it ever reaches a log line.
+
 ## 0.2.7
 
 - **Shared panel update (security):** the panel only accepts changes that come from its own page (a request from another web site is refused), every page it serves carries a Content-Security-Policy and may only be shown inside Home Assistant, and stalled or oversized requests are dropped. No visible change in this app.

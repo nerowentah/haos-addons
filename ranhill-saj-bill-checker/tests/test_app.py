@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +26,14 @@ import webui
 
 def options(*accounts: dict[str, object], **extra: object) -> dict[str, object]:
     return {"notify_on_failure": True, "mqtt": True, "accounts": list(accounts), **extra}
+
+
+def account_row(raw: dict[str, object], index: int = 0) -> dict[str, object]:
+    rows = raw["accounts"]
+    assert isinstance(rows, list)
+    row = rows[index]
+    assert isinstance(row, dict)
+    return row
 
 
 class ConfigTest(unittest.TestCase):
@@ -62,7 +72,7 @@ class ConfigTest(unittest.TestCase):
             config.load_config(options())
 
     def test_defaults_and_log_level(self) -> None:
-        home = {"name": "Home", "account_number": "12345678A1234567"}
+        home: dict[str, object] = {"name": "Home", "account_number": "12345678A1234567"}
         cfg = config.load_config(options(home))
         self.assertTrue(cfg.notify_on_unpaid)
         self.assertEqual(cfg.log_level, "info")
@@ -93,7 +103,7 @@ class PanelToggleTest(unittest.TestCase):
         panel.apply_toggle(raw, "account:home:enabled", False)
         panel.apply_toggle(raw, "mqtt", False)
         panel.apply_toggle(raw, "notify_on_unpaid", False)
-        self.assertIs(raw["accounts"][0]["enabled"], False)  # type: ignore[index]
+        self.assertIs(account_row(raw)["enabled"], False)
         self.assertIs(raw["mqtt"], False)
         self.assertIs(raw["notify_on_unpaid"], False)
 
@@ -112,16 +122,17 @@ class FakeSupervisor(supervisor.Supervisor):
         super().__init__("token")
         self.notifications: list[tuple[str, str]] = []
         self.notification_ids: list[str] = []
-        self.posts: dict[str, object] = {}
+        self.posts: dict[str, dict[str, object]] = {}
         self.stored: dict[str, object] = {}
         self.written: list[dict[str, object]] = []
+        self.unreachable = False
 
     def notify(self, targets: list[str], title: str, message: str, notification_id: str) -> None:  # noqa: ARG002
         self.notifications.append((title, message))
         self.notification_ids.append(notification_id)
 
     def fetch_options(self) -> dict[str, object]:
-        if getattr(self, "unreachable", False):
+        if self.unreachable:
             raise supervisor.SupervisorError("unreachable")
         return dict(self.stored)
 
@@ -130,6 +141,7 @@ class FakeSupervisor(supervisor.Supervisor):
         self.stored = dict(options)
 
     def core_post(self, path: str, body: object) -> object:
+        assert isinstance(body, dict)
         self.posts[path] = body
         return None
 
@@ -140,14 +152,14 @@ class FakeSupervisor(supervisor.Supervisor):
 class ScriptedClient:
     """Stands in for SajClient: each lookup returns or raises the next scripted result."""
 
-    def __init__(self, results: list[object]) -> None:
+    def __init__(self, results: list[ranhill.Bill | Exception]) -> None:
         self.results = results
 
-    def lookup(self, _account_number: str) -> ranhill.Bill:
+    def lookup(self, _account_number: str, /) -> ranhill.Bill:
         result = self.results.pop(0)
         if isinstance(result, Exception):
             raise result
-        return result  # type: ignore[return-value]
+        return result
 
 
 class SchedulerTest(unittest.TestCase):
@@ -158,9 +170,9 @@ class SchedulerTest(unittest.TestCase):
         self.sup = FakeSupervisor()
         self.cfg = config.load_config(options({"name": "Home", "account_number": "12345678A1234567"}))
 
-    def app(self, results: list[object]) -> main.App:
+    def app(self, results: list[ranhill.Bill | Exception]) -> main.App:
         client = ScriptedClient(results)
-        app = main.App(self.cfg, self.sup, self.store, client_factory=lambda: client)  # type: ignore[arg-type,return-value]
+        app = main.App(self.cfg, self.sup, self.store, client_factory=lambda: client)
         app.broker_found = False  # no MQTT: use the states API
         return app
 
@@ -172,8 +184,10 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(runtime.values["status"], "ok")
         self.assertEqual(runtime.holder, "A•••• B•••• A••••")
         posted = self.sup.posts[f"/states/{mqtt_pub.entity_id('home', 'amount_due')}"]
-        self.assertEqual(posted["state"], "45.60")  # type: ignore[index]
-        self.assertEqual(posted["attributes"]["account_number"], "1234••••4567")  # type: ignore[index]
+        self.assertEqual(posted["state"], "45.60")
+        attributes = posted["attributes"]
+        assert isinstance(attributes, dict)
+        self.assertEqual(attributes["account_number"], "1234••••4567")
         saved = str(self.store.data)
         self.assertNotIn("12345678A1234567", saved)
         self.assertNotIn("AHMAD", saved)
@@ -182,8 +196,8 @@ class SchedulerTest(unittest.TestCase):
         app = self.app([ranhill.Bill(10.0, "RM 10.00"), ranhill.Bill(10.0, "RM 10.00"), ranhill.Bill(12.5, "RM 12.50")])
         runtime = app.runtimes[0]
         app.check_account(runtime)
-        first = runtime.values["amount_changed"]
-        runtime.values["amount_changed"] = "marker"
+        first = runtime.amount_changed
+        runtime.amount_changed = "marker"
         app.check_account(runtime)
         self.assertEqual(runtime.values["amount_changed"], "marker")
         app.check_account(runtime)
@@ -233,7 +247,7 @@ class SchedulerTest(unittest.TestCase):
         app.republish.set()  # as the first MQTT check does without a broker
         app._tick()  # would pop from an empty script if it checked
         posted = self.sup.posts[f"/states/{mqtt_pub.entity_id('home', 'amount_due')}"]
-        self.assertEqual(posted["state"], "unavailable")  # type: ignore[index]
+        self.assertEqual(posted["state"], "unavailable")
 
     def bills(self) -> list[str]:
         return [title for title, _ in self.sup.notifications if "bill" in title]
@@ -244,7 +258,7 @@ class SchedulerTest(unittest.TestCase):
         app.check_account(runtime)
         self.assertIs(runtime.values["payment_due"], True)
         posted = self.sup.posts[f"/states/{mqtt_pub.entity_id('home', 'payment_due', 'binary_sensor')}"]
-        self.assertEqual(posted["state"], "on")  # type: ignore[index]
+        self.assertEqual(posted["state"], "on")
         self.assertEqual(self.bills(), ["Water bill due"])
         self.assertIn("RM 45.60", self.sup.notifications[-1][1])
         self.assertTrue(self.sup.notification_ids[-1].endswith("_bill"))
@@ -276,15 +290,15 @@ class SchedulerTest(unittest.TestCase):
         app = self.app([ranhill.Bill(20.0, "RM 20.00")])
         app.check_account(app.runtimes[0])
         again = self.app([])
-        wait = again.runtimes[0].next_check - main.time.monotonic()
+        wait = again.runtimes[0].next_check - time.monotonic()
         self.assertGreater(wait, main.CHECK_INTERVAL_SECONDS - 3600)
         fresh = main.App(self.cfg, self.sup, store.Store(Path(self.tmp.name) / "other.json"))
-        self.assertLess(fresh.runtimes[0].next_check - main.time.monotonic(), 60)
+        self.assertLess(fresh.runtimes[0].next_check - time.monotonic(), 60)
 
     def test_unknown_account_retries_daily(self) -> None:
         app = self.app([ranhill.AccountNotFoundError("unknown")])
         app.check_account(app.runtimes[0])
-        wait = app.runtimes[0].next_check - main.time.monotonic()
+        wait = app.runtimes[0].next_check - time.monotonic()
         self.assertLessEqual(wait, main.PROBLEM_RETRY_SECONDS)
 
     def test_retired_interval_option_is_removed(self) -> None:
@@ -297,7 +311,7 @@ class SchedulerTest(unittest.TestCase):
 
     def test_panel_switch_without_the_supervisor_writes_nothing(self) -> None:
         app = self.app([])
-        self.sup.unreachable = True  # type: ignore[attr-defined]
+        self.sup.unreachable = True
         with self.assertRaises(webui.PanelError):
             app.panel_toggle("mqtt", False)
         self.assertEqual(self.sup.written, [])
@@ -307,16 +321,34 @@ class SchedulerTest(unittest.TestCase):
         app = self.app([])
         app.secrets.learn(self.sup.stored, options({"name": "Home", "account_number": "12345678A1234567"}))
         app.panel_toggle("mqtt", False)
-        self.assertEqual(self.sup.written[-1]["accounts"][0]["account_number"], "!secret saj_home")  # type: ignore[index]
+        self.assertEqual(account_row(self.sup.written[-1])["account_number"], "!secret saj_home")
 
     def test_panel_state_builds(self) -> None:
         app = self.app([ranhill.SiteError("boom")])
         app.check_account(app.runtimes[0])
-        state = panel.build_state(app)
-        card = state["sections"][0]["cards"][0]  # type: ignore[index]
+        state = json.loads(json.dumps(panel.build_state(app)))
+        card = state["sections"][0]["cards"][0]
         self.assertEqual(card["badge"]["text"], "Site error")
         self.assertEqual(card["notice"]["text"], "boom")
-        self.assertEqual(app.panel_action("check", {"account": "home"}), "Checking Home...")
+        self.assertEqual(app.panel_action("check", webui.PanelArgs(account="home")), "Checking Home...")
+        for bad in ({}, {"account": 7}, {"account": "gone"}):
+            with self.assertRaises(webui.PanelError):
+                app.panel_action("check", webui.PanelArgs(bad))
+
+    def test_damaged_saved_state_falls_back_to_defaults(self) -> None:
+        self.store.section("accounts")["home"] = {
+            "number": config.mask_number("12345678A1234567"),
+            "amount_due": "a lot",
+            "payment_due": "yes",
+            "status": "exploded",
+            "last_checked": 7,
+        }
+        runtime = self.app([]).runtimes[0]
+        self.assertEqual(
+            (runtime.amount_due, runtime.payment_due, runtime.status, runtime.last_checked),
+            (None, None, "pending", None),
+        )
+        self.assertIn("Waiting for first check", json.dumps(panel.build_state(self.app([]))))
 
 
 class DiscoveryTest(unittest.TestCase):
@@ -336,6 +368,28 @@ class DiscoveryTest(unittest.TestCase):
         self.assertIn("ON", str(payload["value_template"]))
         self.assertEqual(mqtt_pub.state_value(sensor, False), "off")
         self.assertEqual(mqtt_pub.state_value(sensor, None), "unknown")
+
+
+class BrokerTest(unittest.TestCase):
+    def test_service_reply_is_validated(self) -> None:
+        broker = mqtt_pub.Broker.from_service(
+            {"host": "core-mosquitto", "port": 1883, "username": "addons", "password": "PLACEHOLDER", "ssl": False}
+        )
+        self.assertEqual(
+            (broker.host, broker.port, broker.username, broker.ssl), ("core-mosquitto", 1883, "addons", False)
+        )
+        self.assertNotIn("PLACEHOLDER", repr(broker))
+        self.assertEqual(mqtt_pub.Broker.from_service({"host": "broker", "port": "8883", "ssl": True}).port, 8883)
+        self.assertEqual(mqtt_pub.Broker.from_service({"host": "broker"}).port, 1883)
+        for bad in (
+            {},
+            {"host": ""},
+            {"host": 5},
+            {"host": "broker", "port": "mqtt"},
+            {"host": "broker", "port": 70000},
+        ):
+            with self.assertRaises(ValueError):
+                mqtt_pub.Broker.from_service(bad)
 
 
 class UnpaidTest(unittest.TestCase):
