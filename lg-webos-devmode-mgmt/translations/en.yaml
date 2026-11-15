@@ -39,6 +39,9 @@ configuration:
       passphrase:
         name: Passphrase
         description: Required when the TV IP address is set. The 6-character code shown in the TV's Developer Mode app; it unlocks the TV's SSH key. Masked.
+      private_key:
+        name: TV SSH private key (optional)
+        description: The TV's private key file as text, from -----BEGIN to -----END (the ares CLI saves it as <device>_webos in your .ssh folder). Not the public key. With it, Key Server never has to be switched on. You can also upload the file on the TV's card in the LG DevMode panel instead, which keeps it out of these options. Masked.
       media_player:
         name: TV entity (optional)
         description: The TV's entity from the LG webOS TV integration, for example media_player.living_room_tv. The token is read from the TV each time this entity turns on. Without it the token is read before each scheduled renewal only.

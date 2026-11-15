@@ -1,5 +1,5 @@
 name: "LG webOS DevMode Mgmt"
-version: "1.9.0"
+version: "1.10.0"
 slug: "lg_webos_auto_renew"
 description: >-
   Periodically renews LG webOS Developer Mode sessions before they expire by
@@ -41,5 +41,6 @@ schema:
       host: password?
       port: port?
       passphrase: password?
+      private_key: password?
       media_player: str?
   log_level: list(trace|debug|info|notice|warning|error|fatal)?
