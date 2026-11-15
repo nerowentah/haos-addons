@@ -52,6 +52,10 @@ Session fields:
 | `token` | Dev Mode session token. It is masked in the UI and calls `https://developer.lge.com/secure/ResetDevModeSession.dev?sessionToken=<token>`. |
 | `url` | Optional full renewal URL, called exactly as given. Use it instead of `token` if LG changes the endpoint. |
 | `enabled` | Optional, default `true`. Set it to `false` to pause scheduled renewals and keep the token. This is the panel's **Auto renew** switch. |
+| `host` | Optional. The TV's IP address. Set it to let the app read the token from the TV itself. See [Reading the token from the TV automatically](#reading-the-token-from-the-tv-automatically). Masked. |
+| `port` | Optional. The TV's SSH port, default `9922`. |
+| `passphrase` | **Required when `host` is set.** The 6-character, case-sensitive code shown in the TV's Developer Mode app. Masked. |
+| `media_player` | Optional. The TV's entity from the LG webOS TV integration, for example `media_player.living_room_tv`. The token is read each time it turns on. |
 
 Changes made in the Configuration tab are picked up within about 30 seconds. You don't need to restart the app.
 
@@ -93,6 +97,53 @@ The token belongs to one sign-in. When the Developer Mode app on the TV asks for
   3. Save it in the session's `token` field. The next renewal clears the warning; **Renew now** does it at once.
 - **Check after every sign-in on the TV, even without a warning.** LG can keep accepting the old token for a while, so the card may still say *Renewed* while the TV counts down on a different token. Compare the value from step 4 with the one you saved.
 
+## Reading the token from the TV automatically
+
+Instead of reading the token on a PC, the app can read it from the TV itself. It does what `ares-novacom` does: an SSH login to the TV (user `prisoner`) that prints `/var/luna/preferences/devmode_enabled`.
+
+```yaml
+sessions:
+  - name: "living-room-tv"
+    token: "YOUR_DEV_MODE_SESSION_TOKEN"
+    host: "192.0.2.10"
+    port: 9922
+    passphrase: "ABC123"
+    media_player: media_player.living_room_tv
+```
+
+**Set-up**
+
+1. Give the TV a fixed IP address and enter it as `host`.
+2. Enter the `passphrase`: the code at the bottom-left of the Developer Mode app.
+3. On the TV, switch **Key Server** on in the Developer Mode app. The app downloads the TV's SSH key once and keeps it; you can switch Key Server off again afterwards.
+4. Optional: set `media_player` to the TV's entity from the **LG webOS TV** integration.
+
+**When the token is read**
+
+- Before each scheduled renewal, if the TV is reachable.
+- About 20 seconds after `media_player` turns on (and at app start, if the TV is on). If the TV does not answer yet, the app tries twice more.
+- When you press **Check TV now** on the TV's card.
+
+**What happens next**
+
+| The TV holds | The app |
+| --- | --- |
+| the saved token | checks the session with LG and refreshes **Time left**. **TV token** shows *Same as saved*. |
+| a different token that LG accepts | notifies you, saves it as the `token` option and renews with it. **TV token** shows *Updated from TV*. |
+| a different token, and yours is a `!secret` reference or a custom `url` | notifies you and renews with the new token until the app restarts. It never overwrites the reference: update `secrets.yaml` or the URL yourself. **TV token** shows *Changed on TV (not saved)*. |
+| a token LG rejects | shows **Sign in on TV**. |
+| no token | shows **Dev Mode off on TV**: switch Developer Mode on again in the TV's app. |
+
+Inside an LG maintenance window the token is still read and compared, but LG is not asked.
+
+**Security**
+
+- The SSH key lets its holder open a restricted shell on the TV. The app keeps it in its private data folder exactly as the TV sends it, encrypted with the passphrase. It is never stored decrypted, and the passphrase is never put on a command line.
+- The key is downloaded from the TV over plain HTTP on your network; the TV offers nothing else. The key is useless without the passphrase.
+- The TV's SSH host key is remembered on first contact. If it changes later, the app refuses to connect and tells you.
+- The token read from the TV is not written to the app's data folder.
+- The app only ever runs one fixed command on the TV, which prints the token file. It changes nothing on the TV.
+
 ## Panel
 
 Open **LG DevMode** from the sidebar, or click **Open web UI** on the app page. Only administrators see it. The panel follows your Home Assistant theme, including dark mode.
@@ -102,6 +153,7 @@ Open **LG DevMode** from the sidebar, or click **Open web UI** on the app page. 
   - The last attempt, last success and next renewal.
   - **Time left:** the session time LG reported after the last renewal (`-` when LG gave none, or for a custom `url` outside `developer.lge.com`).
   - An **Auto renew** switch and a **Renew now** button. **Renew now** also works on a paused TV.
+  - With `host` set: **TV token**, **Last TV check** and a **Check TV now** button.
 - **Schedule card:** the interval and retries, the **Failure notifications** switch and **Renew all now**.
 - **Phones card:** one switch per Companion app linked to this Home Assistant.
 
@@ -122,10 +174,10 @@ When a renewal fails after all retries, or LG no longer accepts a TV's token, th
 
 ## Passwords and secrets
 
-- **Where they live:** Home Assistant's Supervisor stores the app options, including each TV's `token` or `url`. The app keeps no copy: its own file `/data/state.json` never holds a password, token or account number. Home Assistant encrypts its backups.
+- **Where they live:** Home Assistant's Supervisor stores the app options, including each TV's `token`, `url`, `host` and `passphrase`. The Supervisor does not encrypt that storage, and an app cannot change this; Home Assistant can encrypt its backups. The app itself stores only the TV's SSH key, encrypted with the passphrase, and never a password, passphrase or token.
 - **Masked:** password fields show as dots in the Configuration tab.
 - **Never logged:** passwords, tokens and cookie values never appear in the log or the panel, and numbers are masked.
-- **`!secret`:** to keep a value out of the app options, put it in `/config/secrets.yaml` and reference it, for example `token: "!secret living_room_tv_token"`.
+- **`!secret`:** `token`, `url`, `host` and `passphrase` accept it. To keep a value out of the app options, put it in `/config/secrets.yaml` and reference it, for example `token: "!secret living_room_tv_token"`.
   - The panel switches and live edits keep the reference as it is. The app never writes the value back.
   - A new or changed secret takes effect after you **restart** the app, because the Supervisor reads `secrets.yaml` only at start. Until then the panel keeps the old value and the log says a restart is needed.
 - Anyone who can open the app's Configuration tab, or log in to the host, can still see the values. Give the Home Assistant admin role only to people you trust.
@@ -144,6 +196,12 @@ When a renewal fails after all retries, or LG no longer accepts a TV's token, th
   - Check that `notify_on_failure` is on and that the phone's switch is on in the **Phones** card.
   - The phone must have the Companion app linked to this Home Assistant.
   - The log line `Notifications go to N phone(s)` lists the phones being used.
+
+- **TV shows "Turn on Key Server":** the TV refused the stored SSH key (it issues a new one when Developer Mode is switched on again) and the app could not download the current one. Switch **Key Server** on in the TV's Developer Mode app, then press **Check TV now**.
+- **TV shows "Check the passphrase":** the TV refused the key the app had just downloaded. The `passphrase` option does not match the code shown in the Developer Mode app; it changes when Developer Mode is switched on again.
+- **TV shows "Dev Mode off on TV":** the TV has no session token. Open the Developer Mode app, sign in and switch Dev Mode on.
+- **TV shows "TV host key changed":** the TV's SSH identity is not the one the app first saw, so it did not connect. If you reset or replaced the TV, press **Trust this TV again** on its card: the app forgets the old identity and remembers the new one at the next check. If you did not change the TV, first find out what is answering on that IP address.
+- **TV token shows "TV not reachable":** the TV is off, asleep or on another address, or Developer Mode is off. This is not an error and sends no alert.
 
 ## Credits
 

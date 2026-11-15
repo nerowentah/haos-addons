@@ -30,3 +30,15 @@ configuration:
       enabled:
         name: Auto renew
         description: Switch off to pause scheduled renewals for this TV without deleting its token. Also switchable from the LG DevMode panel; applies without a restart.
+      host:
+        name: TV IP address (optional)
+        description: Set it to let the app read the session token from the TV itself over SSH, the way ares-novacom does. Masked. Needs the passphrase below, and Key Server switched on once in the TV's Developer Mode app.
+      port:
+        name: TV SSH port (optional)
+        description: SSH port of the TV in Developer Mode. Leave empty for 9922.
+      passphrase:
+        name: Passphrase
+        description: Required when the TV IP address is set. The 6-character code shown in the TV's Developer Mode app; it unlocks the TV's SSH key. Masked.
+      media_player:
+        name: TV entity (optional)
+        description: The TV's entity from the LG webOS TV integration, for example media_player.living_room_tv. The token is read from the TV each time this entity turns on. Without it the token is read before each scheduled renewal only.

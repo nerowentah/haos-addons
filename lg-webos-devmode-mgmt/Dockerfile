@@ -12,9 +12,11 @@ ARG BUILD_ARCH
 # stdlib for this add-on, so no pip packages are required.
 # apk upgrade: the security fixes Alpine published after the base image was built.
 # tempio (a Go template tool in the base image) is not used by this app.
+# openssh-client: reads the session token from the TV (what ares-novacom does).
 RUN apk upgrade --no-cache \
     && apk add --no-cache \
         python3 \
+        openssh-client-default \
     && rm -f /usr/bin/tempio
 
 WORKDIR /app
@@ -22,7 +24,7 @@ WORKDIR /app
 # /app: the app and the shared ingress panel (webui.py, web/).
 # /etc/s6-overlay: the app runs as an s6-overlay service (no legacy CMD).
 COPY rootfs/ /
-RUN chmod a+x /etc/s6-overlay/s6-rc.d/lg-webos-devmode-mgmt/run /etc/s6-overlay/s6-rc.d/lg-webos-devmode-mgmt/finish \
+RUN chmod a+x /etc/s6-overlay/s6-rc.d/lg-webos-devmode-mgmt/run /etc/s6-overlay/s6-rc.d/lg-webos-devmode-mgmt/finish /app/askpass.sh \
     && python3 -m compileall -q /app
 
 ENV LG_RENEW_VERSION=${BUILD_VERSION} \

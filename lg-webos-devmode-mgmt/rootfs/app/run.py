@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import logging
 import os
@@ -18,12 +19,14 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 
 import maintenance
 import redact
+import tvssh
 from safefile import atomic_write
 from webui import (
+    SECRET_PREFIX,
     PanelArgs,
     PanelError,
     PanelRouter,
@@ -43,6 +46,7 @@ _LOGGER = logging.getLogger(__name__)
 
 CONFIG_PATH = Path("/data/options.json")
 PHONES_PATH = Path("/data/phones.json")
+DATA_DIR = Path("/data")
 WEB_DIR = Path(__file__).resolve().parent / "web"
 LG_DEV_ENDPOINT = "https://developer.lge.com/secure/ResetDevModeSession.dev"
 LG_CHECK_ENDPOINT = "https://developer.lge.com/secure/CheckDevModeSession.dev"
@@ -70,6 +74,12 @@ REMAINING_RE = re.compile(r"^(\d+):(\d{2}):(\d{2})$")  # "999:13:25" = hours:min
 LOOP_SECONDS = 30
 OPTIONS_CHECK_SECONDS = 30
 PHONE_CHECK_SECONDS = 300
+TV_SETTLE_SECONDS = 20  # after the TV turns on, before its SSH service answers
+TV_RETRY_SECONDS = 30
+TV_ATTEMPTS = 3
+TV_OFF_STATES = frozenset({"off", "unavailable", "unknown", ""})
+MEDIA_PLAYER_RE = re.compile(r"^media_player\.[a-z0-9_]+$")
+MAX_PORT = 65535
 
 
 class ConfigError(ValueError):
@@ -94,6 +104,11 @@ class Session:
     enabled: bool = True
     custom_url: bool = False
     check_url: redact.Secret | None = None  # LG's status address for the same token (None: not verifiable)
+    token: redact.Secret | None = None  # the bare token, when the options give one LG can be asked about
+    host: redact.Secret | None = None  # the TV's IP address: set to read the token from the TV over SSH
+    port: int = tvssh.DEFAULT_PORT
+    passphrase: redact.Secret | None = None  # decrypts the TV's SSH key
+    media_player: str = ""  # the TV's entity in Home Assistant: a token read when it turns on
 
     @property
     def notification_id(self) -> str:
@@ -103,6 +118,10 @@ class Session:
 
 
 type Outcome = Literal["ok", "signin", "failed"]
+# What a notification is about: a renewal outcome, or something found on the TV.
+type Reason = Literal[
+    "failed", "signin", "changed", "changed_secret", "devmode_off", "keyserver", "passphrase", "hostkey"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,10 +311,74 @@ def build_sessions(raw_sessions: list[object]) -> tuple[Session, ...]:
                 enabled=enabled if isinstance(enabled, bool) else True,
                 custom_url=bool(entry.get("url")),
                 check_url=check_url,
+                token=redact.Secret(token) if token else None,
+                **_tv_options(name, entry),
             )
         )
 
     return tuple(sessions)
+
+
+class TvOptions(TypedDict, total=False):
+    """The per-session options for reading the token from the TV."""
+
+    host: redact.Secret
+    port: int
+    passphrase: redact.Secret
+    media_player: str
+
+
+def _tv_options(name: str, entry: dict[str, object]) -> TvOptions:
+    """Validate ``host``, ``port``, ``passphrase`` and ``media_player`` of one session."""
+
+    options: TvOptions = {}
+    media_player = str(entry.get("media_player") or "").strip()
+    if media_player:
+        if not MEDIA_PLAYER_RE.match(media_player):
+            raise ConfigError(
+                f"Session '{name}': media_player must be an entity id such as media_player.living_room_tv"
+            )
+        options["media_player"] = media_player
+
+    host = str(entry.get("host") or "").strip()
+    if not host:
+        if media_player:
+            raise ConfigError(f"Session '{name}': media_player needs host (the TV's IP address) and passphrase")
+        return options
+    if not tvssh.valid_host(host):
+        raise ConfigError(f"Session '{name}': host must be the TV's IP address")
+    passphrase = str(entry.get("passphrase") or "").strip()
+    if not passphrase:
+        raise ConfigError(
+            f"Session '{name}': passphrase is required when host is set "
+            "(the 6-character code shown in the TV's Developer Mode app)"
+        )
+    raw_port = entry.get("port", tvssh.DEFAULT_PORT)
+    port = int(raw_port) if isinstance(raw_port, int | str) and str(raw_port).isdigit() else 0
+    if isinstance(raw_port, bool) or not 1 <= port <= MAX_PORT:
+        raise ConfigError(f"Session '{name}': port must be a number from 1 to {MAX_PORT} (the TV's SSH port, 9922)")
+    options["host"] = redact.Secret(host)
+    options["port"] = port
+    options["passphrase"] = redact.Secret(passphrase)
+    return options
+
+
+def with_token(session: Session, token: str) -> Session:
+    """``session`` renewing with ``token`` instead of the one in the options."""
+
+    quoted = urllib.parse.quote(token, safe="")
+    if session.custom_url:
+        parts = urllib.parse.urlsplit(session.url.reveal())
+        query = [(k, token if k == "sessionToken" else v) for k, v in urllib.parse.parse_qsl(parts.query)]
+        url = urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
+    else:
+        url = f"{LG_DEV_ENDPOINT}?sessionToken={quoted}"
+    return dataclasses.replace(
+        session,
+        url=redact.Secret(url),
+        check_url=redact.Secret(f"{LG_CHECK_ENDPOINT}?sessionToken={quoted}"),
+        token=redact.Secret(token),
+    )
 
 
 MOBILE_TARGET_PREFIX = "mobile_app_"
@@ -630,31 +713,84 @@ def effective_mobile_targets(discovered: list[str], prefs: dict[str, bool]) -> l
     return [target for target in discovered if prefs.get(target, True)]
 
 
-def notify_failure(session: Session, targets: list[str], supervisor_token: str, reason: Outcome = "failed") -> None:
-    """Notify about a failed renewal to Home Assistant.
+SIGNIN_STEPS = (
+    "Open the Developer Mode app on the TV, sign in with your LG account email and password, "
+    "switch Dev Mode on, then read the TV's new token and save it in the app's Configuration tab."
+)
+
+
+def notification_text(session: Session, reason: Reason) -> tuple[str, str]:
+    """Title and message of the notification for ``reason``."""
+
+    name = session.name
+    texts: dict[Reason, tuple[str, str]] = {
+        "failed": (
+            "LG webOS DevMode renewal failed",
+            (
+                f"The LG webOS Developer Mode session '{name}' could not be renewed "
+                "after exhausting all retries. Renew it manually or the dev session may expire."
+            ),
+        ),
+        "signin": (
+            "LG webOS DevMode needs a new sign-in",
+            f"LG no longer accepts the Developer Mode session token of '{name}'. {SIGNIN_STEPS}",
+        ),
+        "changed": (
+            "LG webOS DevMode token changed",
+            (
+                f"The Developer Mode session token of '{name}' changed on the TV. "
+                "The app read the new one from the TV, saved it and now renews with it."
+            ),
+        ),
+        "changed_secret": (
+            "LG webOS DevMode token changed",
+            (
+                f"The Developer Mode session token of '{name}' changed on the TV. The app renews with the new one "
+                "until it restarts, but cannot save it: the option is a !secret reference or a custom URL. "
+                "Update the value there."
+            ),
+        ),
+        "devmode_off": (
+            "LG webOS Developer Mode is off",
+            f"The TV '{name}' has no Developer Mode session token: Developer Mode is switched off. {SIGNIN_STEPS}",
+        ),
+        "keyserver": (
+            "LG webOS DevMode cannot read the TV",
+            (
+                f"The TV '{name}' refused the app's SSH key and its key server is off. Open the Developer Mode app "
+                "on the TV and switch Key Server on, so the app can fetch the current key."
+            ),
+        ),
+        "passphrase": (
+            "LG webOS DevMode cannot read the TV",
+            (
+                f"The TV '{name}' refused its own SSH key: the passphrase option is wrong. Enter the 6-character "
+                "code shown in the TV's Developer Mode app in the app's Configuration tab."
+            ),
+        ),
+        "hostkey": (
+            "LG webOS DevMode: the TV's identity changed",
+            (
+                f"The SSH host key of the TV '{name}' is not the one the app saw first, so the app did not connect. "
+                "If the TV was reset or replaced, see 'changed host key' in the app's documentation."
+            ),
+        ),
+    }
+    return texts[reason]
+
+
+def notify_failure(session: Session, targets: list[str], supervisor_token: str, reason: Reason = "failed") -> None:
+    """Notify Home Assistant about a failed renewal or something found on the TV.
 
     Routes to the HA notify service (e.g. the mobile app) when notification
     targets are configured; otherwise falls back to a persistent notification.
-    ``reason`` "signin" says what to do on the TV instead of the general text.
     """
 
     if not supervisor_token:
         _LOGGER.warning("Cannot notify for '%s': no supervisor token available", session.name)
         return
 
-    if reason == "signin":
-        title = "LG webOS DevMode needs a new sign-in"
-        message = (
-            f"LG no longer accepts the Developer Mode session token of '{session.name}'. "
-            "Open the Developer Mode app on the TV, sign in with your LG account email and password, "
-            "switch Dev Mode on, then read the TV's new token and save it in the app's Configuration tab."
-        )
-    else:
-        title = "LG webOS DevMode renewal failed"
-        message = (
-            f"The LG webOS Developer Mode session '{session.name}' could not be renewed "
-            "after exhausting all retries. Renew it manually or the dev session may expire."
-        )
+    title, message = notification_text(session, reason)
 
     if targets:
         for target in targets:
@@ -692,6 +828,9 @@ class SessionStatus:
     maintenance: bool = False
     needs_signin: bool = False  # LG no longer accepts the token
     remaining_hours: float | None = None  # as LG reported after the last good renewal
+    tv_state: str = ""  # outcome of the last token read from the TV, as shown in the panel
+    tv_checked: float | None = None  # when the token was last read from the TV
+    tv_alert: Reason | None = None  # a problem on the TV the user has been told about
 
 
 def _clock(epoch: float | None) -> str | None:
@@ -729,6 +868,7 @@ class App:
         raw_options: dict[str, object],
         supervisor_token: str,
         phones_path: Path = PHONES_PATH,
+        data_dir: Path = DATA_DIR,
     ) -> None:
         self.config = config
         self.raw_options = raw_options  # as stored: !secret references, never their values
@@ -748,6 +888,10 @@ class App:
         self.last_scheduled: float | None = None
         self.next_options_check = time.monotonic() + OPTIONS_CHECK_SECONDS
         self.backoff = maintenance.Backoff()
+        self.data_dir = data_dir
+        self.tv_tokens: dict[str, redact.Secret] = {}  # tokens read from the TV (memory only, never on disk)
+        self.tv_on: dict[str, bool] = {}  # last power state seen per session
+        self.tv_due: dict[str, tuple[float, int]] = {}  # session -> (when to read the TV, attempts left)
 
     # -- options ------------------------------------------------------------
     def view_config(self) -> Config:
@@ -886,9 +1030,10 @@ class App:
         remaining sessions are skipped and no failure is reported.
         """
 
-        for session in sessions:
+        for configured in sessions:
             if self.stopping.is_set():
                 return True
+            session = self.effective(configured)
             status = self.status.setdefault(session.notification_id, SessionStatus())
             status.running = True
             status.last_attempt = time.time()
@@ -910,8 +1055,187 @@ class App:
                 status.last_success = time.time()
             elif self.config.notify_on_failure and not (status.needs_signin and already_asked):
                 targets = effective_mobile_targets(self.discovered, self.phones)
-                notify_failure(session, targets, self.token, result.outcome)
+                notify_failure(session, targets, self.token, "signin" if status.needs_signin else "failed")
         self.backoff.reset()
+        return True
+
+    # -- the token on the TV ----------------------------------------------------
+    def effective(self, session: Session) -> Session:
+        """``session`` with the token last read from the TV, when that differs from the options."""
+
+        override = self.tv_tokens.get(session.notification_id)
+        if override is None:
+            return session
+        if session.token == override:
+            del self.tv_tokens[session.notification_id]  # the options caught up
+            return session
+        return with_token(session, override.reveal())
+
+    def _notify(self, session: Session, reason: Reason) -> None:
+        if self.config.notify_on_failure:
+            notify_failure(session, effective_mobile_targets(self.discovered, self.phones), self.token, reason)
+
+    def _tv_problem(self, session: Session, status: SessionStatus, reason: Reason, state: str) -> None:
+        """Record a problem found on the TV; the user is told once, not on every check."""
+
+        status.tv_state = state
+        if status.tv_alert != reason:
+            status.tv_alert = reason
+            self._notify(session, reason)
+
+    def watch_power(self) -> None:
+        """Queue a token read for every TV that Home Assistant reports as just turned on."""
+
+        for session in self.config.sessions:
+            if not (session.enabled and session.host and session.media_player):
+                continue
+            try:
+                reply = _supervisor_request(self.token, f"/core/api/states/{session.media_player}")
+            except (urllib.error.URLError, OSError, ValueError):
+                continue  # Home Assistant is restarting or the entity is gone: no change seen
+            state = str(reply.get("state") or "") if isinstance(reply, dict) else ""
+            is_on = state not in TV_OFF_STATES
+            was_on = self.tv_on.get(session.notification_id, False)
+            self.tv_on[session.notification_id] = is_on
+            if is_on and not was_on:
+                _LOGGER.info("'%s' turned on; reading its token shortly", session.name)
+                self.tv_due[session.notification_id] = (time.monotonic() + TV_SETTLE_SECONDS, TV_ATTEMPTS)
+
+    def run_tv_checks(self) -> None:
+        """Read the token from every TV whose check is due (retried while the TV is not reachable yet)."""
+
+        now = time.monotonic()
+        for key, (due, attempts) in list(self.tv_due.items()):
+            if now < due:
+                continue
+            del self.tv_due[key]
+            session = next((s for s in self.config.sessions if s.notification_id == key and s.host), None)
+            if session is None:
+                continue
+            if not self.verify_tv(session, renew_after=True) and attempts > 1:
+                self.tv_due[key] = (time.monotonic() + TV_RETRY_SECONDS, attempts - 1)
+
+    def _known_hosts(self, session: Session) -> Path:
+        """Where the SSH host key of this TV is pinned (one file per TV)."""
+
+        return self.data_dir / "keys" / f"{session.notification_id}.known_hosts"
+
+    def _read_tv(self, configured: Session, status: SessionStatus) -> tuple[str | None, bool]:
+        """The token on the TV (None when there is none to use) and whether the TV was reachable."""
+
+        if configured.host is None or configured.passphrase is None:
+            return None, True
+        tv = tvssh.Tv(
+            host=configured.host,
+            port=configured.port,
+            passphrase=configured.passphrase,
+            key_path=self.data_dir / "keys" / configured.notification_id,
+            known_hosts=self._known_hosts(configured),
+        )
+        problems: dict[type[tvssh.TvError], tuple[Reason, str, str]] = {
+            tvssh.NoTokenError: ("devmode_off", "Dev Mode off on TV", "has no session token: Developer Mode is off"),
+            tvssh.KeyServerError: ("keyserver", "Turn on Key Server", "key cannot be fetched: switch Key Server on"),
+            tvssh.KeyRejectedError: ("passphrase", "Check the passphrase", "refused its own SSH key: check passphrase"),
+            tvssh.HostKeyChangedError: (
+                "hostkey",
+                "TV host key changed",
+                "has a different SSH host key; not connecting",
+            ),
+        }
+        try:
+            return tvssh.read_token_with_key(tv), True
+        except tvssh.UnreachableError:
+            _LOGGER.info("'%s' is not reachable over SSH (off or asleep)", configured.name)
+            status.tv_state = "TV not reachable"
+            return None, False
+        except (tvssh.TvError, OSError) as err:
+            known = problems.get(type(err)) if isinstance(err, tvssh.TvError) else None
+            if known is None:
+                _LOGGER.warning("Could not read the token of '%s' from the TV: %s", configured.name, err)
+                status.tv_state = "Check failed"
+            else:
+                reason, state, log_text = known
+                _LOGGER.error("TV '%s' %s", configured.name, log_text)  # noqa: TRY400 - no traceback needed
+                self._tv_problem(configured, status, reason, state)
+            return None, True
+
+    def verify_tv(self, configured: Session, *, renew_after: bool) -> bool:
+        """Read the token from the TV, compare it with the saved one and check it with LG.
+
+        Returns False only when the TV could not be reached (worth another try).
+        """
+
+        status = self.status.setdefault(configured.notification_id, SessionStatus())
+        token, reachable = self._read_tv(configured, status)
+        if token is None:
+            return reachable
+
+        status.tv_checked = time.time()
+        status.tv_alert = None
+        session = self.effective(configured)
+        same = session.token is not None and session.token == redact.Secret(token)
+        candidate = session if same else with_token(session, token)
+        in_window = self.maintenance_until() is not None  # no calls to LG inside a maintenance window
+        result = RenewResult("ok") if in_window else check_session(candidate)
+
+        if result.outcome == "signin":
+            _LOGGER.error("LG does not accept the token '%s' holds", configured.name)
+            status.tv_state = "Not accepted by LG"
+            status.last_ok = False
+            if not status.needs_signin:
+                status.needs_signin = True
+                self._notify(configured, "signin")
+            return True
+        if result.remaining_hours is not None:
+            status.remaining_hours = result.remaining_hours
+        if same:
+            _LOGGER.info("'%s' holds the saved token", configured.name)
+            status.tv_state = "Same as saved"
+            return True
+        if session.token is None:  # a custom URL outside LG: no saved token to compare with or replace
+            status.tv_state = "Read from TV"
+            return True
+
+        _LOGGER.warning("The token of '%s' changed on the TV; using the new one", configured.name)
+        self.tv_tokens[configured.notification_id] = redact.Secret(token)
+        saved = self.adopt_token(configured, token)
+        status.tv_state = "Updated from TV" if saved else "Changed on TV (not saved)"
+        status.needs_signin = False
+        self._notify(configured, "changed" if saved else "changed_secret")
+        if renew_after and not in_window:
+            with self.options_lock:
+                self.queue.append(configured.notification_id)
+        return True
+
+    def adopt_token(self, session: Session, token: str) -> bool:
+        """Save the TV's token as the session's ``token`` option; False when it cannot be saved.
+
+        A ``!secret`` reference or a custom ``url`` is never overwritten: the
+        token is then used from memory only.
+        """
+
+        class NotWritableError(Exception):
+            pass
+
+        def mutate(options: dict[str, object]) -> None:
+            rows = options.get("sessions")
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict) or slugify(str(row.get("name") or "")) != session.notification_id:
+                    continue
+                current = row.get("token")
+                if row.get("url") or not isinstance(current, str) or current.startswith(SECRET_PREFIX):
+                    raise NotWritableError
+                row["token"] = token
+                return
+            raise NotWritableError
+
+        try:
+            self.update_options(mutate)
+        except NotWritableError:
+            return False
+        except PanelError as err:
+            _LOGGER.warning("Could not save the new token of '%s': %s", session.name, err)
+            return False
         return True
 
     def maintenance_until(self) -> datetime | None:
@@ -935,6 +1259,8 @@ class App:
         if time.monotonic() >= self.next_phone_check:
             self.next_phone_check = time.monotonic() + PHONE_CHECK_SECONDS
             self.refresh_phones()
+        self.watch_power()
+        self.run_tv_checks()
 
         with self.options_lock:
             queued, self.queue = self.queue, []
@@ -954,6 +1280,9 @@ class App:
                 return
             enabled = [s for s in self.config.sessions if s.enabled]
             _LOGGER.info("Scheduled renewal of %d TV(s)", len(enabled))
+            for session in enabled:  # renew with the token the TV holds now, when it can be read
+                if session.host and session.notification_id not in self.tv_due:
+                    self.verify_tv(session, renew_after=False)
             if not self.renew(enabled):
                 return  # LG maintenance: _retry_after_maintenance set next_run
             self.last_scheduled = time.time()
@@ -984,6 +1313,17 @@ class App:
         if action_id == "renew_all":
             target: str | None = None
             label = "all TVs"
+        elif action_id in {"check_tv", "trust_tv"}:
+            target = args.ident("session")
+            match = next((s for s in self.config.sessions if s.notification_id == target and s.host), None)
+            if match is None:
+                raise PanelError("That TV no longer exists or has no host option; reload the page")
+            if action_id == "trust_tv":
+                self._known_hosts(match).unlink(missing_ok=True)  # pinned again at the next contact
+                _LOGGER.warning("Forgot the pinned SSH host key of '%s' on request", match.name)
+            self.tv_due[match.notification_id] = (time.monotonic(), 1)
+            self.wake.set()
+            return f"Reading the token from {match.name}..."
         elif action_id == "renew":
             target = args.ident("session")
             match = next((s for s in self.config.sessions if s.notification_id == target), None)
@@ -1010,24 +1350,49 @@ class App:
             chip = badge("Renewing...", "warn")
         elif status.maintenance:
             chip = badge("LG maintenance", "warn")
+        elif status.tv_alert is not None:
+            chip = badge(status.tv_state, "error")
         elif status.last_ok is None:
             chip = badge("Not run yet")
         elif status.needs_signin:
             chip = badge("Sign in on TV", "error")
         else:
             chip = badge("Renewed", "ok") if status.last_ok else badge("Failed", "error")
+        stats = [
+            stat("Last attempt", _clock(status.last_attempt)),
+            stat("Last success", _clock(status.last_success)),
+            stat("Next renewal", _clock(self.next_run) if session.enabled else "Paused"),
+            stat("Time left", None if status.remaining_hours is None else int(status.remaining_hours), "h"),
+        ]
+        actions = [
+            action(
+                "renew", "Renew now", {"session": session.notification_id}, disabled=status.running, icon="mdi:refresh"
+            )
+        ]
+        if session.host:
+            stats.append(stat("TV token", status.tv_state or "Not checked"))
+            stats.append(stat("Last TV check", _clock(status.tv_checked)))
+            actions.append(
+                action("check_tv", "Check TV now", {"session": session.notification_id}, icon="mdi:television")
+            )
+            if status.tv_alert == "hostkey":
+                actions.append(
+                    action(
+                        "trust_tv",
+                        "Trust this TV again",
+                        {"session": session.notification_id},
+                        confirm="Only do this if you reset or replaced the TV. Forget its old SSH identity?",
+                        danger=True,
+                        icon="mdi:shield-alert",
+                    )
+                )
         return {
             "title": session.name,
             "icon": "mdi:television",
             "subtitle": "Custom renewal URL" if session.custom_url else "Developer Mode session token",
             "badge": chip,
             "off": not session.enabled,
-            "stats": [
-                stat("Last attempt", _clock(status.last_attempt)),
-                stat("Last success", _clock(status.last_success)),
-                stat("Next renewal", _clock(self.next_run) if session.enabled else "Paused"),
-                stat("Time left", None if status.remaining_hours is None else int(status.remaining_hours), "h"),
-            ],
+            "stats": stats,
             "toggles": [
                 toggle(
                     f"session:{session.notification_id}:enabled",
@@ -1037,15 +1402,7 @@ class App:
                     icon="mdi:autorenew",
                 )
             ],
-            "actions": [
-                action(
-                    "renew",
-                    "Renew now",
-                    {"session": session.notification_id},
-                    disabled=status.running,
-                    icon="mdi:refresh",
-                ),
-            ],
+            "actions": actions,
         }
 
     @staticmethod
