@@ -9,12 +9,16 @@ Developer Mode app; it is stored as received and never decrypted to disk.
 from __future__ import annotations
 
 import ipaddress
+import json
+import logging
 import os
 import re
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,11 +39,20 @@ PUBLIC_KEY_STARTS = ("ssh-rsa ", "ssh-ed25519 ", "ssh-dss ", "ecdsa-")
 KEY_LINE_CHARS = 64
 TOKEN_FILE = "/var/luna/preferences/devmode_enabled"  # noqa: S105 - a path on the TV, not a secret
 TOKEN_RE = re.compile(r"^[0-9A-Za-z_-]{32,128}$")
+# The session countdown the TV itself keeps (what its Developer Mode app shows).
+SESSION_STATUS_URI = "luna://com.palmdts.devmode.service/devSessionTimeStatus"
+SESSION_FILE = "/var/luna/preferences/devSessionTime"
+LUNA_SEND = "luna-send-pub"
+SESSION_TIME_RE = re.compile(r"^(\d{1,4})h:([0-5]\d)m$")  # "980h:12m"
+EPOCH_SECONDS_MIN = 1_000_000_000  # a plausible expiry as an epoch in seconds (2001 or later)
+EPOCH_MILLIS_MIN = 1_000_000_000_000  # ... and the same in milliseconds
 SSH_TIMEOUT = 25
 SSH_CONNECT_TIMEOUT = 8
 SSH_FAILED = 255  # ssh's own exit code; anything else is the remote command's
 ASKPASS = Path(__file__).resolve().parent / "askpass.sh"
 PASSPHRASE_ENV = "LG_TV_PASSPHRASE"  # noqa: S105 - an env var name, not a secret
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class TvError(Exception):
@@ -164,6 +177,12 @@ def fetch_key(tv: Tv) -> None:
 def ssh_command(tv: Tv, ssh: str = "ssh") -> list[str]:
     """The ssh call that prints the token file (an argument list: no shell, no passphrase)."""
 
+    return _ssh_argv(tv, ("cat", TOKEN_FILE), ssh)
+
+
+def _ssh_argv(tv: Tv, remote: Sequence[str], ssh: str) -> list[str]:
+    """The ssh call for one fixed, read-only command on the TV (one argv element per word)."""
+
     return [
         ssh,
         "-p",
@@ -181,9 +200,37 @@ def ssh_command(tv: Tv, ssh: str = "ssh") -> list[str]:
         f"-oConnectTimeout={SSH_CONNECT_TIMEOUT}",
         "-oLogLevel=ERROR",
         f"{SSH_USER}@{tv.host.reveal()}",
-        "cat",
-        TOKEN_FILE,
+        *remote,
     ]
+
+
+def _ssh(tv: Tv, remote: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    """Run one read-only command on the TV (raises TvError when ssh cannot run at all)."""
+
+    ssh = shutil.which("ssh")
+    if ssh is None:
+        raise TvError("no ssh client in this image")
+    env = {
+        **os.environ,
+        PASSPHRASE_ENV: tv.passphrase.reveal(),
+        "SSH_ASKPASS": str(ASKPASS),
+        "SSH_ASKPASS_REQUIRE": "force",
+        "DISPLAY": "none",
+    }
+    try:
+        return subprocess.run(  # noqa: S603 - fixed argument list, validated IP address and port
+            _ssh_argv(tv, remote, ssh),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=SSH_TIMEOUT,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as err:
+        raise UnreachableError("the TV did not answer in time") from err
+    except OSError as err:
+        raise TvError("ssh could not be started") from err
 
 
 def parse_result(returncode: int, stdout: str, stderr: str) -> str:
@@ -207,33 +254,66 @@ def parse_result(returncode: int, stdout: str, stderr: str) -> str:
 def read_token(tv: Tv) -> str:
     """The session token the TV holds right now (raises TvError)."""
 
-    ssh = shutil.which("ssh")
-    if ssh is None:
-        raise TvError("no ssh client in this image")
-    env = {
-        **os.environ,
-        PASSPHRASE_ENV: tv.passphrase.reveal(),
-        "SSH_ASKPASS": str(ASKPASS),
-        "SSH_ASKPASS_REQUIRE": "force",
-        "DISPLAY": "none",
-    }
-    try:
-        done = subprocess.run(  # noqa: S603 - fixed argument list, validated IP address and port
-            ssh_command(tv, ssh),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=SSH_TIMEOUT,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as err:
-        raise UnreachableError("the TV did not answer in time") from err
-    except OSError as err:
-        raise TvError("ssh could not be started") from err
+    done = _ssh(tv, ("cat", TOKEN_FILE))
     token = parse_result(done.returncode, done.stdout, done.stderr)
     redact.register(token)
     return token
+
+
+def parse_session_text(text: str) -> float | None:
+    """'980h:12m' -> 980.2 hours left; also reads an expiry epoch in seconds or milliseconds."""
+
+    value = text.strip()
+    match = SESSION_TIME_RE.match(value)
+    if match:
+        return int(match[1]) + int(match[2]) / 60
+    try:
+        number = int(value)
+    except ValueError:
+        return None
+    seconds = number / 1000 if number >= EPOCH_MILLIS_MIN else float(number)
+    if seconds < EPOCH_SECONDS_MIN:
+        return None
+    return max(0.0, (seconds - time.time()) / 3600)
+
+
+def parse_remain_session(text: str) -> float | None:
+    """The TV service's answer '{"remainSession":"980h:12m"}' -> 980.2 (None for anything else)."""
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return parse_session_text(str(payload.get("remainSession") or ""))
+
+
+def read_session(tv: Tv) -> float | None:
+    """The session time the TV itself reports, in hours (None when it cannot be read).
+
+    Reads the official Developer Mode service first, then its session-time file.
+    Both are read-only, and a failure is only "unknown": the value is shown next
+    to LG's, which stays the one that decides when the session expires.
+    """
+
+    attempts: list[tuple[tuple[str, ...], Callable[[str], float | None]]] = [
+        ((LUNA_SEND, "-n", "1", "-f", SESSION_STATUS_URI, "{}"), parse_remain_session),
+        (("cat", SESSION_FILE), parse_session_text),
+    ]
+    for remote, parse in attempts:
+        try:
+            done = _ssh(tv, remote)
+        except TvError:
+            return None
+        if done.returncode == SSH_FAILED:
+            continue
+        hours = parse(done.stdout)
+        if hours is not None:
+            _LOGGER.debug("The TV reports %d h of session time left", int(hours))
+            return hours
+        _LOGGER.debug("The TV's answer to %s is not a time: %r", remote[0], done.stdout[:120].strip())
+    return None
 
 
 def read_token_with_key(tv: Tv, *, own_key: bool = False) -> str:

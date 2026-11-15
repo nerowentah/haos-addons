@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.13.0
+
+- **The TV's own countdown is shown as Time left.** With `host` set, the app now asks the TV's Developer Mode service for the session time the TV itself counts down (the number in its Developer Mode app) and shows it as **Time left**, with **LG reports** next to it. If the TV cannot be read, LG's value is shown as before. That explains why the panel used to say 1000 h while the TV said 980 h: LG's answer was taken right after a renewal and the TV keeps its own, older countdown until a renewal is made on the TV itself. **LG reports** is the value that decides when the session expires.
+- **Time left from** shows when the value was taken, and the log names a gap of more than 24 hours between the two clocks once.
+- The read is a second fixed, read-only command over the SSH login the app already uses. Nothing on the TV is changed.
+
 ## 1.12.0
 
 - **Warns when a session is running out.** When LG says a TV's session has less than 168 hours (7 days) left, the TV's card shows **N h left** in place of *Renewed*, the log has a warning, and you get one notification (when `notify_on_failure` is on). A freshly renewed session has far more than that, so this means renewals are being accepted without extending the session. The alert is armed again once the time left is back above 168 hours.
