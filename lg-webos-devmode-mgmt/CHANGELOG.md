@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.8.0
+
+- **Tells you when the TV needs a new sign-in.** When LG no longer accepts a TV's token (`ERR_005`, *Check user session*, or a sign-in page instead of an answer), the TV's card shows **Sign in on TV** and you get one notification with the steps: sign in to the Developer Mode app on the TV with your LG account email and password, then save the TV's new token. This happens after the Developer Mode app updates itself and asks you to sign in again. It is not retried, because a token LG has dropped does not come back.
+- **Every renewal is verified.** After LG accepts a renewal, the app asks LG's status address whether the session is alive and how long it has left. The TV's card shows it as **Time left**. A custom `url` is verified only when it points at `developer.lge.com`.
+- **An unreadable answer is now a failure.** An empty answer or a web page used to count as a successful renewal, so a session could expire while the panel said *Renewed*. It is now retried and then reported.
+- **Docs:** sessions last up to 1000 hours on current TVs (about 50 on older firmware), and a new section covers what to do after a sign-in on the TV.
+
 ## 1.7.13
 
 - **Image security updates.** The image now applies Alpine's package updates when it is built (this release picks up fixes for krb5 and zlib), and the unused `tempio` binary from the base image is removed. No functional change.

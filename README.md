@@ -23,7 +23,7 @@ https://github.com/nerowentah/haos-addons
 | | App | Version | Arch | What it does |
 | --- | --- | --- | --- | --- |
 | <img src="tnb-usage-checker/icon.png" width="32" alt=""> | [TNB Usage Checker](tnb-usage-checker/) | 0.5.2 | aarch64, amd64 | Imports myTNB usage and cost into the Energy dashboard and estimates your TNB bill live, for multiple accounts under one myTNB login. |
-| <img src="lg-webos-devmode-mgmt/icon.png" width="32" alt=""> | [LG webOS DevMode Mgmt](lg-webos-devmode-mgmt/) | 1.7.10 | aarch64, amd64 | Renews LG webOS Developer Mode sessions on a schedule so they never expire. |
+| <img src="lg-webos-devmode-mgmt/icon.png" width="32" alt=""> | [LG webOS DevMode Mgmt](lg-webos-devmode-mgmt/) | 1.8.0 | aarch64, amd64 | Renews LG webOS Developer Mode sessions on a schedule so they never expire. |
 | <img src="mobile-device-manager/icon.png" width="32" alt=""> | [Mobile Device Manager](mobile-device-manager/) | 0.1.8 | aarch64, amd64 | Lists your Companion app devices with last seen, battery and every automation, script and notify call that uses them. Flags stale and duplicate devices and removes them safely. |
 | <img src="ranhill-saj-bill-checker/icon.png" width="32" alt=""> | [Ranhill SAJ Bill Checker](ranhill-saj-bill-checker/) | 0.2.6 | aarch64, amd64 | Shows the amount due on your Ranhill SAJ (Johor) water accounts, read from the public Quick Payment page with no login. |
 | <img src="api-key-manager/icon.png" width="32" alt=""> | [API Key Manager](api-key-manager/) | 0.1.3 | aarch64, amd64 | Lists every user's long-lived access tokens (API keys) with description, owner, last used and IP. Flags unused, vague, expired, deactivated-owner and admin keys, and lets you approve, mark suspicious and annotate each one. Read-only. |

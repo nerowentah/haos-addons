@@ -34,7 +34,7 @@ class LgMaintenanceTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.notified: list[str] = []
 
-        def notify(session: run.Session, _targets: list[str], _token: str) -> None:
+        def notify(session: run.Session, _targets: list[str], _token: str, _reason: str = "failed") -> None:
             self.notified.append(session.name)
 
         self.patch(run, "notify_failure", notify)
@@ -63,9 +63,9 @@ class LgMaintenanceTest(unittest.TestCase):
         app = self.app([f"daily {start}-{end}"])
         calls: list[str] = []
 
-        def renew(session: run.Session) -> bool:
+        def renew(session: run.Session) -> run.RenewResult:
             calls.append(session.name)
-            return True
+            return run.RenewResult("ok")
 
         self.patch(run, "renew_session", renew)
         app._tick()
@@ -77,7 +77,7 @@ class LgMaintenanceTest(unittest.TestCase):
     def test_maintenance_answer_backs_off_without_alert(self) -> None:
         app = self.app([])
 
-        def down(_session: run.Session) -> bool:
+        def down(_session: run.Session) -> run.RenewResult:
             raise run.VendorMaintenanceError("LG developer site is under maintenance (HTTP 503)")
 
         self.patch(run, "renew_session", down)
@@ -94,7 +94,7 @@ class LgMaintenanceTest(unittest.TestCase):
         app._tick()
         self.assertGreater(app.next_run - time.time(), (first - time.time()) * 1.5)  # doubled
 
-        self.patch(run, "renew_session", lambda _session: True)
+        self.patch(run, "renew_session", lambda _session: run.RenewResult("ok"))
         app.next_run = time.time()
         app._tick()
         self.assertFalse(app.status["tv"].maintenance)

@@ -45,6 +45,8 @@ CONFIG_PATH = Path("/data/options.json")
 PHONES_PATH = Path("/data/phones.json")
 WEB_DIR = Path(__file__).resolve().parent / "web"
 LG_DEV_ENDPOINT = "https://developer.lge.com/secure/ResetDevModeSession.dev"
+LG_CHECK_ENDPOINT = "https://developer.lge.com/secure/CheckDevModeSession.dev"
+LG_HOST = "developer.lge.com"
 SUPERVISOR_API = "http://supervisor"
 SUPERVISOR_CORE_API = f"{SUPERVISOR_API}/core/api"
 VERSION = os.environ.get("LG_RENEW_VERSION", "dev")
@@ -61,6 +63,10 @@ SUPERVISOR_TOKEN_ENV_CANDIDATES = (
 HTTP_TIMEOUT = 30
 SUCCESS_RESULTS = {"success"}
 INFO_MSG_CODES = {"GNL", "OK"}
+SIGNIN_CODES = {"ERR_005"}  # "Check user session": LG no longer knows this token
+SIGNIN_MSG_RE = re.compile(r"check\s+user\s+session", re.IGNORECASE)
+SIGNIN_PAGE_RE = re.compile(r"type=[\"']?password|sign\s?in|log\s?in", re.IGNORECASE)
+REMAINING_RE = re.compile(r"^(\d+):(\d{2}):(\d{2})$")  # "999:13:25" = hours:minutes:seconds left
 LOOP_SECONDS = 30
 OPTIONS_CHECK_SECONDS = 30
 PHONE_CHECK_SECONDS = 300
@@ -87,12 +93,28 @@ class Session:
     url: redact.Secret  # carries the session token: revealed only where the request is sent
     enabled: bool = True
     custom_url: bool = False
+    check_url: redact.Secret | None = None  # LG's status address for the same token (None: not verifiable)
 
     @property
     def notification_id(self) -> str:
         """Id used for notifications, panel switches and the status table."""
 
         return slugify(self.name)
+
+
+type Outcome = Literal["ok", "signin", "failed"]
+
+
+@dataclass(frozen=True, slots=True)
+class RenewResult:
+    """How one renewal ended: "signin" means LG no longer accepts the token."""
+
+    outcome: Outcome
+    remaining_hours: float | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome == "ok"
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,11 +272,17 @@ def build_sessions(raw_sessions: list[object]) -> tuple[Session, ...]:
             parts = urllib.parse.urlsplit(url)
             if parts.scheme != "https" or not parts.hostname:
                 raise ConfigError(f"Session '{name}': url must be an https:// address (it carries the session token)")
+            found = urllib.parse.parse_qs(parts.query).get("sessionToken", [""])[0]
+            token = found if parts.hostname == LG_HOST else ""  # only LG's own site can be asked for the status
         elif token:
-            redact.register(token)  # never in a log line, with or without the rest of the address
             url = f"{LG_DEV_ENDPOINT}?sessionToken={urllib.parse.quote(token, safe='')}"
         else:
             raise ConfigError(f"Session '{name}' requires either a token or a full url")
+
+        check_url = None
+        if token:
+            redact.register(token)  # never in a log line, with or without the rest of the address
+            check_url = redact.Secret(f"{LG_CHECK_ENDPOINT}?sessionToken={urllib.parse.quote(token, safe='')}")
 
         enabled = entry.get("enabled")
         sessions.append(
@@ -263,6 +291,7 @@ def build_sessions(raw_sessions: list[object]) -> tuple[Session, ...]:
                 url=redact.Secret(url),
                 enabled=enabled if isinstance(enabled, bool) else True,
                 custom_url=bool(entry.get("url")),
+                check_url=check_url,
             )
         )
 
@@ -349,71 +378,150 @@ def write_options(supervisor_token: str, options: dict[str, object]) -> None:
     _supervisor_request(supervisor_token, "/addons/self/options", {"options": options})
 
 
-def handle_response(body: str, status: int, session_name: str) -> bool:
-    """Interpret the LG Dev API response; returns whether the renewal succeeded."""
-
-    if not body.strip():
-        _LOGGER.info("Renewal for '%s' returned an empty body (HTTP %s); assuming success", session_name, status)
-        return True
+def _payload(body: str) -> dict[str, object] | None:
+    """LG's JSON answer, or None when the body is empty or something else (e.g. a web page)."""
 
     try:
         payload = json.loads(body)
     except json.JSONDecodeError:
-        _LOGGER.info("Renewal for '%s' returned non-JSON (HTTP %s); assuming success", session_name, status)
-        return True
+        return None
+    return payload if isinstance(payload, dict) else None
 
-    if not isinstance(payload, dict):
-        _LOGGER.info(
-            "Renewal for '%s' returned an unexpected payload shape (HTTP %s); assuming success", session_name, status
-        )
-        return True
 
-    result = str(payload.get("result") or "").lower()
-    error_code = str(payload.get("errorCode") or "")
+def _wants_signin(payload: dict[str, object]) -> bool:
+    """Whether LG's answer says the session token is no longer known (a new sign-in on the TV)."""
+
+    return str(payload.get("errorCode") or "") in SIGNIN_CODES or bool(
+        SIGNIN_MSG_RE.search(str(payload.get("errorMsg") or ""))
+    )
+
+
+def _succeeded(payload: dict[str, object]) -> bool:
+    return str(payload.get("result") or "").lower() in SUCCESS_RESULTS and str(payload.get("errorCode") or "") == "200"
+
+
+def handle_response(body: str, status: int, session_name: str, *, redirected: bool = False) -> RenewResult:
+    """Interpret LG's answer to a renewal (the body is never logged: it may repeat the token)."""
+
+    payload = _payload(body)
+    if payload is None:
+        if redirected or SIGNIN_PAGE_RE.search(body):
+            _LOGGER.error("Renewal for '%s' was answered with a sign-in page (HTTP %s)", session_name, status)
+            return RenewResult("signin")
+        _LOGGER.error("Renewal for '%s' returned an answer that is not LG's JSON (HTTP %s)", session_name, status)
+        return RenewResult("failed")
+
     error_msg = str(payload.get("errorMsg") or "")
-
-    if result in SUCCESS_RESULTS and error_code == "200":
+    if _succeeded(payload):
         if error_msg and error_msg not in INFO_MSG_CODES:
             _LOGGER.info("Renewal for '%s' succeeded: %s", session_name, error_msg)
         else:
             _LOGGER.info("Renewal for '%s' succeeded", session_name)
-        return True
+        return RenewResult("ok")
 
     _LOGGER.error(
         "Renewal for '%s' failed per LG API: result=%s errorCode=%s errorMsg=%s",
         session_name,
-        result,
-        error_code,
+        str(payload.get("result") or "").lower(),
+        str(payload.get("errorCode") or ""),
         error_msg,
     )
-    return False
+    if _wants_signin(payload):
+        _LOGGER.error("LG no longer accepts the token of '%s': sign in on the TV and save its new token", session_name)
+        return RenewResult("signin")
+    return RenewResult("failed")
+
+
+def remaining_hours(text: str) -> float | None:
+    """'999:13:25' -> 999.22 (None when LG's text is not a time)."""
+
+    match = REMAINING_RE.match(text.strip())
+    if not match:
+        return None
+    hours, minutes, seconds = (int(part) for part in match.groups())
+    return hours + minutes / 60 + seconds / 3600
 
 
 class VendorMaintenanceError(Exception):
     """LG's developer site answered with a maintenance page or HTTP 503."""
 
 
-def renew_session(session: Session) -> bool:
-    """Renew one dev session and return whether it succeeded (raises VendorMaintenanceError)."""
+def _get(url: redact.Secret) -> tuple[int, str, bool]:
+    """GET an LG address: status, body and whether LG sent the request somewhere else.
 
-    _LOGGER.info("Renewing dev session '%s'", session.name)
+    Raises VendorMaintenanceError for a maintenance answer; other errors are urllib's.
+    """
+
+    target = url.reveal()
     try:
-        with urllib.request.urlopen(session.url.reveal(), timeout=HTTP_TIMEOUT) as response:  # noqa: S310 - https only (build_sessions)
+        with urllib.request.urlopen(target, timeout=HTTP_TIMEOUT) as response:  # noqa: S310 - https only (build_sessions)
             body = response.read().decode("utf-8", errors="replace")
-            if maintenance.looks_like_maintenance(response.status, body):
-                raise VendorMaintenanceError(f"LG developer site is under maintenance (HTTP {response.status})")
-            return handle_response(body, response.status, session.name)
+            status = int(response.status)
+            final = urllib.parse.urlsplit(str(response.geturl()))
     except urllib.error.HTTPError as err:
         if maintenance.looks_like_maintenance(err.code):
             raise VendorMaintenanceError(f"LG developer site is under maintenance (HTTP {err.code})") from err
+        raise
+    if maintenance.looks_like_maintenance(status, body):
+        raise VendorMaintenanceError(f"LG developer site is under maintenance (HTTP {status})")
+    asked = urllib.parse.urlsplit(target)
+    return status, body, (asked.hostname, asked.path) != (final.hostname, final.path)
+
+
+def check_session(session: Session) -> RenewResult:
+    """Ask LG whether the session is alive and how long it has left.
+
+    Called after a renewal LG accepted. When the status cannot be read (no
+    status address, network error, maintenance, an answer that is not JSON) the
+    renewal stays a success: only a clear "no such session" turns it around.
+    """
+
+    if session.check_url is None:
+        return RenewResult("ok")
+    try:
+        status, body, redirected = _get(session.check_url)
+    except (VendorMaintenanceError, urllib.error.URLError, OSError):
+        _LOGGER.info("Could not read the remaining time of '%s' from LG", session.name)
+        return RenewResult("ok")
+
+    payload = _payload(body)
+    if payload is None:
+        if redirected or SIGNIN_PAGE_RE.search(body):
+            _LOGGER.error("LG asks for a sign-in when checking '%s' (HTTP %s)", session.name, status)
+            return RenewResult("signin")
+        _LOGGER.debug("LG's status answer for '%s' is not JSON (HTTP %s)", session.name, status)
+        return RenewResult("ok")
+    if not _succeeded(payload):
+        _LOGGER.error(
+            "LG does not know the session of '%s' (errorCode=%s): sign in on the TV and save its new token",
+            session.name,
+            str(payload.get("errorCode") or ""),
+        )
+        return RenewResult("signin")
+
+    hours = remaining_hours(str(payload.get("errorMsg") or ""))
+    if hours is not None:
+        _LOGGER.info("Session '%s' has %d h left", session.name, int(hours))
+    return RenewResult("ok", hours)
+
+
+def renew_session(session: Session) -> RenewResult:
+    """Renew one dev session, then verify it with LG (raises VendorMaintenanceError)."""
+
+    _LOGGER.info("Renewing dev session '%s'", session.name)
+    try:
+        status, body, redirected = _get(session.url)
+    except urllib.error.HTTPError as err:
         _LOGGER.exception("Renewal for '%s' failed: HTTP %s %s", session.name, err.code, err.reason)
-        return False
+        return RenewResult("failed")
     except urllib.error.URLError as err:
         _LOGGER.exception("Renewal for '%s' failed: %s", session.name, err.reason)
-        return False
+        return RenewResult("failed")
     except OSError:
         _LOGGER.exception("Renewal for '%s' failed", session.name)
-        return False
+        return RenewResult("failed")
+    result = handle_response(body, status, session.name, redirected=redirected)
+    return check_session(session) if result.ok else result
 
 
 def renew_with_retries(
@@ -421,12 +529,17 @@ def renew_with_retries(
     retries: int,
     backoff_seconds: int = 30,
     sleep: Callable[[float], object] = time.sleep,
-) -> bool:
-    """Renew a session, retrying with exponential backoff on failure."""
+) -> RenewResult:
+    """Renew a session, retrying with exponential backoff on failure.
 
+    A "signin" answer is final: a token LG no longer knows does not come back.
+    """
+
+    result = RenewResult("failed")
     for attempt in range(retries + 1):
-        if renew_session(session):
-            return True
+        result = renew_session(session)
+        if result.outcome != "failed":
+            return result
         if attempt < retries:
             wait = backoff_seconds * (2**attempt)
             _LOGGER.warning(
@@ -437,7 +550,7 @@ def renew_with_retries(
                 retries,
             )
             sleep(wait)
-    return False
+    return result
 
 
 def discover_mobile_targets(supervisor_token: str) -> list[str] | None:
@@ -517,22 +630,31 @@ def effective_mobile_targets(discovered: list[str], prefs: dict[str, bool]) -> l
     return [target for target in discovered if prefs.get(target, True)]
 
 
-def notify_failure(session: Session, targets: list[str], supervisor_token: str) -> None:
+def notify_failure(session: Session, targets: list[str], supervisor_token: str, reason: Outcome = "failed") -> None:
     """Notify about a failed renewal to Home Assistant.
 
     Routes to the HA notify service (e.g. the mobile app) when notification
     targets are configured; otherwise falls back to a persistent notification.
+    ``reason`` "signin" says what to do on the TV instead of the general text.
     """
 
     if not supervisor_token:
         _LOGGER.warning("Cannot notify for '%s': no supervisor token available", session.name)
         return
 
-    title = "LG webOS DevMode renewal failed"
-    message = (
-        f"The LG webOS Developer Mode session '{session.name}' could not be renewed "
-        "after exhausting all retries. Renew it manually or the dev session may expire."
-    )
+    if reason == "signin":
+        title = "LG webOS DevMode needs a new sign-in"
+        message = (
+            f"LG no longer accepts the Developer Mode session token of '{session.name}'. "
+            "Open the Developer Mode app on the TV, sign in with your LG account email and password, "
+            "switch Dev Mode on, then read the TV's new token and save it in the app's Configuration tab."
+        )
+    else:
+        title = "LG webOS DevMode renewal failed"
+        message = (
+            f"The LG webOS Developer Mode session '{session.name}' could not be renewed "
+            "after exhausting all retries. Renew it manually or the dev session may expire."
+        )
 
     if targets:
         for target in targets:
@@ -568,6 +690,8 @@ class SessionStatus:
     last_ok: bool | None = None
     running: bool = False
     maintenance: bool = False
+    needs_signin: bool = False  # LG no longer accepts the token
+    remaining_hours: float | None = None  # as LG reported after the last good renewal
 
 
 def _clock(epoch: float | None) -> str | None:
@@ -769,7 +893,7 @@ class App:
             status.running = True
             status.last_attempt = time.time()
             try:
-                ok = renew_with_retries(session, self.config.retries, sleep=self.stopping.wait)
+                result = renew_with_retries(session, self.config.retries, sleep=self.stopping.wait)
             except VendorMaintenanceError as err:
                 status.running = False
                 for other in sessions:
@@ -778,12 +902,15 @@ class App:
                 return False
             status.running = False
             status.maintenance = False
-            status.last_ok = ok
-            if ok:
+            already_asked = status.needs_signin  # one "sign in" alert, not one per interval
+            status.last_ok = result.ok
+            status.needs_signin = result.outcome == "signin"
+            status.remaining_hours = result.remaining_hours
+            if result.ok:
                 status.last_success = time.time()
-            elif self.config.notify_on_failure:
+            elif self.config.notify_on_failure and not (status.needs_signin and already_asked):
                 targets = effective_mobile_targets(self.discovered, self.phones)
-                notify_failure(session, targets, self.token)
+                notify_failure(session, targets, self.token, result.outcome)
         self.backoff.reset()
         return True
 
@@ -885,6 +1012,8 @@ class App:
             chip = badge("LG maintenance", "warn")
         elif status.last_ok is None:
             chip = badge("Not run yet")
+        elif status.needs_signin:
+            chip = badge("Sign in on TV", "error")
         else:
             chip = badge("Renewed", "ok") if status.last_ok else badge("Failed", "error")
         return {
@@ -897,6 +1026,7 @@ class App:
                 stat("Last attempt", _clock(status.last_attempt)),
                 stat("Last success", _clock(status.last_success)),
                 stat("Next renewal", _clock(self.next_run) if session.enabled else "Paused"),
+                stat("Time left", None if status.remaining_hours is None else int(status.remaining_hours), "h"),
             ],
             "toggles": [
                 toggle(

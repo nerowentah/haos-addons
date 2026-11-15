@@ -1,6 +1,6 @@
 # LG webOS DevMode Mgmt
 
-LG webOS Developer Mode sessions expire after about 50 hours. That silently breaks access for `webostv` and for the LG integrations you use through Dev Mode. This app calls the LG Developer API on a schedule, so the session never lapses and you never have to log in again by hand.
+LG webOS Developer Mode sessions expire: after up to 1000 hours on current TVs, about 50 hours on older firmware. That silently breaks access for `webostv` and for the LG integrations you use through Dev Mode. This app calls the LG Developer API on a schedule, so the session never lapses. It also checks with LG that the session is still alive, and tells you when the TV needs a new sign-in.
 
 ## Installation
 
@@ -37,7 +37,7 @@ sessions:
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `interval_hours` | int | `48` | Hours between renewals (1-168). Keep this well below the ~50-hour session lifetime. |
+| `interval_hours` | int | `48` | Hours between renewals (1-168). The default suits every TV: sessions last up to 1000 hours on current TVs and about 50 on older firmware. |
 | `maintenance_windows` | list | `daily 00:00-06:00` | When LG's developer site may be down for maintenance (Home Assistant's timezone), one per line: `daily 00:00-06:00`, `sun 01:00-05:00`, `mon-fri 23:00-02:00` (crosses midnight), `weekends 02:00-04:00` or `mon,wed 00:00-24:00`. No renewal is attempted inside a window; a renewal due then waits until it ends. An empty list allows renewing at any time. |
 | `retries` | int | `3` | Retries per TV, with backoff, before a renewal counts as failed (0-10). |
 | `notify_on_failure` | bool | `true` | Notify when a renewal fails after all retries. See [Notifications](#notifications). |
@@ -60,7 +60,7 @@ Changes made in the Configuration tab are picked up within about 30 seconds. You
 1. **Turn on Developer Mode on the TV.**
    1. Install the **Developer Mode** app on the TV.
    2. Open **Settings → General → About this TV** and double-tap the OS version.
-   3. Launch the Developer Mode app, sign in with an LG account and switch Developer Mode on.
+   3. Launch the Developer Mode app, sign in with the email-based ID and password of your LG Developer account, and switch Developer Mode on.
 2. **Turn on the Key Server** in the Developer Mode app.
 3. **Save the TV's SSH private key** on your computer.
    - **Option A (no LG tooling):** download the key from the TV's key server on port 9991.
@@ -82,13 +82,25 @@ Changes made in the Configuration tab are picked up within about 30 seconds. You
    - In PowerShell, the backticks continue the line. Alternatively, paste the whole command as one line.
 5. **Paste the entire printed value** into the session's `token` field. A cut-off or stale value makes LG return `ERR_005, Check user session`.
 
+## After a Developer Mode app update or a new sign-in
+
+The token belongs to one sign-in. When the Developer Mode app on the TV asks for your LG account email and password again (for example after the app updates itself, or after Developer Mode was switched off), the TV gets a **new token** and the saved one stops matching.
+
+- **What the app shows:** when LG no longer accepts the saved token, the TV's card shows **Sign in on TV** and you get one notification saying so. The app keeps trying on the schedule, without repeating the alert.
+- **What to do:**
+  1. On the TV, open the Developer Mode app, sign in and switch Dev Mode on.
+  2. Read the token again (step 4 above).
+  3. Save it in the session's `token` field. The next renewal clears the warning; **Renew now** does it at once.
+- **Check after every sign-in on the TV, even without a warning.** LG can keep accepting the old token for a while, so the card may still say *Renewed* while the TV counts down on a different token. Compare the value from step 4 with the one you saved.
+
 ## Panel
 
 Open **LG DevMode** from the sidebar, or click **Open web UI** on the app page. Only administrators see it. The panel follows your Home Assistant theme, including dark mode.
 
 - **TV cards:**
-  - Status: *Renewed*, *Failed*, *Renewing…*, *Paused* or *Not run yet*.
+  - Status: *Renewed*, *Failed*, *Sign in on TV*, *LG maintenance*, *Renewing…*, *Paused* or *Not run yet*.
   - The last attempt, last success and next renewal.
+  - **Time left:** the session time LG reported after the last renewal (`-` when LG gave none, or for a custom `url` outside `developer.lge.com`).
   - An **Auto renew** switch and a **Renew now** button. **Renew now** also works on a paused TV.
 - **Schedule card:** the interval and retries, the **Failure notifications** switch and **Renew all now**.
 - **Phones card:** one switch per Companion app linked to this Home Assistant.
@@ -97,7 +109,7 @@ Every switch applies immediately. TV and notification switches are saved into th
 
 ## Notifications
 
-When a renewal fails after all retries, the app notifies every phone that is switched on in the **Phones** card.
+When a renewal fails after all retries, or LG no longer accepts a TV's token, the app notifies every phone that is switched on in the **Phones** card.
 
 - Phones are found automatically from the `notify.mobile_app_*` services, at start and every 5 minutes.
 - New phones are on by default. Phones that are no longer linked disappear from the list. You never type phone names.
@@ -126,7 +138,8 @@ When a renewal fails after all retries, the app notifies every phone that is swi
 - **What do the `s6-rc` lines in the log mean?** The app runs as an s6-overlay service, the process supervisor built into Home Assistant app images. Only s6 warnings and errors are logged. Older versions printed `legacy-cont-init`, `legacy-services` and `s6-rc.d is empty` on every start. Those were harmless, and came from running without a proper service definition. The service is registered in the `user` bundle under `/etc/s6-overlay/user-bundles.d`, so the old `defining user bundles ... is deprecated` line no longer appears.
 - **Invalid URL:** a session's `url` must be an `https://` address, because it carries the session token. It is masked in the Configuration tab.
 - **Network errors:** make sure the Home Assistant host can reach `developer.lge.com`.
-- **LG answers "not success" / `ERR_005`:** the token is stale. Read a fresh one from the TV and update the session.
+- **TV shows "Sign in on TV" (`ERR_005`, *Check user session*, or a sign-in page):** LG no longer accepts the saved token. Follow [After a Developer Mode app update or a new sign-in](#after-a-developer-mode-app-update-or-a-new-sign-in).
+- **TV shows "Failed" with `not LG's JSON` in the log:** LG answered with something the app can't read (an empty page, an error page). Earlier versions counted this as a success. It is retried, then reported.
 - **No notifications:**
   - Check that `notify_on_failure` is on and that the phone's switch is on in the **Phones** card.
   - The phone must have the Companion app linked to this Home Assistant.
