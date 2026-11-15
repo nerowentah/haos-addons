@@ -121,7 +121,16 @@ class Session:
 type Outcome = Literal["ok", "signin", "failed"]
 # What a notification is about: a renewal outcome, or something found on the TV.
 type Reason = Literal[
-    "failed", "signin", "changed", "changed_secret", "devmode_off", "keyserver", "passphrase", "key", "hostkey"
+    "failed",
+    "signin",
+    "changed",
+    "changed_secret",
+    "devmode_off",
+    "keyserver",
+    "passphrase",
+    "key",
+    "hostkey",
+    "low_session",
 ]
 
 
@@ -731,6 +740,8 @@ def effective_mobile_targets(discovered: list[str], prefs: dict[str, bool]) -> l
     return [target for target in discovered if prefs.get(target, True)]
 
 
+LOW_SESSION_HOURS = 168  # 7 days: a renewed session has far more, so less means renewals stopped extending it
+
 SIGNIN_STEPS = (
     "Open the Developer Mode app on the TV, sign in with your LG account email and password, "
     "switch Dev Mode on, then read the TV's new token and save it in the app's Configuration tab."
@@ -794,6 +805,14 @@ def notification_text(session: Session, reason: Reason) -> tuple[str, str]:
                 "Developer Mode is switched on again: save the TV's current private key, or check the passphrase."
             ),
         ),
+        "low_session": (
+            "LG webOS DevMode session is running out",
+            (
+                f"The Developer Mode session '{name}' has less than {LOW_SESSION_HOURS} hours left according to LG, "
+                "so renewals are not extending it. On the TV, open the Developer Mode app and check that it is "
+                "signed in and Dev Mode is on. Then press Renew now on the TV's card in the LG DevMode panel."
+            ),
+        ),
         "hostkey": (
             "LG webOS DevMode: the TV's identity changed",
             (
@@ -853,10 +872,23 @@ class SessionStatus:
     running: bool = False
     maintenance: bool = False
     needs_signin: bool = False  # LG no longer accepts the token
-    remaining_hours: float | None = None  # as LG reported after the last good renewal
+    remaining_hours: float | None = None  # as LG last reported (kept until LG reports again)
+    remaining_at: float | None = None  # when LG reported it
+    low_alerted: bool = False  # the user has been told that less than LOW_SESSION_HOURS remain
     tv_state: str = ""  # outcome of the last token read from the TV, as shown in the panel
     tv_checked: float | None = None  # when the token was last read from the TV
     tv_alert: Reason | None = None  # a problem on the TV the user has been told about
+
+
+def hours_left(status: SessionStatus, now: float | None = None) -> float | None:
+    """The session time left now: LG's last answer minus the time since (None when LG gave none)."""
+
+    if status.remaining_hours is None:
+        return None
+    if status.remaining_at is None:
+        return status.remaining_hours
+    elapsed = (time.time() if now is None else now) - status.remaining_at
+    return max(0.0, status.remaining_hours - max(0.0, elapsed) / 3600)
 
 
 def _clock(epoch: float | None) -> str | None:
@@ -1076,14 +1108,33 @@ class App:
             already_asked = status.needs_signin  # one "sign in" alert, not one per interval
             status.last_ok = result.ok
             status.needs_signin = result.outcome == "signin"
-            status.remaining_hours = result.remaining_hours
+            if status.needs_signin:
+                status.remaining_hours = status.remaining_at = None  # that session is gone
+            elif result.remaining_hours is not None:
+                status.remaining_hours, status.remaining_at = result.remaining_hours, time.time()
             if result.ok:
                 status.last_success = time.time()
             elif self.config.notify_on_failure and not (status.needs_signin and already_asked):
                 targets = effective_mobile_targets(self.discovered, self.phones)
                 notify_failure(session, targets, self.token, "signin" if status.needs_signin else "failed")
+            self.check_low(session, status)
         self.backoff.reset()
         return True
+
+    def check_low(self, session: Session, status: SessionStatus) -> None:
+        """Warn once when a session drops below LOW_SESSION_HOURS; armed again once it is back above."""
+
+        left = hours_left(status)
+        if left is None or not session.enabled or status.needs_signin:
+            return
+        if left >= LOW_SESSION_HOURS:
+            status.low_alerted = False
+            return
+        if status.low_alerted:
+            return
+        status.low_alerted = True
+        _LOGGER.warning("Session '%s' has %d h left - renewals are not extending it", session.name, int(left))
+        self._notify(session, "low_session")
 
     # -- the token on the TV ----------------------------------------------------
     def effective(self, session: Session) -> Session:
@@ -1271,7 +1322,8 @@ class App:
                 self._notify(configured, "signin")
             return True
         if result.remaining_hours is not None:
-            status.remaining_hours = result.remaining_hours
+            status.remaining_hours, status.remaining_at = result.remaining_hours, time.time()
+            self.check_low(configured, status)
         if same:
             _LOGGER.info("'%s' holds the saved token", configured.name)
             status.tv_state = "Same as saved"
@@ -1345,6 +1397,10 @@ class App:
             self.refresh_phones()
         self.watch_power()
         self.run_tv_checks()
+        for session in self.config.sessions:  # the time left counts down between answers from LG
+            known = self.status.get(session.notification_id)
+            if known is not None and not known.running:
+                self.check_low(session, known)
 
         with self.options_lock:
             queued, self.queue = self.queue, []
@@ -1419,6 +1475,7 @@ class App:
 
     def _session_card(self, session: Session) -> dict[str, object]:
         status = self.status.get(session.notification_id, SessionStatus())
+        left = hours_left(status)
         if not session.enabled:
             chip = badge("Paused", "off")
         elif status.running:
@@ -1431,13 +1488,17 @@ class App:
             chip = badge("Not run yet")
         elif status.needs_signin:
             chip = badge("Sign in on TV", "error")
+        elif not status.last_ok:
+            chip = badge("Failed", "error")
+        elif left is not None and left < LOW_SESSION_HOURS:
+            chip = badge(f"{int(left)} h left", "warn")
         else:
-            chip = badge("Renewed", "ok") if status.last_ok else badge("Failed", "error")
+            chip = badge("Renewed", "ok")
         stats = [
             stat("Last attempt", _clock(status.last_attempt)),
             stat("Last success", _clock(status.last_success)),
             stat("Next renewal", _clock(self.next_run) if session.enabled else "Paused"),
-            stat("Time left", None if status.remaining_hours is None else int(status.remaining_hours), "h"),
+            stat("Time left", None if left is None else int(left), "h"),
         ]
         actions = [
             action(

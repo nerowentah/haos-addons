@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.12.0
+
+- **Warns when a session is running out.** When LG says a TV's session has less than 168 hours (7 days) left, the TV's card shows **N h left** in place of *Renewed*, the log has a warning, and you get one notification (when `notify_on_failure` is on). A freshly renewed session has far more than that, so this means renewals are being accepted without extending the session. The alert is armed again once the time left is back above 168 hours.
+- **Time left counts down.** The card used to show the value from the last renewal until the next one. It now subtracts the time passed since LG reported it, and keeps counting when a later renewal fails or LG gives no time.
+
 ## 1.11.0
 
 - **No upper limit on the renewal interval.** `interval_hours` used to stop at 168 (7 days). It now accepts any value from 48 up, so a TV whose session lasts 1000 hours can be renewed as rarely as you like. Keep it well below the session length: a renewal that comes after the session has expired cannot bring it back.

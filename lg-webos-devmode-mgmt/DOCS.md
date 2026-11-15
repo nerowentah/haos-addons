@@ -158,9 +158,9 @@ Inside an LG maintenance window the token is still read and compared, but LG is 
 Open **LG DevMode** from the sidebar, or click **Open web UI** on the app page. Only administrators see it. The panel follows your Home Assistant theme, including dark mode.
 
 - **TV cards:**
-  - Status: *Renewed*, *Failed*, *Sign in on TV*, *LG maintenance*, *Renewing…*, *Paused* or *Not run yet*.
+  - Status: *Renewed*, *Failed*, *Sign in on TV*, *LG maintenance*, *Renewing…*, *Paused* or *Not run yet*. A renewed TV with less than 168 hours (7 days) left shows *N h left* instead.
   - The last attempt, last success and next renewal.
-  - **Time left:** the session time LG reported after the last renewal (`-` when LG gave none, or for a custom `url` outside `developer.lge.com`).
+  - **Time left:** the session time LG last reported, counted down since then (`-` when LG gave none, or for a custom `url` outside `developer.lge.com`). It is forgotten when the app restarts and comes back with the next renewal.
   - An **Auto renew** switch and a **Renew now** button. **Renew now** also works on a paused TV.
   - With `host` set: **TV token**, **Last TV check**, **SSH key** (where the key came from), and the **Check TV now** and **Upload SSH key** buttons.
 - **Schedule card:** the interval and retries, the **Failure notifications** switch and **Renew all now**.
@@ -170,7 +170,7 @@ Every switch applies immediately. TV and notification switches are saved into th
 
 ## Notifications
 
-When a renewal fails after all retries, or LG no longer accepts a TV's token, the app notifies every phone that is switched on in the **Phones** card.
+When a renewal fails after all retries, LG no longer accepts a TV's token, or a TV's session has less than 168 hours (7 days) left, the app notifies every phone that is switched on in the **Phones** card.
 
 - Phones are found automatically from the `notify.mobile_app_*` services, at start and every 5 minutes.
 - New phones are on by default. Phones that are no longer linked disappear from the list. You never type phone names.
@@ -200,6 +200,7 @@ When a renewal fails after all retries, or LG no longer accepts a TV's token, th
 - **Invalid URL:** a session's `url` must be an `https://` address, because it carries the session token. It is masked in the Configuration tab.
 - **Network errors:** make sure the Home Assistant host can reach `developer.lge.com`.
 - **TV shows "Sign in on TV" (`ERR_005`, *Check user session*, or a sign-in page):** LG no longer accepts the saved token. Follow [After a Developer Mode app update or a new sign-in](#after-a-developer-mode-app-update-or-a-new-sign-in).
+- **TV shows "N h left", or you get "session is running out":** LG says the session has less than 168 hours (7 days) left. Right after a renewal a session has far more, so renewals are being accepted without extending it. On the TV, open the Developer Mode app and check that it is signed in and Dev Mode is on, then press **Renew now**. You are told once; the alert is armed again when the time left is back above 168 hours. TVs on older firmware, whose sessions never last that long, show this all the time: switch `notify_on_failure` off if the one alert per restart bothers you.
 - **TV shows "Failed" with `not LG's JSON` in the log:** LG answered with something the app can't read (an empty page, an error page). Earlier versions counted this as a success. It is retried, then reported.
 - **No notifications:**
   - Check that `notify_on_failure` is on and that the phone's switch is on in the **Phones** card.
