@@ -27,6 +27,18 @@ NEW = "b" * 64
 HOST = "192.0.2.10"
 TV: dict[str, object] = {"host": HOST, "passphrase": "ABC123", "media_player": "media_player.tv"}
 KEY = b"-----BEGIN RSA PRIVATE KEY-----\nplaceholder\n-----END RSA PRIVATE KEY-----\n"
+BODY = "QUJD" * 40  # 160 base64 characters: three lines of a key file
+OPENSSH_KEY = (
+    "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+    + "\n".join(BODY[i : i + 70] for i in range(0, len(BODY), 70))
+    + "\n-----END OPENSSH PRIVATE KEY-----\n"
+)
+LEGACY_KEY = (
+    "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF\n\n"
+    + "\n".join(BODY[i : i + 64] for i in range(0, len(BODY), 64))
+    + "\n-----END RSA PRIVATE KEY-----\n"
+)
+PUBLIC_KEY = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC placeholder"
 
 
 def options(**session: object) -> dict[str, object]:
@@ -197,6 +209,44 @@ class SshTest(unittest.TestCase):
         self.assertEqual(fetched, [1, 1])  # not a third download
 
 
+class KeyTextTest(unittest.TestCase):
+    def test_a_one_line_paste_is_repaired(self) -> None:
+        for key in (OPENSSH_KEY, LEGACY_KEY):
+            clean = tvssh.normalize_key(key)
+            body = b"".join(line for line in clean.splitlines() if line and b"-" not in line and b":" not in line)
+            self.assertEqual(body.decode(), BODY)
+            self.assertTrue(clean.endswith(b"-----\n"))
+            pastes = (key.replace("\n", " "), key.replace("\n", "\\n"), key.replace("\n", "\r\n"), f"  {key}  ")
+            for paste in pastes:
+                with self.subTest(paste[:40]):
+                    self.assertEqual(tvssh.normalize_key(paste), clean)
+        legacy = tvssh.normalize_key(LEGACY_KEY.replace("\n", " ")).decode()
+        self.assertIn("\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF\n\n", legacy)
+
+    def test_what_is_not_a_private_key_is_refused(self) -> None:
+        cases = {
+            PUBLIC_KEY: "public key",
+            "-----BEGIN PUBLIC KEY-----\nQUJD\n-----END PUBLIC KEY-----": "public key",
+            "---- BEGIN SSH2 PUBLIC KEY ----\nQUJD\n---- END SSH2 PUBLIC KEY ----": "no private key",
+            "hello": "no private key",
+            "-----BEGIN RSA PRIVATE KEY-----\n!!!\n-----END RSA PRIVATE KEY-----": "damaged",
+            "-----BEGIN RSA PRIVATE KEY-----\n-----END RSA PRIVATE KEY-----": "damaged",
+            "-----BEGIN RSA PRIVATE KEY-----\n" + "QUJD" * 5000 + "\n-----END RSA PRIVATE KEY-----": "too large",
+        }
+        for text, message in cases.items():
+            with self.subTest(message), self.assertRaises(tvssh.KeyFormatError) as caught:
+                tvssh.normalize_key(text)
+            self.assertIn(message, str(caught.exception))
+
+    def test_option(self) -> None:
+        session = run.load_config(options(private_key=OPENSSH_KEY.replace("\n", " "))).sessions[0]
+        self.assertEqual(session.private_key, redact.Secret(tvssh.normalize_key(OPENSSH_KEY).decode()))
+        self.assertNotIn(BODY[:20], repr(session))
+        for bad in ({"private_key": PUBLIC_KEY}, {"private_key": OPENSSH_KEY, "host": "", "media_player": ""}):
+            with self.subTest(bad), self.assertRaises(run.ConfigError):
+                run.load_config(options(**bad))
+
+
 class AppTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -208,6 +258,7 @@ class AppTest(unittest.TestCase):
         self.stored: dict[str, object] = {}
         self.written: list[dict[str, object]] = []
         self.tv_answer: str | Exception = SAVED
+        self.own_key: list[bool] = []
         self.lg_accepts = True
         self.entity_state = "off"
 
@@ -222,7 +273,8 @@ class AppTest(unittest.TestCase):
             self.renewed.append(session.token.reveal() if session.token else "")
             return run.RenewResult("ok")
 
-        def read(_tv: tvssh.Tv) -> str:
+        def read(_tv: tvssh.Tv, *, own_key: bool = False) -> str:
+            self.own_key.append(own_key)
             if isinstance(self.tv_answer, Exception):
                 raise self.tv_answer
             return self.tv_answer
@@ -239,6 +291,7 @@ class AppTest(unittest.TestCase):
         self.patch(run, "notify_failure", notify)
         self.patch(run, "check_session", check)
         self.patch(run, "renew_session", renew)
+        self.real_read_with_key = tvssh.read_token_with_key
         self.patch(tvssh, "read_token_with_key", read)
         self.patch(run, "_supervisor_request", supervisor)
         self.patch(run, "fetch_options", lambda _token: self.stored)
@@ -385,11 +438,71 @@ class AppTest(unittest.TestCase):
         self.assertEqual((self.checked, app.queue), ([], []))
         self.assertEqual(app.status["tv"].tv_state, "Updated from TV")
 
+    def test_key_from_the_options_never_asks_the_key_server(self) -> None:
+        app = self.app(options(private_key=OPENSSH_KEY))
+        session = app.config.sessions[0]
+        app.verify_tv(session, renew_after=False)
+        self.assertEqual(self.own_key, [True])
+        stored = self.data / "keys" / "tv"
+        self.assertEqual(stored.read_bytes(), tvssh.normalize_key(OPENSSH_KEY))
+        if os.name == "posix":
+            self.assertEqual(stored.stat().st_mode & 0o777, 0o600)
+        card = self.card(app)
+        self.assertIn({"label": "SSH key", "value": "From options", "unit": ""}, cast("list[object]", card["stats"]))
+        upload = cast("list[dict[str, object]]", card["actions"])[-1]
+        self.assertEqual((upload["label"], upload["disabled"]), ("Upload SSH key", True))
+        with self.assertRaises(webui.PanelError):
+            app.panel_action("upload_key", webui.PanelArgs(session="tv", files=[{"name": "k", "text": OPENSSH_KEY}]))
+
+        self.tv_answer = tvssh.KeyRejectedError("old key")
+        app.verify_tv(session, renew_after=False)
+        app.verify_tv(session, renew_after=False)
+        self.assertEqual(self.notified, ["key"])
+        self.assertEqual(self.card(app)["badge"], {"text": "Replace the SSH key", "tone": "error"})
+
+    def test_own_key_skips_the_key_server_in_tvssh(self) -> None:
+        tv = tvssh.Tv(redact.Secret(HOST), 9922, redact.Secret("ABC123"), self.data / "key", self.data / "known")
+
+        def refuse(_tv: tvssh.Tv) -> str:
+            raise tvssh.KeyRejectedError("refused")
+
+        def no_download(_tv: tvssh.Tv) -> None:
+            raise AssertionError("the key server must not be asked")
+
+        self.patch(tvssh, "read_token", refuse)
+        self.patch(tvssh, "fetch_key", no_download)
+        with (
+            mock.patch.object(tvssh, "read_token_with_key", self.real_read_with_key),
+            self.assertRaises(tvssh.KeyRejectedError),
+        ):
+            tvssh.read_token_with_key(tv, own_key=True)
+
+    def test_upload(self) -> None:
+        app = self.app()
+        self.assertIn(
+            {"label": "SSH key", "value": "None yet", "unit": ""}, cast("list[object]", self.card(app)["stats"])
+        )
+        app.status["tv"] = run.SessionStatus(tv_alert="keyserver", tv_state="Turn on Key Server")
+        one = {"name": "tv_webos", "text": LEGACY_KEY.replace("\n", " ")}
+        answer = app.panel_action("upload_key", webui.PanelArgs(session="tv", files=[one]))
+        self.assertEqual(answer, "Key saved. Reading the token from TV...")
+        self.assertEqual((self.data / "keys" / "tv").read_bytes(), tvssh.normalize_key(LEGACY_KEY))
+        self.assertIsNone(app.status["tv"].tv_alert)
+        self.assertIn("tv", app.tv_due)
+        stats = cast("list[dict[str, str]]", self.card(app)["stats"])
+        self.assertTrue(next(s["value"] for s in stats if s["label"] == "SSH key").startswith("Uploaded "))
+        app._tick()
+        self.assertEqual(self.own_key, [False])  # an uploaded key may still fall back to the key server
+
+        for files in ([], [one, one], [{"name": "id.pub", "text": PUBLIC_KEY}]):
+            with self.subTest(len(files)), self.assertRaises(webui.PanelError):
+                app.panel_action("upload_key", webui.PanelArgs(session="tv", files=files))
+
     def test_panel_buttons(self) -> None:
         app = self.app()
         self.assertEqual(app.panel_action("check_tv", webui.PanelArgs(session="tv")), "Reading the token from TV...")
         self.assertIn("tv", app.tv_due)
-        self.assertEqual(self.labels(app), ["Renew now", "Check TV now"])
+        self.assertEqual(self.labels(app), ["Renew now", "Check TV now", "Upload SSH key"])
         pinned = app._known_hosts(app.config.sessions[0])
         pinned.parent.mkdir(parents=True)
         pinned.write_text("old identity")

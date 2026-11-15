@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.0
+
+- **Give the app the TV's SSH key yourself, so Key Server can stay off.** Two ways, both using the private key file you already have on a PC (the ares CLI saves it as `<device>_webos` in your `.ssh` folder):
+  - **Upload SSH key** on the TV's card in the panel. The key goes straight into the app's private data folder.
+  - The new masked `private_key` option per TV (it also accepts `!secret`). It wins over an uploaded key.
+- The key must be the **private** key. A public key (`ssh-rsa ...`) cannot log in, and the app says so if you give it one. A key pasted as one line is repaired.
+- With `private_key` set the app never contacts the TV's key server. If the TV refuses that key, the card shows **Replace the SSH key** and you get one notification.
+- The card shows where the key came from under **SSH key**. Without a key of your own, the app still fetches it from the TV's key server as before.
+
 ## 1.9.0
 
 - **Reads the token from the TV itself.** With the new per-TV options `host` (the TV's IP address), `port` (SSH port, default 9922) and `passphrase` (required with `host`: the 6-character code in the Developer Mode app), the app reads the TV's session token over SSH, the way `ares-novacom` does on a PC. It does so before each scheduled renewal and, with the new `media_player` option, each time Home Assistant's LG webOS TV integration reports that the TV turned on.

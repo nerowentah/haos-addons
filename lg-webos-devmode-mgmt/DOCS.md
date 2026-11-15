@@ -55,6 +55,7 @@ Session fields:
 | `host` | Optional. The TV's IP address. Set it to let the app read the token from the TV itself. See [Reading the token from the TV automatically](#reading-the-token-from-the-tv-automatically). Masked. |
 | `port` | Optional. The TV's SSH port, default `9922`. |
 | `passphrase` | **Required when `host` is set.** The 6-character, case-sensitive code shown in the TV's Developer Mode app. Masked. |
+| `private_key` | Optional. The TV's SSH private key as text, instead of uploading it in the panel or using Key Server. Masked. |
 | `media_player` | Optional. The TV's entity from the LG webOS TV integration, for example `media_player.living_room_tv`. The token is read each time it turns on. |
 
 Changes made in the Configuration tab are picked up within about 30 seconds. You don't need to restart the app.
@@ -115,8 +116,15 @@ sessions:
 
 1. Give the TV a fixed IP address and enter it as `host`.
 2. Enter the `passphrase`: the code at the bottom-left of the Developer Mode app.
-3. On the TV, switch **Key Server** on in the Developer Mode app. The app downloads the TV's SSH key once and keeps it; you can switch Key Server off again afterwards.
+3. Give the app the TV's SSH key, in one of three ways:
+   - **Upload it (recommended).** Open the **LG DevMode** panel and press **Upload SSH key** on the TV's card. Choose the private key file you saved in [Getting your session token](#getting-your-session-token), step 3. If you use the ares CLI, it is the file `<device>_webos` in the `.ssh` folder of your user profile.
+   - **Paste it** into the `private_key` option, from `-----BEGIN` to the `-----END` line. A paste that ends up on one line is fine. To keep it out of the app options, put it in `secrets.yaml` as a block (`tv_key: |` followed by the indented key lines) and enter `!secret tv_key`. This option wins over an uploaded key.
+   - **Let the app fetch it.** Switch **Key Server** on in the TV's Developer Mode app. The app downloads the key once and keeps it; you can switch Key Server off again afterwards.
 4. Optional: set `media_player` to the TV's entity from the **LG webOS TV** integration.
+
+It has to be the **private** key. A public key (one line starting with `ssh-rsa`) only identifies the key and cannot log in. Leave the key as it is: it stays encrypted with the passphrase, which is why `passphrase` is always required. If you removed the passphrase from your copy, the option is still required but its value is not used.
+
+The TV issues a new key and passphrase when Developer Mode is switched on again. Upload or paste the new key then, or switch Key Server on once.
 
 **When the token is read**
 
@@ -139,7 +147,8 @@ Inside an LG maintenance window the token is still read and compared, but LG is 
 **Security**
 
 - The SSH key lets its holder open a restricted shell on the TV. The app keeps it in its private data folder exactly as the TV sends it, encrypted with the passphrase. It is never stored decrypted, and the passphrase is never put on a command line.
-- The key is downloaded from the TV over plain HTTP on your network; the TV offers nothing else. The key is useless without the passphrase.
+- An uploaded key lives only in that data folder. A key in the `private_key` option is also kept in the Supervisor's stored options, which the Supervisor does not encrypt, so prefer the upload or `!secret`.
+- A key fetched from the TV comes over plain HTTP on your network; the TV offers nothing else. The key is useless without the passphrase.
 - The TV's SSH host key is remembered on first contact. If it changes later, the app refuses to connect and tells you.
 - The token read from the TV is not written to the app's data folder.
 - The app only ever runs one fixed command on the TV, which prints the token file. It changes nothing on the TV.
@@ -153,7 +162,7 @@ Open **LG DevMode** from the sidebar, or click **Open web UI** on the app page. 
   - The last attempt, last success and next renewal.
   - **Time left:** the session time LG reported after the last renewal (`-` when LG gave none, or for a custom `url` outside `developer.lge.com`).
   - An **Auto renew** switch and a **Renew now** button. **Renew now** also works on a paused TV.
-  - With `host` set: **TV token**, **Last TV check** and a **Check TV now** button.
+  - With `host` set: **TV token**, **Last TV check**, **SSH key** (where the key came from), and the **Check TV now** and **Upload SSH key** buttons.
 - **Schedule card:** the interval and retries, the **Failure notifications** switch and **Renew all now**.
 - **Phones card:** one switch per Companion app linked to this Home Assistant.
 
@@ -177,7 +186,7 @@ When a renewal fails after all retries, or LG no longer accepts a TV's token, th
 - **Where they live:** Home Assistant's Supervisor stores the app options, including each TV's `token`, `url`, `host` and `passphrase`. The Supervisor does not encrypt that storage, and an app cannot change this; Home Assistant can encrypt its backups. The app itself stores only the TV's SSH key, encrypted with the passphrase, and never a password, passphrase or token.
 - **Masked:** password fields show as dots in the Configuration tab.
 - **Never logged:** passwords, tokens and cookie values never appear in the log or the panel, and numbers are masked.
-- **`!secret`:** `token`, `url`, `host` and `passphrase` accept it. To keep a value out of the app options, put it in `/config/secrets.yaml` and reference it, for example `token: "!secret living_room_tv_token"`.
+- **`!secret`:** `token`, `url`, `host`, `passphrase` and `private_key` accept it. To keep a value out of the app options, put it in `/config/secrets.yaml` and reference it, for example `token: "!secret living_room_tv_token"`.
   - The panel switches and live edits keep the reference as it is. The app never writes the value back.
   - A new or changed secret takes effect after you **restart** the app, because the Supervisor reads `secrets.yaml` only at start. Until then the panel keeps the old value and the log says a restart is needed.
 - Anyone who can open the app's Configuration tab, or log in to the host, can still see the values. Give the Home Assistant admin role only to people you trust.
@@ -197,7 +206,9 @@ When a renewal fails after all retries, or LG no longer accepts a TV's token, th
   - The phone must have the Companion app linked to this Home Assistant.
   - The log line `Notifications go to N phone(s)` lists the phones being used.
 
-- **TV shows "Turn on Key Server":** the TV refused the stored SSH key (it issues a new one when Developer Mode is switched on again) and the app could not download the current one. Switch **Key Server** on in the TV's Developer Mode app, then press **Check TV now**.
+- **TV shows "Turn on Key Server":** the app has no key the TV accepts (the TV issues a new one when Developer Mode is switched on again) and could not download the current one. Press **Upload SSH key** and choose the TV's current private key, or switch **Key Server** on in the TV's Developer Mode app and press **Check TV now**.
+- **TV shows "Replace the SSH key":** the TV refused the key from the `private_key` option. Save the TV's current private key there, or check the `passphrase`.
+- **"this is a public key":** you gave the app the public half of the key. Use the private key file instead; its first line reads `-----BEGIN ... PRIVATE KEY-----`.
 - **TV shows "Check the passphrase":** the TV refused the key the app had just downloaded. The `passphrase` option does not match the code shown in the Developer Mode app; it changes when Developer Mode is switched on again.
 - **TV shows "Dev Mode off on TV":** the TV has no session token. Open the Developer Mode app, sign in and switch Dev Mode on.
 - **TV shows "TV host key changed":** the TV's SSH identity is not the one the app first saw, so it did not connect. If you reset or replaced the TV, press **Trust this TV again** on its card: the app forgets the old identity and remembers the new one at the next check. If you did not change the TV, first find out what is answering on that IP address.

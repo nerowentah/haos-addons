@@ -28,6 +28,11 @@ KEY_SERVER_PATH = "/webos_rsa"
 KEY_SERVER_TIMEOUT = 5
 MAX_KEY_BYTES = 16 * 1024
 KEY_START = b"-----BEGIN"
+KEY_BLOCK_RE = re.compile(r"-----BEGIN ([A-Z0-9 ]+)-----(.*?)-----END \1-----", re.DOTALL)
+KEY_HEADER_RE = re.compile(r"(Proc-Type|DEK-Info):\s*(\S+)")  # an encrypted key in the older PEM form
+BASE64_RE = re.compile(r"[A-Za-z0-9+/=]+")
+PUBLIC_KEY_STARTS = ("ssh-rsa ", "ssh-ed25519 ", "ssh-dss ", "ecdsa-")
+KEY_LINE_CHARS = 64
 TOKEN_FILE = "/var/luna/preferences/devmode_enabled"  # noqa: S105 - a path on the TV, not a secret
 TOKEN_RE = re.compile(r"^[0-9A-Za-z_-]{32,128}$")
 SSH_TIMEOUT = 25
@@ -61,6 +66,10 @@ class KeyServerError(TvError):
     """The key could not be downloaded: Key Server is off in the Developer Mode app."""
 
 
+class KeyFormatError(TvError):
+    """The text given as the TV's SSH key is not a private key."""
+
+
 @dataclass(frozen=True, slots=True)
 class Tv:
     """Where and how to reach one TV."""
@@ -87,6 +96,58 @@ def _key_url(host: str) -> str:
     return f"http://{bracketed}:{KEY_SERVER_PORT}{KEY_SERVER_PATH}"
 
 
+def normalize_key(text: str) -> bytes:
+    """The private key in ``text`` as a clean key file (raises KeyFormatError).
+
+    A key pasted into a one-line field loses its line breaks (they become
+    spaces, or the two characters ``\\n``): the lines are rebuilt here. The key
+    stays as it is otherwise, still encrypted with its passphrase.
+    """
+
+    raw = text.replace("\\r", "").replace("\\n", "\n").strip()
+    if len(raw.encode("utf-8")) > MAX_KEY_BYTES:
+        raise KeyFormatError("this is too large to be the TV's SSH key")
+    match = KEY_BLOCK_RE.search(raw)
+    label = match[1] if match else ""
+    if raw.startswith(PUBLIC_KEY_STARTS) or "PUBLIC KEY" in label:
+        raise KeyFormatError("this is a public key, which cannot log in: use the TV's private key file")
+    if match is None or "PRIVATE KEY" not in label:
+        raise KeyFormatError(
+            "no private key found: give the whole key file, from -----BEGIN ... PRIVATE KEY----- to its -----END line"
+        )
+    body = match[2]
+    headers = [f"{name}: {value}" for name, value in KEY_HEADER_RE.findall(body)]
+    data = "".join(KEY_HEADER_RE.sub("", body).split())
+    if not BASE64_RE.fullmatch(data):
+        raise KeyFormatError("the private key is damaged: copy the whole key file again")
+    lines = [f"-----BEGIN {label}-----", *headers, *([""] if headers else [])]
+    lines += [data[start : start + KEY_LINE_CHARS] for start in range(0, len(data), KEY_LINE_CHARS)]
+    lines.append(f"-----END {label}-----")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def _source_path(tv: Tv) -> Path:
+    return tv.key_path.with_name(tv.key_path.name + ".source")
+
+
+def key_source(tv: Tv) -> str:
+    """Where the stored key came from: "upload", "option", "server" or "" when there is none."""
+
+    if not tv.key_path.is_file():
+        return ""
+    try:
+        return _source_path(tv).read_text(encoding="utf-8").strip() or "server"
+    except OSError:
+        return "server"  # stored by a version that only knew the key server
+
+
+def store_key(tv: Tv, key: bytes, source: str) -> None:
+    """Keep ``key`` as this TV's SSH key, owner-only (raises OSError)."""
+
+    atomic_write(tv.key_path, key)
+    atomic_write(_source_path(tv), source)
+
+
 def fetch_key(tv: Tv) -> None:
     """Download the TV's (passphrase-encrypted) SSH key from its key server and store it owner-only."""
 
@@ -97,7 +158,7 @@ def fetch_key(tv: Tv) -> None:
         raise KeyServerError("the TV's key server did not answer") from err
     if not isinstance(data, bytes) or len(data) > MAX_KEY_BYTES or not data.lstrip().startswith(KEY_START):
         raise KeyServerError("the TV's key server did not send a key")
-    atomic_write(tv.key_path, data)
+    store_key(tv, data, "server")
 
 
 def ssh_command(tv: Tv, ssh: str = "ssh") -> list[str]:
@@ -175,13 +236,16 @@ def read_token(tv: Tv) -> str:
     return token
 
 
-def read_token_with_key(tv: Tv) -> str:
+def read_token_with_key(tv: Tv, *, own_key: bool = False) -> str:
     """Read the token, downloading the key first when there is none or the TV refuses it.
 
     A key the TV refuses is downloaded again once; if the new one is refused
-    too, the passphrase is wrong (KeyRejectedError).
+    too, the passphrase is wrong (KeyRejectedError). With ``own_key`` the key
+    was given in the options: the key server is never asked.
     """
 
+    if own_key:
+        return read_token(tv)
     fresh = False
     if not tv.key_path.is_file():
         fetch_key(tv)

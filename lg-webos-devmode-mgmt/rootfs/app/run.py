@@ -109,6 +109,7 @@ class Session:
     port: int = tvssh.DEFAULT_PORT
     passphrase: redact.Secret | None = None  # decrypts the TV's SSH key
     media_player: str = ""  # the TV's entity in Home Assistant: a token read when it turns on
+    private_key: redact.Secret | None = None  # the TV's SSH key from the options (else: uploaded or fetched)
 
     @property
     def notification_id(self) -> str:
@@ -120,7 +121,7 @@ class Session:
 type Outcome = Literal["ok", "signin", "failed"]
 # What a notification is about: a renewal outcome, or something found on the TV.
 type Reason = Literal[
-    "failed", "signin", "changed", "changed_secret", "devmode_off", "keyserver", "passphrase", "hostkey"
+    "failed", "signin", "changed", "changed_secret", "devmode_off", "keyserver", "passphrase", "key", "hostkey"
 ]
 
 
@@ -326,6 +327,7 @@ class TvOptions(TypedDict, total=False):
     port: int
     passphrase: redact.Secret
     media_player: str
+    private_key: redact.Secret
 
 
 def _tv_options(name: str, entry: dict[str, object]) -> TvOptions:
@@ -341,7 +343,10 @@ def _tv_options(name: str, entry: dict[str, object]) -> TvOptions:
         options["media_player"] = media_player
 
     host = str(entry.get("host") or "").strip()
+    private_key = str(entry.get("private_key") or "").strip()
     if not host:
+        if private_key:
+            raise ConfigError(f"Session '{name}': private_key needs host (the TV's IP address) and passphrase")
         if media_player:
             raise ConfigError(f"Session '{name}': media_player needs host (the TV's IP address) and passphrase")
         return options
@@ -360,6 +365,11 @@ def _tv_options(name: str, entry: dict[str, object]) -> TvOptions:
     options["host"] = redact.Secret(host)
     options["port"] = port
     options["passphrase"] = redact.Secret(passphrase)
+    if private_key:
+        try:
+            options["private_key"] = redact.Secret(tvssh.normalize_key(private_key).decode("utf-8"))
+        except tvssh.KeyFormatError as err:
+            raise ConfigError(f"Session '{name}': private_key: {err}") from err
     return options
 
 
@@ -757,8 +767,9 @@ def notification_text(session: Session, reason: Reason) -> tuple[str, str]:
         "keyserver": (
             "LG webOS DevMode cannot read the TV",
             (
-                f"The TV '{name}' refused the app's SSH key and its key server is off. Open the Developer Mode app "
-                "on the TV and switch Key Server on, so the app can fetch the current key."
+                f"The TV '{name}' has no SSH key the app can use, and its key server is off. Upload the TV's "
+                "private key on its card in the LG DevMode panel, or switch Key Server on in the TV's "
+                "Developer Mode app so the app can fetch it."
             ),
         ),
         "passphrase": (
@@ -766,6 +777,13 @@ def notification_text(session: Session, reason: Reason) -> tuple[str, str]:
             (
                 f"The TV '{name}' refused its own SSH key: the passphrase option is wrong. Enter the 6-character "
                 "code shown in the TV's Developer Mode app in the app's Configuration tab."
+            ),
+        ),
+        "key": (
+            "LG webOS DevMode cannot read the TV",
+            (
+                f"The TV '{name}' refused the SSH key from the private_key option. The TV issues a new key when "
+                "Developer Mode is switched on again: save the TV's current private key, or check the passphrase."
             ),
         ),
         "hostkey": (
@@ -1120,22 +1138,78 @@ class App:
 
         return self.data_dir / "keys" / f"{session.notification_id}.known_hosts"
 
+    def _tv(self, session: Session) -> tvssh.Tv | None:
+        """How to reach this session's TV (None without the host option)."""
+
+        if session.host is None or session.passphrase is None:
+            return None
+        return tvssh.Tv(
+            host=session.host,
+            port=session.port,
+            passphrase=session.passphrase,
+            key_path=self.data_dir / "keys" / session.notification_id,
+            known_hosts=self._known_hosts(session),
+        )
+
+    def _key_text(self, session: Session) -> str:
+        """Where this TV's SSH key comes from, for the panel."""
+
+        tv = self._tv(session)
+        if session.private_key is not None:
+            return "From options"
+        source = tvssh.key_source(tv) if tv else ""
+        if source == "upload" and tv is not None:
+            return f"Uploaded {_clock(tv.key_path.stat().st_mtime)}"
+        return "From TV key server" if source else "None yet"
+
+    def _tv_action(self, action_id: str, args: PanelArgs) -> str:
+        """The panel buttons about the TV itself: check it, trust it again, upload its key."""
+
+        target = args.ident("session")
+        match = next((s for s in self.config.sessions if s.notification_id == target), None)
+        tv = self._tv(match) if match else None
+        if match is None or tv is None:
+            raise PanelError("That TV no longer exists or has no host option; reload the page")
+        note = "Reading"
+        if action_id == "trust_tv":
+            self._known_hosts(match).unlink(missing_ok=True)  # pinned again at the next contact
+            _LOGGER.warning("Forgot the pinned SSH host key of '%s' on request", match.name)
+        elif action_id == "upload_key":
+            if match.private_key is not None:
+                raise PanelError("The private_key option is set, so it is used instead; remove it to upload a key")
+            files = args.files()
+            if len(files) != 1:
+                raise PanelError("Choose one file: the TV's private key")
+            try:
+                tvssh.store_key(tv, tvssh.normalize_key(files[0][1]), "upload")
+            except tvssh.KeyFormatError as err:
+                raise PanelError(f"Not saved: {err}") from err
+            except OSError as err:
+                raise PanelError("The key could not be saved; see the app log") from err
+            _LOGGER.info("A new SSH key was uploaded for '%s'", match.name)
+            status = self.status.setdefault(match.notification_id, SessionStatus())
+            status.tv_alert = None
+            status.tv_state = "Key uploaded"
+            note = "Key saved. Reading"
+        self.tv_due[match.notification_id] = (time.monotonic(), 1)
+        self.wake.set()
+        return f"{note} the token from {match.name}..."
+
     def _read_tv(self, configured: Session, status: SessionStatus) -> tuple[str | None, bool]:
         """The token on the TV (None when there is none to use) and whether the TV was reachable."""
 
-        if configured.host is None or configured.passphrase is None:
+        tv = self._tv(configured)
+        if tv is None:
             return None, True
-        tv = tvssh.Tv(
-            host=configured.host,
-            port=configured.port,
-            passphrase=configured.passphrase,
-            key_path=self.data_dir / "keys" / configured.notification_id,
-            known_hosts=self._known_hosts(configured),
-        )
+        own_key = configured.private_key
         problems: dict[type[tvssh.TvError], tuple[Reason, str, str]] = {
             tvssh.NoTokenError: ("devmode_off", "Dev Mode off on TV", "has no session token: Developer Mode is off"),
             tvssh.KeyServerError: ("keyserver", "Turn on Key Server", "key cannot be fetched: switch Key Server on"),
-            tvssh.KeyRejectedError: ("passphrase", "Check the passphrase", "refused its own SSH key: check passphrase"),
+            tvssh.KeyRejectedError: (
+                ("key", "Replace the SSH key", "refused the SSH key from the options")
+                if own_key
+                else ("passphrase", "Check the passphrase", "refused its own SSH key: check passphrase")
+            ),
             tvssh.HostKeyChangedError: (
                 "hostkey",
                 "TV host key changed",
@@ -1143,7 +1217,9 @@ class App:
             ),
         }
         try:
-            return tvssh.read_token_with_key(tv), True
+            if own_key:
+                tvssh.store_key(tv, own_key.reveal().encode("utf-8"), "option")
+            return tvssh.read_token_with_key(tv, own_key=own_key is not None), True
         except tvssh.UnreachableError:
             _LOGGER.info("'%s' is not reachable over SSH (off or asleep)", configured.name)
             status.tv_state = "TV not reachable"
@@ -1313,17 +1389,8 @@ class App:
         if action_id == "renew_all":
             target: str | None = None
             label = "all TVs"
-        elif action_id in {"check_tv", "trust_tv"}:
-            target = args.ident("session")
-            match = next((s for s in self.config.sessions if s.notification_id == target and s.host), None)
-            if match is None:
-                raise PanelError("That TV no longer exists or has no host option; reload the page")
-            if action_id == "trust_tv":
-                self._known_hosts(match).unlink(missing_ok=True)  # pinned again at the next contact
-                _LOGGER.warning("Forgot the pinned SSH host key of '%s' on request", match.name)
-            self.tv_due[match.notification_id] = (time.monotonic(), 1)
-            self.wake.set()
-            return f"Reading the token from {match.name}..."
+        elif action_id in {"check_tv", "trust_tv", "upload_key"}:
+            return self._tv_action(action_id, args)
         elif action_id == "renew":
             target = args.ident("session")
             match = next((s for s in self.config.sessions if s.notification_id == target), None)
@@ -1372,8 +1439,20 @@ class App:
         if session.host:
             stats.append(stat("TV token", status.tv_state or "Not checked"))
             stats.append(stat("Last TV check", _clock(status.tv_checked)))
+            stats.append(stat("SSH key", self._key_text(session)))
             actions.append(
                 action("check_tv", "Check TV now", {"session": session.notification_id}, icon="mdi:television")
+            )
+            actions.append(
+                action(
+                    "upload_key",
+                    "Upload SSH key",
+                    {"session": session.notification_id},
+                    disabled=session.private_key is not None,
+                    reason="The private_key option is used instead",
+                    icon="mdi:upload",
+                    upload="*/*",
+                )
             )
             if status.tv_alert == "hostkey":
                 actions.append(
