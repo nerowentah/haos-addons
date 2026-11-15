@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.1
+
+- **Image labels:** the maintainer is now given as the GitHub handle only, without an email address. No functional change.
+
 ## 1.8.0
 
 - **Tells you when the TV needs a new sign-in.** When LG no longer accepts a TV's token (`ERR_005`, *Check user session*, or a sign-in page instead of an answer), the TV's card shows **Sign in on TV** and you get one notification with the steps: sign in to the Developer Mode app on the TV with your LG account email and password, then save the TV's new token. This happens after the Developer Mode app updates itself and asks you to sign in again. It is not retried, because a token LG has dropped does not come back.

@@ -38,4 +38,4 @@ LABEL \
     io.hass.arch="${BUILD_ARCH}" \
     io.hass.type="app" \
     io.hass.version=${BUILD_VERSION} \
-    maintainer="CWT <cwt@clgx.org>"
+    maintainer="nerowentah"

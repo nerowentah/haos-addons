@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.7
+
+- **Image labels:** the maintainer is now given as the GitHub handle only, without an email address. No functional change.
+
 ## 0.5.6
 
 - **Image security updates.** The image now applies Alpine's package updates when it is built (this release picks up fixes for krb5 and zlib), and the unused `tempio` binary from the base image is removed. No functional change.
