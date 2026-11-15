@@ -203,9 +203,17 @@ class _Recorder(supervisor.Supervisor):
     def __init__(self) -> None:
         super().__init__("placeholder-token")
         self.urls: list[str] = []
+        self.calls: list[tuple[str, object, float]] = []
 
-    def _request(self, url: str, method: str = "GET", body: object | None = None) -> object:  # noqa: ARG002
+    def _request(
+        self,
+        url: str,
+        method: str = "GET",
+        body: object | None = None,
+        timeout: float = supervisor.HTTP_TIMEOUT,
+    ) -> object:
         self.urls.append(url)
+        self.calls.append((method, body, timeout))
         return {"data": {"state": "started"}}
 
 
@@ -231,6 +239,31 @@ class SupervisorPathTest(unittest.TestCase):
         sup.notify(["mobile_app_phone"], "t", "m", "id")
         self.assertEqual(sup.urls[0], f"{supervisor.SUPERVISOR_CORE_API}/states/sensor.energy_total")
         self.assertEqual(sup.urls[1], f"{supervisor.SUPERVISOR_CORE_API}/services/notify/mobile_app_phone")
+
+    def test_supervisor_api_calls_carry_their_method_body_and_timeout(self) -> None:
+        sup = _Recorder()
+        self.assertEqual(sup.api_get("/host/disks/default/usage?max_depth=2", timeout=300), {"state": "started"})
+        self.assertEqual(sup.api_post("/backups/reload"), {"state": "started"})
+        sup.api_delete("/backups/a1b2c3d4", {"location": ".local"})
+        sup.core_post_slow("/services/recorder/purge", {"repack": True}, 310)
+        self.assertEqual(
+            sup.urls,
+            [
+                f"{supervisor.SUPERVISOR_API}/host/disks/default/usage?max_depth=2",
+                f"{supervisor.SUPERVISOR_API}/backups/reload",
+                f"{supervisor.SUPERVISOR_API}/backups/a1b2c3d4",
+                f"{supervisor.SUPERVISOR_CORE_API}/services/recorder/purge",
+            ],
+        )
+        self.assertEqual(
+            sup.calls,
+            [
+                ("GET", None, 300),
+                ("POST", None, supervisor.HTTP_TIMEOUT),
+                ("DELETE", {"location": ".local"}, supervisor.HTTP_TIMEOUT),
+                ("POST", {"repack": True}, 310),
+            ],
+        )
 
     def test_empty_and_dot_names_are_refused(self) -> None:
         for name in ("", ".", ".."):

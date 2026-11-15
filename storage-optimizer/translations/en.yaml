@@ -1,0 +1,19 @@
+configuration:
+  log_level:
+    name: Log level
+    description: How much the app writes to its log - trace, debug, info (default), notice, warning, error or fatal. Use debug while troubleshooting, then set it back to info. Applies without a restart.
+  auto_clean:
+    name: Automatic clean-up
+    description: Once a day, clear Home Assistant's log and cache files and purge the recorder database (without a repack). Off by default - nothing is cleaned unless you switch this on or press a button in the panel.
+  auto_clean_backups:
+    name: Automatic clean-up also deletes old backups
+    description: Only with automatic clean-up on. Deletes local backups that are not password-protected, keeping the newest ones (see the next option). Off by default - backups are never deleted automatically unless you switch this on.
+  keep_backups:
+    name: Backups to keep
+    description: How many of the newest local, unprotected backups the automatic clean-up always keeps (1-50).
+  low_space_percent:
+    name: Low space below (%)
+    description: The panel warns, and a notification is sent, when less than this share of the disk is free (1-50).
+  notify_on_low_space:
+    name: Notifications
+    description: Notify when free space drops below the limit. Phones are found automatically; switch individual phones on or off in the Storage Optimizer panel.

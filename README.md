@@ -7,6 +7,7 @@ Home Assistant OS apps (formerly called add-ons) covering:
 - an API key (long-lived access token) reviewer
 - a Cloudflare Tunnel connector
 - a TLS certificate manager (Let's Encrypt, Cloudflare Origin CA, your own CA)
+- a storage optimizer (where the disk space went, and a safe clean-up)
 
 ## Add this repository
 
@@ -29,6 +30,7 @@ https://github.com/nerowentah/haos-addons
 | <img src="api-key-manager/icon.png" width="32" alt=""> | [API Key Manager](api-key-manager/) | 0.1.7 | aarch64, amd64 | Lists every user's long-lived access tokens (API keys) with description, owner, last used and IP. Flags unused, vague, expired, deactivated-owner and admin keys, and lets you approve, mark suspicious and annotate each one. Read-only. |
 | <img src="cloudflare-tunnel/icon.png" width="32" alt=""> | [Cloudflare Tunnel](cloudflare-tunnel/) | 0.3.7 | aarch64, amd64 | Puts Home Assistant on the Internet through a Cloudflare Tunnel with no open ports: sign in to Cloudflare from the panel and it creates the tunnel, DNS record and proxy settings (or use a Zero Trust token), then keeps the connector watched with failure notifications. With SSL Cert Manager it checks Home Assistant's certificate and rolls back a change that breaks the tunnel. |
 | <img src="ssl-cert-manager/icon.png" width="32" alt=""> | [SSL Cert Manager](ssl-cert-manager/) | 0.1.6 | aarch64, amd64 | Gets, imports and renews TLS certificates (Let's Encrypt and Cloudflare Origin via your Cloudflare account, your own certificates and CA), publishes them to `/ssl`, adds an optional HTTPS proxy for secure local access and lets Cloudflare Tunnel check Home Assistant's certificate. |
+| <img src="storage-optimizer/icon.png" width="32" alt=""> | [HA Storage Optimizer](storage-optimizer/) | 0.1.0 | aarch64, amd64 | Shows where the disk space went (per area, app and folder, with a 30-day chart of free space) and frees it safely: recorder purge and repack, old local backups, and Home Assistant's log and cache files. Nothing is cleaned automatically unless you switch it on. |
 
 **Planned:** TM Unifi Bill Checker.
 
@@ -60,6 +62,8 @@ mobile-device-manager/
 ranhill-saj-bill-checker/
 api-key-manager/
 cloudflare-tunnel/
+ssl-cert-manager/
+storage-optimizer/
 shared/app/                the modules every app ships a copy of (panel, store, Supervisor client,
                            safe file/HTTP helpers); shared/tests/ tests them
 tools/sync_shared.py       copies shared/app/ into the apps (--check: fail when a copy differs)
@@ -92,6 +96,8 @@ python -m unittest discover -s mobile-device-manager/tests
 python -m unittest discover -s ranhill-saj-bill-checker/tests
 python -m unittest discover -s api-key-manager/tests
 python -m unittest discover -s cloudflare-tunnel/tests
+python -m unittest discover -s ssl-cert-manager/tests        # needs cryptography
+python -m unittest discover -s storage-optimizer/tests
 ```
 
 **s6 layout:** keep the service in `rootfs/etc/s6-overlay/s6-rc.d/<app>/` and register it with an empty file at `rootfs/etc/s6-overlay/user-bundles.d/user/contents.d/<app>`. Never create `s6-rc.d/user`; s6-overlay warns about it at startup.
@@ -123,3 +129,4 @@ cosign verify ghcr.io/nerowentah/power-tnb:0.5.1 \
 - Ranhill SAJ Bill Checker reads the public Quick Payment page unofficially, so it may break if Ranhill SAJ changes its website.
 - Cloudflare Tunnel wraps Cloudflare's open-source `cloudflared` connector, pinned and verified at build time, but Cloudflare's edge behavior can change.
 - API Key Manager only reads Home Assistant's auth store. It never changes accounts or tokens.
+- HA Storage Optimizer deletes only what you select or switch on. Deleted backups and cleaned files cannot be restored.
