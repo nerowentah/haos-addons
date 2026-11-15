@@ -7,7 +7,7 @@ Keeps your LG webOS **Developer Mode** sessions from expiring. The app renews th
 
 ## Features
 
-- **One or more TVs**, each renewed every 1-168 hours, with retries and backoff.
+- **One or more TVs**, each renewed every 48 hours or more, with retries and backoff.
 - **Sidebar panel.** A card per TV shows the last and next renewal, with an **Auto renew** switch and a **Renew now** button. The panel follows your HA theme.
 - **Switches apply immediately.** Configuration-tab edits are picked up within about 30 seconds, with no restart.
 - **Maintenance-aware.** Renewals pause during configurable LG maintenance windows and back off while the developer site is down.

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.11.0
+
+- **No upper limit on the renewal interval.** `interval_hours` used to stop at 168 (7 days). It now accepts any value from 48 up, so a TV whose session lasts 1000 hours can be renewed as rarely as you like. Keep it well below the session length: a renewal that comes after the session has expired cannot bring it back.
+- **The minimum is now 48 hours** (it was 1). **If you saved a lower value, such as 24, the app now renews every 48 hours** and says so in its log at start. Your saved value is left as it is; set it to 48 or more to clear the message.
+
 ## 1.10.0
 
 - **Give the app the TV's SSH key yourself, so Key Server can stay off.** Two ways, both using the private key file you already have on a PC (the ares CLI saves it as `<device>_webos` in your `.ssh` folder):
