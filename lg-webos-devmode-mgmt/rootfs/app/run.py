@@ -394,13 +394,17 @@ def with_token(session: Session, token: str) -> Session:
 MOBILE_TARGET_PREFIX = "mobile_app_"
 
 
-def _int(raw: dict[str, object], key: str, default: int, low: int, high: int) -> int:
-    """A whole-number option, kept inside the range the option schema allows."""
+MIN_INTERVAL_HOURS = 48
+
+
+def _int(raw: dict[str, object], key: str, default: int, low: int, high: int | None = None) -> int:
+    """A whole-number option, kept at or above ``low`` and, when given, at or below ``high``."""
 
     value = raw.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int):
         return default
-    return min(max(value, low), high)
+    value = max(value, low)
+    return value if high is None else min(value, high)
 
 
 def load_config(raw_config: dict[str, object]) -> Config:
@@ -415,8 +419,12 @@ def load_config(raw_config: dict[str, object]) -> Config:
         raise ConfigError(f"maintenance_windows: {err}") from err
 
     notify = raw_config.get("notify_on_failure")
+    interval_hours = _int(raw_config, "interval_hours", MIN_INTERVAL_HOURS, MIN_INTERVAL_HOURS)
+    saved = raw_config.get("interval_hours")
+    if isinstance(saved, int) and not isinstance(saved, bool) and saved < interval_hours:
+        _LOGGER.warning("interval_hours is %s, below the minimum: renewing every %s h instead", saved, interval_hours)
     return Config(
-        interval_hours=_int(raw_config, "interval_hours", 48, 1, 168),
+        interval_hours=interval_hours,
         retries=_int(raw_config, "retries", 3, 0, 10),
         notify_on_failure=notify if isinstance(notify, bool) else True,
         sessions=sessions,

@@ -37,7 +37,7 @@ sessions:
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `interval_hours` | int | `48` | Hours between renewals (1-168). The default suits every TV: sessions last up to 1000 hours on current TVs and about 50 on older firmware. |
+| `interval_hours` | int | `48` | Hours between renewals: 48 or more, with no upper limit. A lower value is treated as 48. The default suits every TV: sessions last up to 1000 hours on current TVs and about 50 on older firmware. |
 | `maintenance_windows` | list | `daily 00:00-06:00` | When LG's developer site may be down for maintenance (Home Assistant's timezone), one per line: `daily 00:00-06:00`, `sun 01:00-05:00`, `mon-fri 23:00-02:00` (crosses midnight), `weekends 02:00-04:00` or `mon,wed 00:00-24:00`. No renewal is attempted inside a window; a renewal due then waits until it ends. An empty list allows renewing at any time. |
 | `retries` | int | `3` | Retries per TV, with backoff, before a renewal counts as failed (0-10). |
 | `notify_on_failure` | bool | `true` | Notify when a renewal fails after all retries. See [Notifications](#notifications). |

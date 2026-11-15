@@ -69,9 +69,9 @@ class SecretOptionsTest(unittest.TestCase):
         self.app.secrets = secrets
 
     def test_live_change_keeps_the_resolved_token(self) -> None:
-        self.stored["interval_hours"] = 24
+        self.stored["interval_hours"] = 72
         self.app.check_options()
-        self.assertEqual(self.app.config.interval_hours, 24)
+        self.assertEqual(self.app.config.interval_hours, 72)
         self.assertIn("tok-123", self.app.config.sessions[0].url.reveal())
         self.assertNotIn("secret", self.app.config.sessions[0].url.reveal())
 
