@@ -1,10 +1,20 @@
 version: 2
+
+# Scheduled inside one window per day (see `time`/`timezone`) so the bot wave is
+# predictable instead of landing at whatever hour Dependabot picks. The docker
+# entries stay weekly but are staggered ten minutes apart: each one triggers a
+# multi-arch image build on the hosted runners (public repo, so no minutes are
+# billed, but the bursts still queue against each other).
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
+      time: "03:00"
+      timezone: "Asia/Kuala_Lumpur"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns: ["*"]
@@ -14,43 +24,78 @@ updates:
     directory: "/api-key-manager"
     schedule:
       interval: "weekly"
+      day: "wednesday"
+      time: "03:10"
+      timezone: "Asia/Kuala_Lumpur"
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: "docker"
     directory: "/cloudflare-tunnel"
     schedule:
       interval: "weekly"
+      day: "wednesday"
+      time: "03:20"
+      timezone: "Asia/Kuala_Lumpur"
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: "docker"
     directory: "/lg-webos-devmode-mgmt"
     schedule:
       interval: "weekly"
+      day: "wednesday"
+      time: "03:30"
+      timezone: "Asia/Kuala_Lumpur"
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: "docker"
     directory: "/mobile-device-manager"
     schedule:
       interval: "weekly"
+      day: "wednesday"
+      time: "03:40"
+      timezone: "Asia/Kuala_Lumpur"
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: "docker"
     directory: "/ranhill-saj-bill-checker"
     schedule:
       interval: "weekly"
+      day: "wednesday"
+      time: "03:50"
+      timezone: "Asia/Kuala_Lumpur"
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: "docker"
     directory: "/ssl-cert-manager"
     schedule:
       interval: "weekly"
+      day: "wednesday"
+      time: "04:00"
+      timezone: "Asia/Kuala_Lumpur"
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: "docker"
     directory: "/tnb-usage-checker"
     schedule:
       interval: "weekly"
+      day: "wednesday"
+      time: "04:10"
+      timezone: "Asia/Kuala_Lumpur"
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
 
   # requirements-dev.txt: only the tools move. The libraries mirror the
   # versions of the Alpine packages in the images and change with the base image.
@@ -58,7 +103,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "wednesday"
+      time: "04:20"
+      timezone: "Asia/Kuala_Lumpur"
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
     ignore:
       - dependency-name: "paho-mqtt"
       - dependency-name: "websocket-client"
