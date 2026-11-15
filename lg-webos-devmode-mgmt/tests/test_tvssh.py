@@ -11,6 +11,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Self, cast
 from unittest import mock
@@ -161,6 +162,58 @@ class SshTest(unittest.TestCase):
         with self.assertRaises(tvssh.UnreachableError):
             tvssh.read_token(self.tv)
 
+    def test_session_time_parsing(self) -> None:
+        self.assertEqual(tvssh.parse_session_text("980h:12m"), 980 + 12 / 60)
+        self.assertEqual(tvssh.parse_session_text(" 0h:00m "), 0.0)
+        for text in ("--:--", "999:30:00", "", "1000", "soon"):
+            with self.subTest(text):
+                self.assertIsNone(tvssh.parse_session_text(text))
+        expires_in_100_hours = str(int((time.time() + 100 * 3600) * 1000))  # an expiry as epoch milliseconds
+        self.assertAlmostEqual(cast("float", tvssh.parse_session_text(expires_in_100_hours)), 100.0, delta=0.01)
+        self.assertEqual(tvssh.parse_session_text(str(int((time.time() - 3600) * 1000))), 0.0)  # already expired
+
+    def test_session_answer_parsing(self) -> None:
+        self.assertEqual(tvssh.parse_remain_session('{"remainSession":"980h:12m"}'), 980 + 12 / 60)
+        for text in ('{"returnValue":false}', "[]", "not json", '{"remainSession":"--:--"}'):
+            with self.subTest(text):
+                self.assertIsNone(tvssh.parse_remain_session(text))
+
+    def test_session_read_asks_the_tv_service_first(self) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        def answer(_tv: tvssh.Tv, remote: Sequence[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(tuple(remote))
+            return subprocess.CompletedProcess(list(remote), 0, '{"returnValue":true,"remainSession":"980h:12m"}', "")
+
+        self.patch(tvssh, "_ssh", answer)
+        self.assertAlmostEqual(cast("float", tvssh.read_session(self.tv)), 980 + 12 / 60)
+        self.assertEqual(calls, [("luna-send-pub", "-n", "1", "-f", tvssh.SESSION_STATUS_URI, "{}")])
+        self.assertNotIn("cat", " ".join(calls[0]))
+
+    def test_session_read_falls_back_to_the_file(self) -> None:
+        answers = [
+            subprocess.CompletedProcess([], 127, "", "luna-send-pub: not found"),
+            subprocess.CompletedProcess([], 0, "975h:05m\n", ""),
+        ]
+
+        def answer(_tv: tvssh.Tv, remote: Sequence[str]) -> subprocess.CompletedProcess[str]:
+            self.assertIn(remote[0], {"luna-send-pub", "cat"})
+            return answers.pop(0)
+
+        self.patch(tvssh, "_ssh", answer)
+        self.assertAlmostEqual(cast("float", tvssh.read_session(self.tv)), 975 + 5 / 60)
+
+    def test_session_read_is_none_when_nothing_answers(self) -> None:
+        refused = [subprocess.CompletedProcess([], 1, "", "can't open"), subprocess.CompletedProcess([], 1, "", "no")]
+        self.patch(tvssh, "_ssh", lambda _tv, _remote: refused.pop(0))
+        self.assertIsNone(tvssh.read_session(self.tv))
+
+        def unreachable(_tv: tvssh.Tv, _remote: Sequence[str]) -> subprocess.CompletedProcess[str]:
+            raise tvssh.UnreachableError("off")
+
+        self.patch(tvssh, "_ssh", unreachable)
+        self.assertIsNone(tvssh.read_session(self.tv))  # never raises: the value is only cosmetic
+
     def test_key_download(self) -> None:
         opened: list[str] = []
 
@@ -258,6 +311,7 @@ class AppTest(unittest.TestCase):
         self.stored: dict[str, object] = {}
         self.written: list[dict[str, object]] = []
         self.tv_answer: str | Exception = SAVED
+        self.tv_hours: float | None = None  # what the TV's own countdown says
         self.own_key: list[bool] = []
         self.lg_accepts = True
         self.entity_state = "off"
@@ -267,7 +321,7 @@ class AppTest(unittest.TestCase):
 
         def check(session: run.Session) -> run.RenewResult:
             self.checked.append(session.token.reveal() if session.token else "")
-            return run.RenewResult("ok", 999.0) if self.lg_accepts else run.RenewResult("signin")
+            return run.RenewResult("ok", 999.5) if self.lg_accepts else run.RenewResult("signin")
 
         def renew(session: run.Session) -> run.RenewResult:
             self.renewed.append(session.token.reveal() if session.token else "")
@@ -293,6 +347,7 @@ class AppTest(unittest.TestCase):
         self.patch(run, "renew_session", renew)
         self.real_read_with_key = tvssh.read_token_with_key
         self.patch(tvssh, "read_token_with_key", read)
+        self.patch(tvssh, "read_session", lambda _tv: self.tv_hours)
         self.patch(run, "_supervisor_request", supervisor)
         self.patch(run, "fetch_options", lambda _token: self.stored)
         self.patch(run, "write_options", write)
@@ -348,11 +403,42 @@ class AppTest(unittest.TestCase):
         app = self.app()
         self.assertTrue(app.verify_tv(app.config.sessions[0], renew_after=True))
         status = app.status["tv"]
-        self.assertEqual((status.tv_state, status.remaining_hours), ("Same as saved", 999.0))
+        self.assertEqual((status.tv_state, status.remaining_hours), ("Same as saved", 999.5))
         self.assertEqual((self.checked, self.notified, self.written, app.queue), ([SAVED], [], [], []))
         self.assertIn(
             {"label": "TV token", "value": "Same as saved", "unit": ""}, cast("list[object]", self.card(app)["stats"])
         )
+
+    def test_the_tvs_own_countdown_is_shown_first(self) -> None:
+        app = self.app()
+        self.tv_hours = 980 + 12 / 60  # what the TV said: "980h:12m"
+        app.verify_tv(app.config.sessions[0], renew_after=True)
+        status = app.status["tv"]
+        self.assertEqual((status.tv_remaining_hours, status.remaining_hours), (980 + 12 / 60, 999.5))
+        stats = cast("list[dict[str, object]]", self.card(app)["stats"])
+        self.assertIn({"label": "Time left", "value": "980", "unit": "h"}, stats)
+        self.assertIn({"label": "LG reports", "value": "999", "unit": "h"}, stats)
+        self.assertIn("Time left from", [entry["label"] for entry in stats])
+
+    def test_without_a_tv_value_the_lg_one_stays(self) -> None:
+        app = self.app()
+        app.verify_tv(app.config.sessions[0], renew_after=True)
+        stats = cast("list[dict[str, object]]", self.card(app)["stats"])
+        self.assertIn({"label": "Time left", "value": "999", "unit": "h"}, stats)
+        self.assertNotIn("LG reports", [entry["label"] for entry in stats])
+
+    def test_a_large_gap_between_the_clocks_is_named_once(self) -> None:
+        app = self.app()
+        self.tv_hours = 900.0  # the TV's own counter lags 99 h behind LG's
+        with self.assertLogs(run.__name__, level="WARNING") as logs:
+            app.verify_tv(app.config.sessions[0], renew_after=True)
+            app.verify_tv(app.config.sessions[0], renew_after=True)
+        drift = [line for line in logs.output if "differs from LG" in line]
+        self.assertEqual(len(drift), 1)
+        self.assertIn("99 h", drift[0])
+        self.tv_hours = 999.5  # the TV caught up: armed again
+        app.verify_tv(app.config.sessions[0], renew_after=True)
+        self.assertFalse(app.status["tv"].tv_drift_alerted)
 
     def test_changed_token_is_saved_announced_and_used(self) -> None:
         app = self.app()

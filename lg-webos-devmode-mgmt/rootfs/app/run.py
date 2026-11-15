@@ -741,6 +741,7 @@ def effective_mobile_targets(discovered: list[str], prefs: dict[str, bool]) -> l
 
 
 LOW_SESSION_HOURS = 168  # 7 days: a renewed session has far more, so less means renewals stopped extending it
+TV_DRIFT_HOURS = 24  # the TV's own countdown may lag behind LG's; only a bigger gap is worth naming
 
 SIGNIN_STEPS = (
     "Open the Developer Mode app on the TV, sign in with your LG account email and password, "
@@ -875,20 +876,35 @@ class SessionStatus:
     remaining_hours: float | None = None  # as LG last reported (kept until LG reports again)
     remaining_at: float | None = None  # when LG reported it
     low_alerted: bool = False  # the user has been told that less than LOW_SESSION_HOURS remain
+    tv_remaining_hours: float | None = None  # as the TV's own countdown said
+    tv_remaining_at: float | None = None  # when the TV said it
+    tv_drift_alerted: bool = False  # the TV's clock and LG's differ enough to have been named once
     tv_state: str = ""  # outcome of the last token read from the TV, as shown in the panel
     tv_checked: float | None = None  # when the token was last read from the TV
     tv_alert: Reason | None = None  # a problem on the TV the user has been told about
 
 
+def _counted_down(hours: float | None, at: float | None, now: float | None = None) -> float | None:
+    """``hours`` less the time passed since ``at`` (None when there is no value to count)."""
+
+    if hours is None:
+        return None
+    if at is None:
+        return hours
+    elapsed = (time.time() if now is None else now) - at
+    return max(0.0, hours - max(0.0, elapsed) / 3600)
+
+
 def hours_left(status: SessionStatus, now: float | None = None) -> float | None:
     """The session time left now: LG's last answer minus the time since (None when LG gave none)."""
 
-    if status.remaining_hours is None:
-        return None
-    if status.remaining_at is None:
-        return status.remaining_hours
-    elapsed = (time.time() if now is None else now) - status.remaining_at
-    return max(0.0, status.remaining_hours - max(0.0, elapsed) / 3600)
+    return _counted_down(status.remaining_hours, status.remaining_at, now)
+
+
+def tv_hours_left(status: SessionStatus, now: float | None = None) -> float | None:
+    """The session time left per the TV's own countdown (None when it was never read)."""
+
+    return _counted_down(status.tv_remaining_hours, status.tv_remaining_at, now)
 
 
 def _clock(epoch: float | None) -> str | None:
@@ -1294,6 +1310,40 @@ class App:
                 self._tv_problem(configured, status, reason, state)
             return None, True
 
+    def _read_tv_session(self, session: Session) -> float | None:
+        """The session time the TV itself reports (None when it cannot be read)."""
+
+        tv = self._tv(session)
+        if tv is None:
+            return None
+        try:
+            return tvssh.read_session(tv)
+        except tvssh.TvError:
+            return None  # cosmetic value: the token read already reported anything that matters
+
+    def _compare_clocks(self, session: Session, status: SessionStatus) -> None:
+        """Log the TV's own countdown next to LG's, and name a large gap once."""
+
+        tv = tv_hours_left(status)
+        if tv is None:
+            return
+        lg = hours_left(status)
+        if lg is None:
+            _LOGGER.info("'%s' reports %d h left on the TV", session.name, int(tv))
+            return
+        _LOGGER.info("'%s' reports %d h left on the TV (LG: %d h)", session.name, int(tv), int(lg))
+        if abs(tv - lg) < TV_DRIFT_HOURS:
+            status.tv_drift_alerted = False
+            return
+        if not status.tv_drift_alerted:
+            status.tv_drift_alerted = True
+            _LOGGER.warning(
+                "The TV's own countdown for '%s' differs from LG's by %d h. The TV only refreshes it when a "
+                "renewal is made on the TV itself, so LG's value is what decides when the session expires",
+                session.name,
+                int(abs(tv - lg)),
+            )
+
     def verify_tv(self, configured: Session, *, renew_after: bool) -> bool:
         """Read the token from the TV, compare it with the saved one and check it with LG.
 
@@ -1307,6 +1357,9 @@ class App:
 
         status.tv_checked = time.time()
         status.tv_alert = None
+        tv_hours = self._read_tv_session(configured)
+        if tv_hours is not None:
+            status.tv_remaining_hours, status.tv_remaining_at = tv_hours, status.tv_checked
         session = self.effective(configured)
         same = session.token is not None and session.token == redact.Secret(token)
         candidate = session if same else with_token(session, token)
@@ -1317,6 +1370,7 @@ class App:
             _LOGGER.error("LG does not accept the token '%s' holds", configured.name)
             status.tv_state = "Not accepted by LG"
             status.last_ok = False
+            status.remaining_hours = status.remaining_at = None
             if not status.needs_signin:
                 status.needs_signin = True
                 self._notify(configured, "signin")
@@ -1324,6 +1378,7 @@ class App:
         if result.remaining_hours is not None:
             status.remaining_hours, status.remaining_at = result.remaining_hours, time.time()
             self.check_low(configured, status)
+        self._compare_clocks(configured, status)
         if same:
             _LOGGER.info("'%s' holds the saved token", configured.name)
             status.tv_state = "Same as saved"
@@ -1473,32 +1528,52 @@ class App:
         self.wake.set()
         return f"Renewing {label}..."
 
+    @staticmethod
+    def _session_chip(session: Session, status: SessionStatus) -> dict[str, str]:
+        """The badge on a TV's card: the first thing the user needs to know about it (in this order)."""
+
+        left = hours_left(status)
+        low = left is not None and left < LOW_SESSION_HOURS
+        low_text = "" if left is None else f"{int(left)} h left"
+        checks: list[tuple[bool, str, str]] = [
+            (not session.enabled, "Paused", "off"),
+            (status.running, "Renewing...", "warn"),
+            (status.maintenance, "LG maintenance", "warn"),
+            (status.tv_alert is not None, status.tv_state, "error"),
+            (status.last_ok is None, "Not run yet", "neutral"),
+            (status.needs_signin, "Sign in on TV", "error"),
+            (not status.last_ok, "Failed", "error"),
+            (low, low_text, "warn"),
+        ]
+        for hit, text, tone in checks:
+            if hit:
+                return badge(text, tone)
+        return badge("Renewed", "ok")
+
+    @staticmethod
+    def _time_stats(status: SessionStatus) -> list[dict[str, object]]:
+        """The time-left figures: the TV's own countdown first when it has been read."""
+
+        left = hours_left(status)
+        tv_left = tv_hours_left(status)
+        if tv_left is None:
+            return [
+                stat("Time left", None if left is None else int(left), "h"),
+                stat("Time left from", _clock(status.remaining_at)),
+            ]
+        return [
+            stat("Time left", int(tv_left), "h"),
+            stat("LG reports", None if left is None else int(left), "h"),
+            stat("Time left from", _clock(status.tv_remaining_at)),
+        ]
+
     def _session_card(self, session: Session) -> dict[str, object]:
         status = self.status.get(session.notification_id, SessionStatus())
-        left = hours_left(status)
-        if not session.enabled:
-            chip = badge("Paused", "off")
-        elif status.running:
-            chip = badge("Renewing...", "warn")
-        elif status.maintenance:
-            chip = badge("LG maintenance", "warn")
-        elif status.tv_alert is not None:
-            chip = badge(status.tv_state, "error")
-        elif status.last_ok is None:
-            chip = badge("Not run yet")
-        elif status.needs_signin:
-            chip = badge("Sign in on TV", "error")
-        elif not status.last_ok:
-            chip = badge("Failed", "error")
-        elif left is not None and left < LOW_SESSION_HOURS:
-            chip = badge(f"{int(left)} h left", "warn")
-        else:
-            chip = badge("Renewed", "ok")
         stats = [
             stat("Last attempt", _clock(status.last_attempt)),
             stat("Last success", _clock(status.last_success)),
             stat("Next renewal", _clock(self.next_run) if session.enabled else "Paused"),
-            stat("Time left", None if left is None else int(left), "h"),
+            *self._time_stats(status),
         ]
         actions = [
             action(
@@ -1538,7 +1613,7 @@ class App:
             "title": session.name,
             "icon": "mdi:television",
             "subtitle": "Custom renewal URL" if session.custom_url else "Developer Mode session token",
-            "badge": chip,
+            "badge": self._session_chip(session, status),
             "off": not session.enabled,
             "stats": stats,
             "toggles": [

@@ -100,7 +100,7 @@ The token belongs to one sign-in. When the Developer Mode app on the TV asks for
 
 ## Reading the token from the TV automatically
 
-Instead of reading the token on a PC, the app can read it from the TV itself. It does what `ares-novacom` does: an SSH login to the TV (user `prisoner`) that prints `/var/luna/preferences/devmode_enabled`.
+Instead of reading the token on a PC, the app can read it from the TV itself. It does what `ares-novacom` does: an SSH login to the TV (user `prisoner`) that prints `/var/luna/preferences/devmode_enabled`. Over the same login, with a second read-only command, it also asks the TV's Developer Mode service for the session time the TV counts down itself (`luna://com.palmdts.devmode.service/devSessionTimeStatus`), which is what the panel shows as **Time left**.
 
 ```yaml
 sessions:
@@ -151,7 +151,7 @@ Inside an LG maintenance window the token is still read and compared, but LG is 
 - A key fetched from the TV comes over plain HTTP on your network; the TV offers nothing else. The key is useless without the passphrase.
 - The TV's SSH host key is remembered on first contact. If it changes later, the app refuses to connect and tells you.
 - The token read from the TV is not written to the app's data folder.
-- The app only ever runs one fixed command on the TV, which prints the token file. It changes nothing on the TV.
+- The app only ever runs two fixed, read-only commands on the TV: one prints the token file, the other asks the Developer Mode service for the session time. It changes nothing on the TV.
 
 ## Panel
 
@@ -160,7 +160,8 @@ Open **LG DevMode** from the sidebar, or click **Open web UI** on the app page. 
 - **TV cards:**
   - Status: *Renewed*, *Failed*, *Sign in on TV*, *LG maintenance*, *Renewing…*, *Paused* or *Not run yet*. A renewed TV with less than 168 hours (7 days) left shows *N h left* instead.
   - The last attempt, last success and next renewal.
-  - **Time left:** the session time LG last reported, counted down since then (`-` when LG gave none, or for a custom `url` outside `developer.lge.com`). It is forgotten when the app restarts and comes back with the next renewal.
+  - **Time left:** the session time the TV itself counts down (what its Developer Mode app shows), counted down since it was last read (`-` when the TV could not be read), with **LG reports** next to it when LG has answered. Without `host`, or when the TV's own value cannot be read, it is LG's value that is shown, counted down since LG reported it (`-` when LG gave none, or for a custom `url` outside `developer.lge.com`). It is forgotten when the app restarts and comes back with the next renewal.
+  - **Time left from:** when that value was read. The TV only refreshes its own countdown when a renewal is made on the TV itself, so it can be lower than LG's; LG's value is the one that decides when the session expires and the log names a gap of more than 24 hours once.
   - An **Auto renew** switch and a **Renew now** button. **Renew now** also works on a paused TV.
   - With `host` set: **TV token**, **Last TV check**, **SSH key** (where the key came from), and the **Check TV now** and **Upload SSH key** buttons.
 - **Schedule card:** the interval and retries, the **Failure notifications** switch and **Renew all now**.
@@ -201,6 +202,7 @@ When a renewal fails after all retries, LG no longer accepts a TV's token, or a 
 - **Network errors:** make sure the Home Assistant host can reach `developer.lge.com`.
 - **TV shows "Sign in on TV" (`ERR_005`, *Check user session*, or a sign-in page):** LG no longer accepts the saved token. Follow [After a Developer Mode app update or a new sign-in](#after-a-developer-mode-app-update-or-a-new-sign-in).
 - **TV shows "N h left", or you get "session is running out":** LG says the session has less than 168 hours (7 days) left. Right after a renewal a session has far more, so renewals are being accepted without extending it. On the TV, open the Developer Mode app and check that it is signed in and Dev Mode is on, then press **Renew now**. You are told once; the alert is armed again when the time left is back above 168 hours. TVs on older firmware, whose sessions never last that long, show this all the time: switch `notify_on_failure` off if the one alert per restart bothers you.
+- **The TV's time left differs from LG's:** with `host` set, **Time left** is the TV's own countdown and **LG reports** is LG's answer. The TV only restarts its countdown when a renewal is made on the TV itself (in its Developer Mode app), so after the app renews through LG's site the TV keeps counting down its old value while LG's starts again at 1000 hours. LG's value is the one that decides when the session expires, and the app renews on its interval either way. The log names a gap of more than 24 hours once.
 - **TV shows "Failed" with `not LG's JSON` in the log:** LG answered with something the app can't read (an empty page, an error page). Earlier versions counted this as a success. It is retried, then reported.
 - **No notifications:**
   - Check that `notify_on_failure` is on and that the phone's switch is on in the **Phones** card.
