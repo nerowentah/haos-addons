@@ -53,6 +53,8 @@ jobs:
             image: ghcr.io/nerowentah/ranhill-saj-bill-checker
           - app: ssl-cert-manager
             image: ghcr.io/nerowentah/ssl-cert-manager
+          - app: storage-optimizer
+            image: ghcr.io/nerowentah/storage-optimizer
           - app: tnb-usage-checker
             image: ghcr.io/nerowentah/power-tnb
     env:

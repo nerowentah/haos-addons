@@ -12,8 +12,10 @@ reproduce. Leave out real tokens, passwords, account numbers and hostnames.
 | What | Which apps |
 | --- | --- |
 | Supervisor token (Home Assistant and Supervisor API) | all |
+| Supervisor `manager` role (read disk usage, list and delete backups) | HA Storage Optimizer |
 | Home Assistant `/config`, read-only (`.storage/auth`) | API Key Manager |
 | Home Assistant `/config`, read-write (`configuration.yaml`) | Cloudflare Tunnel, SSL Cert Manager |
+| Home Assistant `/config`, read-write (log and text-to-speech cache files on a fixed list only) | HA Storage Optimizer |
 | `/ssl`, read-write (certificates and private keys) | Cloudflare Tunnel, SSL Cert Manager |
 | Cloudflare tunnel token or API token | Cloudflare Tunnel, SSL Cert Manager |
 | Portal sign-in details and session tokens | TNB Usage Checker, LG webOS DevMode Mgmt |
@@ -33,6 +35,10 @@ reproduce. Leave out real tokens, passwords, account numbers and hostnames.
 4. **App to disk.** State lives in `/data`. Files with secrets are written
    with owner-only permissions and replaced atomically. Secrets given as
    `!secret` references stay references in the stored options.
+   HA Storage Optimizer changes files in `/config` only when they are on its
+   fixed list, are regular files and are not behind a symbolic link; it deletes
+   a backup only after the Supervisor confirms it is local and not
+   password-protected.
 5. **External programs.** `cloudflared`, `certbot` and `nginx` are started
    with an argument list built by the app (never through a shell); option
    values that reach them are validated against an allow-list first.
