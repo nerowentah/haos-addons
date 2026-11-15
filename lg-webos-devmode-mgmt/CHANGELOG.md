@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.9.0
+
+- **Reads the token from the TV itself.** With the new per-TV options `host` (the TV's IP address), `port` (SSH port, default 9922) and `passphrase` (required with `host`: the 6-character code in the Developer Mode app), the app reads the TV's session token over SSH, the way `ares-novacom` does on a PC. It does so before each scheduled renewal and, with the new `media_player` option, each time Home Assistant's LG webOS TV integration reports that the TV turned on.
+- **Same token:** the session is checked with LG and the card's **Time left** is refreshed.
+- **Different token:** you get a notification, the app saves the TV's token as the `token` option and renews with it. A `!secret` reference or a custom `url` is never overwritten: the app then uses the new token until it restarts and asks you to update the value.
+- **New card states:** *Dev Mode off on TV*, *Turn on Key Server*, *Check the passphrase* and *TV host key changed*, each with one notification, plus **TV token**, **Last TV check** and a **Check TV now** button.
+- **The SSH key** is downloaded from the TV's key server (switch Key Server on once) and kept as the TV sends it, encrypted with the passphrase. `host` and `passphrase` are masked in the Configuration tab and accept `!secret`. The token read from the TV is not written to the app's data folder.
+- TVs without `host` work exactly as before.
+
 ## 1.8.1
 
 - **Image labels:** the maintainer is now given as the GitHub handle only, without an email address. No functional change.
