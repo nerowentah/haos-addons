@@ -52,11 +52,11 @@ LABEL \
     io.hass.arch="${BUILD_ARCH}" \
     io.hass.type="app" \
     io.hass.version=${BUILD_VERSION} \
-    maintainer="CWT <cwt@clgx.org>" \
+    maintainer="nerowentah" \
     org.opencontainers.image.title="Cloudflare Tunnel" \
     org.opencontainers.image.description="Cloudflare Tunnel connector for Home Assistant, derived from homeassistant-apps/app-cloudflared (MIT)" \
-    org.opencontainers.image.vendor="CWT <cwt@clgx.org>" \
-    org.opencontainers.image.authors="CWT <cwt@clgx.org>" \
+    org.opencontainers.image.vendor="nerowentah" \
+    org.opencontainers.image.authors="nerowentah" \
     org.opencontainers.image.licenses="MIT" \
     org.opencontainers.image.url="https://github.com/nerowentah/haos-addons" \
     org.opencontainers.image.source="https://github.com/nerowentah/haos-addons" \
