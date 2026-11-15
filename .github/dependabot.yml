@@ -90,14 +90,19 @@ updates:
     directory: "/storage-optimizer"
     schedule:
       interval: "weekly"
+      day: "wednesday"
+      time: "04:10"
+      timezone: "Asia/Kuala_Lumpur"
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: "docker"
     directory: "/tnb-usage-checker"
     schedule:
       interval: "weekly"
       day: "wednesday"
-      time: "04:10"
+      time: "04:20"
       timezone: "Asia/Kuala_Lumpur"
     open-pull-requests-limit: 3
     cooldown:
@@ -110,7 +115,7 @@ updates:
     schedule:
       interval: "weekly"
       day: "wednesday"
-      time: "04:20"
+      time: "04:30"
       timezone: "Asia/Kuala_Lumpur"
     open-pull-requests-limit: 3
     cooldown:
