@@ -4,5 +4,5 @@ maintainer: nerowentah
 description: >-
   Home Assistant OS apps: TNB and Ranhill SAJ bill checkers, LG webOS
   Developer Mode renewal, Companion app device cleanup, API key review,
-  Cloudflare Tunnel and an SSL certificate manager (TM Unifi bill checker
-  planned).
+  Cloudflare Tunnel, an SSL certificate manager and a storage optimizer
+  (TM Unifi bill checker planned).

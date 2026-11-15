@@ -24,6 +24,7 @@ WITH_SUPERVISOR = (
     "mobile-device-manager",
     "ranhill-saj-bill-checker",
     "ssl-cert-manager",
+    "storage-optimizer",
     "tnb-usage-checker",
 )
 # Shared file -> the apps that ship it (ALL: every folder with a config.yaml).

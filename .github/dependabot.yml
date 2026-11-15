@@ -47,6 +47,12 @@ updates:
     open-pull-requests-limit: 3
 
   - package-ecosystem: "docker"
+    directory: "/storage-optimizer"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: "docker"
     directory: "/tnb-usage-checker"
     schedule:
       interval: "weekly"

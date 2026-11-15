@@ -110,6 +110,16 @@ ignore = ["E501"]
   "PLR2004",
   "PT009",
 ]
+"storage-optimizer/**/*.py" = [
+  "TRY003",
+]
+"storage-optimizer/tests/*.py" = [
+  "TRY003",
+  "S101",
+  "SLF001",
+  "PLR2004",
+  "PT009",
+]
 "mobile-device-manager/tests/*.py" = [
   "TRY003",
   "S101",

@@ -99,7 +99,9 @@ class Supervisor:
     def __init__(self, token: str) -> None:
         self.token = token
 
-    def _request(self, url: str, method: str = "GET", body: object | None = None) -> object:
+    def _request(
+        self, url: str, method: str = "GET", body: object | None = None, timeout: float = HTTP_TIMEOUT
+    ) -> object:
         if not self.token:
             raise SupervisorError("No supervisor token available")
         request = urllib.request.Request(  # noqa: S310 - internal supervisor API
@@ -109,7 +111,7 @@ class Supervisor:
             headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:  # noqa: S310 - internal supervisor API
+            with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - internal supervisor API
                 reply = response.read(MAX_REPLY_BYTES + 1)
         except urllib.error.HTTPError as err:
             raise SupervisorError(f"HTTP {err.code} from {method} {url.removeprefix(SUPERVISOR_API)}") from err
@@ -133,6 +135,35 @@ class Supervisor:
         """POST to the Core REST API."""
 
         return self._request(f"{SUPERVISOR_CORE_API}{path}", "POST", body)
+
+    def core_post_slow(self, path: str, body: object, timeout: float) -> object:
+        """POST to the Core REST API, waiting up to ``timeout`` seconds (a service call that takes minutes)."""
+
+        return self._request(f"{SUPERVISOR_CORE_API}{path}", "POST", body, timeout)
+
+    def api_get(self, path: str, *, timeout: float = HTTP_TIMEOUT) -> dict[str, object]:
+        """GET from the Supervisor API (``path`` starts with '/'): the ``data`` of the reply.
+
+        ``timeout`` is for the slow calls (the disk usage scan walks every folder).
+        """
+
+        return self._data(path, timeout)
+
+    def api_post(self, path: str, body: object | None = None, *, timeout: float = HTTP_TIMEOUT) -> dict[str, object]:
+        """POST to the Supervisor API: the ``data`` of the reply ({} when it has none)."""
+
+        reply = self._request(f"{SUPERVISOR_API}{path}", "POST", body, timeout)
+        data = reply.get("data") if isinstance(reply, dict) else None
+        return data if isinstance(data, dict) else {}
+
+    def api_delete(self, path: str, body: object | None = None, *, timeout: float = HTTP_TIMEOUT) -> None:
+        """DELETE on the Supervisor API (a missing resource is fine)."""
+
+        try:
+            self._request(f"{SUPERVISOR_API}{path}", "DELETE", body, timeout)
+        except SupervisorError as err:
+            if "HTTP 404" not in str(err):
+                raise
 
     def core_delete(self, path: str) -> None:
         """DELETE on the Core REST API (a missing resource is fine)."""
@@ -187,8 +218,8 @@ class Supervisor:
 
         self._request(f"{SUPERVISOR_API}/addons/self/options", "POST", {"options": options})
 
-    def _data(self, path: str) -> dict[str, object]:
-        reply = self._request(f"{SUPERVISOR_API}{path}")
+    def _data(self, path: str, timeout: float = HTTP_TIMEOUT) -> dict[str, object]:
+        reply = self._request(f"{SUPERVISOR_API}{path}", timeout=timeout)
         data = reply.get("data") if isinstance(reply, dict) else None
         if not isinstance(data, dict):
             raise SupervisorError(f"Supervisor returned no data for {path}")

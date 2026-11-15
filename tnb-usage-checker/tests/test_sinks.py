@@ -21,7 +21,13 @@ class FakeHttp(supervisor.Supervisor):
         self.reply = reply
         self.error = error
 
-    def _request(self, url: str, method: str = "GET", body: object | None = None) -> object:  # noqa: ARG002
+    def _request(
+        self,
+        url: str,  # noqa: ARG002
+        method: str = "GET",  # noqa: ARG002
+        body: object | None = None,  # noqa: ARG002
+        timeout: float = supervisor.HTTP_TIMEOUT,  # noqa: ARG002
+    ) -> object:
         if self.error:
             raise supervisor.SupervisorError(self.error)
         return self.reply

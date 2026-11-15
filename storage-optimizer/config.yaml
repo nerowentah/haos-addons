@@ -1,0 +1,38 @@
+name: "HA Storage Optimizer"
+version: "0.1.0"
+slug: "storage_optimizer"
+description: >-
+  See where your Home Assistant disk space went and free it safely: free
+  space with a 30-day chart, usage per area, add-on and folder, a recorder
+  purge and repack, old local backups, and Home Assistant's log and cache
+  files. Nothing is cleaned automatically unless you switch it on.
+url: "https://github.com/nerowentah/haos-addons/tree/main/storage-optimizer"
+image: "ghcr.io/nerowentah/storage-optimizer"
+arch:
+  - aarch64
+  - amd64
+init: false
+ingress: true
+panel_icon: mdi:broom
+panel_title: Storage Optimizer
+panel_admin: true
+homeassistant_api: true
+hassio_api: true
+hassio_role: manager
+map:
+  - type: homeassistant_config
+    read_only: false
+options:
+  auto_clean: false
+  auto_clean_backups: false
+  keep_backups: 3
+  low_space_percent: 10
+  notify_on_low_space: true
+  log_level: info
+schema:
+  auto_clean: bool
+  auto_clean_backups: bool
+  keep_backups: int(1,50)
+  low_space_percent: int(1,50)
+  notify_on_low_space: bool
+  log_level: list(trace|debug|info|notice|warning|error|fatal)?
