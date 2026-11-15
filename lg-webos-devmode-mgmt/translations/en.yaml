@@ -4,7 +4,7 @@ configuration:
     description: How much the app writes to its log - trace, debug, info (default), notice, warning, error or fatal. Use debug while troubleshooting, then set it back to info. Applies without a restart.
   interval_hours:
     name: Renewal interval (hours)
-    description: How often to renew the TV dev-mode sessions. LG dev-mode sessions last about 50 hours, so keep this well below that.
+    description: How often to renew the TV dev-mode sessions. Sessions last up to 1000 hours on current TVs and about 50 on older firmware; the default of 48 suits both.
   retries:
     name: Retries
     description: Times to re-attempt a failed renewal before reporting a failure.

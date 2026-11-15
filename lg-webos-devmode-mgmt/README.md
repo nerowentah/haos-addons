@@ -11,6 +11,7 @@ Keeps your LG webOS **Developer Mode** sessions from expiring. The app renews th
 - **Sidebar panel.** A card per TV shows the last and next renewal, with an **Auto renew** switch and a **Renew now** button. The panel follows your HA theme.
 - **Switches apply immediately.** Configuration-tab edits are picked up within about 30 seconds, with no restart.
 - **Maintenance-aware.** Renewals pause during configurable LG maintenance windows and back off while the developer site is down.
+- **Knows when the TV needs a new sign-in.** Each renewal is verified with LG; the card shows the time left, and a token LG no longer accepts raises a **Sign in on TV** warning with the steps.
 - **Failure notifications** go to the phones linked to your Home Assistant. Phones are found automatically and each has its own switch. With no phones, a persistent notification is used.
 - **Private.** Tokens and renewal URLs are never logged or shown, and `!secret` works.
 - **Small.** It uses only the Python standard library.
