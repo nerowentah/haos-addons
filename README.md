@@ -130,3 +130,7 @@ cosign verify ghcr.io/nerowentah/power-tnb:0.5.1 \
 - Cloudflare Tunnel wraps Cloudflare's open-source `cloudflared` connector, pinned and verified at build time, but Cloudflare's edge behavior can change.
 - API Key Manager only reads Home Assistant's auth store. It never changes accounts or tokens.
 - HA Storage Optimizer deletes only what you select or switch on. Deleted backups and cleaned files cannot be restored.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
