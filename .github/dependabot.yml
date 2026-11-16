@@ -1,10 +1,9 @@
 version: 2
 
 # Scheduled inside one window per day (see `time`/`timezone`) so the bot wave is
-# predictable instead of landing at whatever hour Dependabot picks. The docker
-# entries stay weekly but are staggered ten minutes apart: each one triggers a
-# multi-arch image build on the hosted runners (public repo, so no minutes are
-# billed, but the bursts still queue against each other).
+# predictable instead of landing at whatever hour Dependabot picks.
+# `rebase-strategy: disabled` everywhere: with `auto`, every push to main
+# rebases each open bot PR and re-runs its multi-arch image build.
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -13,100 +12,57 @@ updates:
       time: "03:00"
       timezone: "Asia/Kuala_Lumpur"
     open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+    assignees:
+      - "nerowentah"
+    rebase-strategy: disabled
+    commit-message:
+      prefix: "chore(ci):"
     cooldown:
       default-days: 7
     groups:
-      github-actions:
+      actions:
+        applies-to: version-updates
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
-  # One entry per app: each image is built from its own folder only.
+  # One entry for every app folder (each image is still built from its own
+  # folder). group-by emits one PR per base image across all of them, so a
+  # shared base-image bump is reviewed once instead of eight times.
   - package-ecosystem: "docker"
-    directory: "/api-key-manager"
+    directories:
+      - "/api-key-manager"
+      - "/cloudflare-tunnel"
+      - "/lg-webos-devmode-mgmt"
+      - "/mobile-device-manager"
+      - "/ranhill-saj-bill-checker"
+      - "/ssl-cert-manager"
+      - "/storage-optimizer"
+      - "/tnb-usage-checker"
     schedule:
       interval: "weekly"
       day: "wednesday"
       time: "03:10"
       timezone: "Asia/Kuala_Lumpur"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "docker"
+    assignees:
+      - "nerowentah"
+    rebase-strategy: disabled
+    commit-message:
+      prefix: "chore(docker):"
     cooldown:
       default-days: 7
-
-  - package-ecosystem: "docker"
-    directory: "/cloudflare-tunnel"
-    schedule:
-      interval: "weekly"
-      day: "wednesday"
-      time: "03:20"
-      timezone: "Asia/Kuala_Lumpur"
-    open-pull-requests-limit: 3
-    cooldown:
-      default-days: 7
-
-  - package-ecosystem: "docker"
-    directory: "/lg-webos-devmode-mgmt"
-    schedule:
-      interval: "weekly"
-      day: "wednesday"
-      time: "03:30"
-      timezone: "Asia/Kuala_Lumpur"
-    open-pull-requests-limit: 3
-    cooldown:
-      default-days: 7
-
-  - package-ecosystem: "docker"
-    directory: "/mobile-device-manager"
-    schedule:
-      interval: "weekly"
-      day: "wednesday"
-      time: "03:40"
-      timezone: "Asia/Kuala_Lumpur"
-    open-pull-requests-limit: 3
-    cooldown:
-      default-days: 7
-
-  - package-ecosystem: "docker"
-    directory: "/ranhill-saj-bill-checker"
-    schedule:
-      interval: "weekly"
-      day: "wednesday"
-      time: "03:50"
-      timezone: "Asia/Kuala_Lumpur"
-    open-pull-requests-limit: 3
-    cooldown:
-      default-days: 7
-
-  - package-ecosystem: "docker"
-    directory: "/ssl-cert-manager"
-    schedule:
-      interval: "weekly"
-      day: "wednesday"
-      time: "04:00"
-      timezone: "Asia/Kuala_Lumpur"
-    open-pull-requests-limit: 3
-    cooldown:
-      default-days: 7
-
-  - package-ecosystem: "docker"
-    directory: "/storage-optimizer"
-    schedule:
-      interval: "weekly"
-      day: "wednesday"
-      time: "04:10"
-      timezone: "Asia/Kuala_Lumpur"
-    open-pull-requests-limit: 3
-    cooldown:
-      default-days: 7
-
-  - package-ecosystem: "docker"
-    directory: "/tnb-usage-checker"
-    schedule:
-      interval: "weekly"
-      day: "wednesday"
-      time: "04:20"
-      timezone: "Asia/Kuala_Lumpur"
-    open-pull-requests-limit: 3
-    cooldown:
-      default-days: 7
+    groups:
+      docker-images:
+        applies-to: version-updates
+        group-by: dependency-name
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   # requirements-dev.txt: only the tools move. The libraries mirror the
   # versions of the Alpine packages in the images and change with the base image.
@@ -115,9 +71,17 @@ updates:
     schedule:
       interval: "weekly"
       day: "wednesday"
-      time: "04:30"
+      time: "03:20"
       timezone: "Asia/Kuala_Lumpur"
     open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "python"
+    assignees:
+      - "nerowentah"
+    rebase-strategy: disabled
+    commit-message:
+      prefix: "chore(deps):"
     cooldown:
       default-days: 7
     ignore:
@@ -125,3 +89,17 @@ updates:
       - dependency-name: "websocket-client"
       - dependency-name: "cryptography"
       - dependency-name: "pyyaml"
+    groups:
+      python-deps:
+        applies-to: version-updates
+        dependency-type: "production"
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      python-dev-deps:
+        applies-to: version-updates
+        dependency-type: "development"
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
