@@ -1,4 +1,4 @@
-# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.0 (9bf3624e56d8e03a782eb9db55b35d5d184f510a)
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.2 (957516d64b73951bdbe694a458dd2a9075f63aaa)
 # .github/workflows/shared-ci.yml by .github/ci/vendor-platform.mjs: this repository is
 # public and cannot call the private platform repository. Composite actions
 # are expanded inline (8 step(s)). Re-run the script on a platform release.
@@ -280,6 +280,33 @@ jobs:
             export PATH="$HOME/.local/bin:$PATH"
           fi
           zizmor . --min-severity=medium
+
+      # Both reviewdog actions below fetch the binary themselves with a single
+      # unretried curl; one GitHub blip leaves "reviewdog: command not found"
+      # (exit 127) and fails lint. Install the same pinned release here with
+      # retries and a checksum, ahead of them on PATH; their own failed download
+      # then lands in an empty dir and this copy is used.
+      - name: Install reviewdog
+        if: inputs.enable-eslint || inputs.enable-ruff
+        shell: bash
+        env:
+          RD_VERSION: '0.21.3'
+        run: |
+          case "$(uname -m)" in
+            x86_64|amd64) ARCH=x86_64; SHA=7029c2faf54e1237454cae8f1adf876c965b3d13d054f1a392206459091af4a1 ;;
+            aarch64|arm64) ARCH=arm64; SHA=bf84e546444cbb0325f1f2c6151549c79673117573b737884ba8ecbe9d04dc85 ;;
+            *) echo "::warning::No pinned reviewdog for $(uname -m); the actions will install their own."; exit 0 ;;
+          esac
+          DIR="$RUNNER_TEMP/reviewdog-bin"
+          mkdir -p "$DIR"
+          TGZ="$DIR/reviewdog.tar.gz"
+          curl -sSfL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 -o "$TGZ" \
+            "https://github.com/reviewdog/reviewdog/releases/download/v${RD_VERSION}/reviewdog_${RD_VERSION}_Linux_${ARCH}.tar.gz"
+          echo "${SHA}  ${TGZ}" | sha256sum -c -
+          tar -xzf "$TGZ" -C "$DIR" reviewdog
+          rm -f "$TGZ"
+          "$DIR/reviewdog" -version
+          echo "$DIR" >> "$GITHUB_PATH"
 
       - name: ESLint with Reviewdog
         if: inputs.enable-eslint
