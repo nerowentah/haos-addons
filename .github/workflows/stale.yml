@@ -1,0 +1,21 @@
+name: Stale Issue Manager
+
+on:
+  schedule:
+    - cron: "0 1 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stale:
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    uses: nerowentah/scripts/.github/workflows/shared-stale.yml@9bf3624e56d8e03a782eb9db55b35d5d184f510a # v1.0.0
+    with:
+      labels-linux: '["ubuntu-latest"]'
+      days-before-stale: 60
+      days-before-close: 7

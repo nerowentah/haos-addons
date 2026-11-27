@@ -1,4 +1,4 @@
-# Tools and test dependencies for CI (.github/workflows/lint.yaml) and local runs:
+# Tools and test dependencies for CI (.github/workflows/code-quality.yml) and local runs:
 #   pip install -r requirements-dev.txt
 #
 # Tools: exact versions, updated by Dependabot.

@@ -5,7 +5,7 @@ name: Retry signing after a Sigstore outage
 # Real build errors are never retried, and images are never published unsigned.
 
 on:
-  workflow_run:
+  workflow_run: # zizmor: ignore[dangerous-triggers] - checks out nothing; only re-runs a failed push-to-main Builder run of this repository (gated below)
     workflows: [Builder]
     types: [completed]
     branches: [main]
@@ -17,7 +17,13 @@ permissions:
 jobs:
   retry:
     name: Retry after Sigstore recovers
-    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt < 3
+    # branches: [main] matches the head branch *name*, which a fork PR can share,
+    # so also require a push run from this repository.
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt < 3 &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 75
     env:

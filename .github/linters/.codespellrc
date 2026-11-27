@@ -1,0 +1,5 @@
+[codespell]
+skip = .git,node_modules,*.lock,.venv,dist,*.min.js,*.svg
+# hass: Home Assistant's bashio/s6 namespace (hass.io, bashio::hass).
+ignore-words-list = hass
+quiet-level = 2

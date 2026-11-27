@@ -13,7 +13,7 @@ on:
   schedule:
     - cron: "17 5 * * 3"
   workflow_dispatch:
-  workflow_run:
+  workflow_run: # zizmor: ignore[dangerous-triggers] - scans published images only; runs after a successful push-to-main Builder run of this repository (gated below), checks out the default branch
     workflows:
       - Builder
     types:
@@ -30,7 +30,8 @@ jobs:
     # After a Builder run: only when it published from main and succeeded.
     if: >-
       github.event_name != 'workflow_run' ||
-      (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
+      (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

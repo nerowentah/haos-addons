@@ -1,0 +1,30 @@
+name: PR Auto-Update
+
+# Serial PR queue: see nerowentah/scripts shared-pr-auto-update.yml. `push`
+# shortens the wait after a manual merge; the schedule picks up GITHUB_TOKEN
+# auto-merges, which fire no push.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  queue:
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+      checks: read
+      statuses: read
+    uses: nerowentah/scripts/.github/workflows/shared-pr-auto-update.yml@9bf3624e56d8e03a782eb9db55b35d5d184f510a # v1.0.0
+    with:
+      dispatch-workflows: code-quality.yml builder.yaml codeql.yml

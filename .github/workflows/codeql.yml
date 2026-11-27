@@ -1,0 +1,46 @@
+name: CodeQL
+
+# Thin caller of nerowentah/scripts shared-codeql.yml. Checks surface as
+# "codeql / analyze (<language>)" and are deferred by the PR queue like shared-ci.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR pushes and PR-branch dispatches are cancelled; runs on
+  # refs/heads/main (schedule, dispatch) must not cancel each other.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}
+
+permissions:
+  contents: read
+
+jobs:
+  queue:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: nerowentah/scripts/.github/workflows/shared-pr-queue.yml@9bf3624e56d8e03a782eb9db55b35d5d184f510a # v1.0.0
+    with:
+      dispatch-workflows: code-quality.yml builder.yaml codeql.yml
+
+  codeql:
+    needs: queue
+    if: >-
+      needs.queue.outputs.defer != 'true' &&
+      (github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) ||
+      contains(github.event.pull_request.labels.*.name, 'safe-to-test') ||
+      contains(fromJSON('["dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login))))
+    permissions:
+      contents: read
+      security-events: write
+    uses: nerowentah/scripts/.github/workflows/shared-codeql.yml@9bf3624e56d8e03a782eb9db55b35d5d184f510a # v1.0.0
+    with:
+      labels-linux: '["ubuntu-latest"]'
+      languages: '["actions","javascript-typescript","python"]'
