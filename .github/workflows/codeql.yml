@@ -38,6 +38,7 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'safe-to-test') ||
       contains(fromJSON('["dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login))))
     permissions:
+      actions: read # shared-codeql analyze reads the workflow run (v1.0.1+)
       contents: read
       security-events: write
     uses: ./.github/workflows/shared-codeql.yml
