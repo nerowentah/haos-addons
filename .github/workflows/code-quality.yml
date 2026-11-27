@@ -1,0 +1,131 @@
+name: Code Quality
+
+# Thin caller of the shared CI platform in nerowentah/scripts (BRANCH_PROTECTION.md,
+# "Shared CI platform"). Pinned to a commit: a mutable ref on a workflow holding
+# pull-requests: write is a supply-chain surface. Bump the pins by hand (Dependabot
+# cannot read the private platform repository).
+#
+# No push trigger on main: the ruleset requires strict up-to-date checks, so a PR's
+# last run already validated the tree that lands; the weekly schedule is main's own
+# run. workflow_dispatch on a PR branch is how the PR queue (pr-auto-update.yml)
+# re-runs the required checks after it updates a branch.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR pushes and PR-branch dispatches are cancelled; runs on
+  # refs/heads/main (schedule, dispatch) must not cancel each other.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  queue:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/shared-pr-queue.yml
+    with:
+      dispatch-workflows: code-quality.yml builder.yaml codeql.yml
+
+  shared-ci:
+    needs: queue
+    # Queue deferral first (a skipped caller leaves the required "shared-ci / *"
+    # checks unreported, so a deferred PR cannot merge untested), then the trust
+    # gate: code-executing PR checks run only for same-repository branches of
+    # trusted authors, the update bots, or a PR marked safe-to-test.
+    if: >-
+      needs.queue.outputs.defer != 'true' &&
+      (github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) ||
+      contains(github.event.pull_request.labels.*.name, 'safe-to-test') ||
+      contains(fromJSON('["dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login))))
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+      issues: write
+    uses: ./.github/workflows/shared-ci.yml
+    with:
+      labels-linux: '["ubuntu-latest"]'
+      python-version: 3.14
+      python-version-fallback: 3.13
+      install-deps: false
+      enable-eslint: false
+      enable-ruff: false
+      enable-npm-audit: false
+      enable-gap-linting: true
+      pip-audit-inputs: requirements-dev.txt
+      setup-extra: |
+        python -m pip install -r requirements-dev.txt
+      test-command: |
+        set -euo pipefail
+        python .github/scripts/check_schema.py
+        python tools/sync_shared.py --check
+        MYPYPATH=shared/app:shared/tests/stubs:tools mypy shared/app shared/tests tools
+        for app in api-key-manager mobile-device-manager ranhill-saj-bill-checker lg-webos-devmode-mgmt tnb-usage-checker cloudflare-tunnel ssl-cert-manager storage-optimizer; do
+          echo "::group::mypy $app"; MYPYPATH="$app/rootfs/app" mypy "$app/rootfs/app" "$app/tests"; echo "::endgroup::"
+        done
+        ruff check .
+        ruff format --check .
+        for app in */; do
+          app=${app%/}
+          [ -d "$app/tests" ] || continue
+          echo "::group::tests $app"; python -m unittest discover -s "$app/tests"; echo "::endgroup::"
+        done
+        # s6 layout: services register in the user bundle, never the deprecated s6-rc.d/user.
+        if git ls-files | grep -q "rootfs/etc/s6-overlay/s6-rc.d/user/"; then
+          echo "::error::Register services in rootfs/etc/s6-overlay/user-bundles.d/user/contents.d/, not s6-rc.d/user/"; exit 1
+        fi
+        for dir in */; do
+          app=${dir%/}
+          [ -f "$app/config.yaml" ] || continue
+          test -f "$app/rootfs/etc/s6-overlay/user-bundles.d/user/contents.d/$app" || {
+            echo "::error::$app does not register its service in rootfs/etc/s6-overlay/user-bundles.d/user/contents.d/"; exit 1; }
+        done
+
+  # Not required: the Home Assistant app linter, one job per app.
+  find-apps:
+    name: Find apps
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      apps: ${{ steps.apps.outputs.addons_list }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Find app directories
+        id: apps
+        uses: home-assistant/actions/helpers/find-addons@86d4564712fa02543c808e3a693dd04f9d3f8361 # master, 2026-10-26
+
+  app-config:
+    name: App config ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: find-apps
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.find-apps.outputs.apps) }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Lint the app configuration
+        uses: frenck/action-app-linter@d51677290aef26cdfc835271dd3c7343ce502809 # v2.21.2
+        with:
+          path: "./${{ matrix.app }}"

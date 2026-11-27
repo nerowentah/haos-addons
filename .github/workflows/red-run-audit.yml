@@ -1,0 +1,22 @@
+name: Red Run Audit
+
+# Weekly issue listing workflow runs that failed and were never explained by a
+# later success (see nerowentah/scripts shared-red-run-audit.yml).
+on:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    uses: ./.github/workflows/shared-red-run-audit.yml

@@ -1,6 +1,7 @@
 # HAOS Apps by nerowentah
 
 Home Assistant OS apps (formerly called add-ons) covering:
+
 - LG webOS Developer Mode management
 - Malaysian utility checkers
 - a manager for your Companion app devices
@@ -15,7 +16,7 @@ Home Assistant OS apps (formerly called add-ons) covering:
 
 Or add it by hand: go to **Settings → Apps → App store**, open **⋮ → Repositories** and add:
 
-```
+```text
 https://github.com/nerowentah/haos-addons
 ```
 
@@ -35,6 +36,7 @@ https://github.com/nerowentah/haos-addons
 **Planned:** TM Unifi Bill Checker.
 
 Each app folder contains:
+
 - a short `README.md` (the store's Info tab)
 - a full `DOCS.md` (the app's Documentation tab)
 - a `CHANGELOG.md`
@@ -52,7 +54,7 @@ Each app folder contains:
 
 ## Repository layout
 
-```
+```text
 repository.yaml            store metadata
 tnb-usage-checker/         one folder per app: config.yaml, Dockerfile, docs, icons, translations,
                            tests, and rootfs/app/ (code + panel) + rootfs/etc/s6-overlay/
@@ -67,12 +69,15 @@ storage-optimizer/
 shared/app/                the modules every app ships a copy of (panel, store, Supervisor client,
                            safe file/HTTP helpers); shared/tests/ tests them
 tools/sync_shared.py       copies shared/app/ into the apps (--check: fail when a copy differs)
-.github/workflows/         builder.yaml (finds changed apps), build-app.yaml (builds, signs, verifies one app),
-                           lint.yaml (app config, shared copies in sync, ruff, tests, s6 layout),
+.github/workflows/         builder.yaml + builder-jobs.yaml (finds changed apps), build-app.yaml (builds, signs,
+                           verifies one app),
+                           code-quality.yml (shared CI from nerowentah/scripts: secrets scan, spelling and
+                           markdown, plus app config, shared copies in sync, mypy, ruff, tests, s6 layout),
+                           pr-auto-update.yml (serial PR queue: one PR brought up to date and tested at a time),
                            retry-signing.yaml (re-runs builds that failed only because Sigstore was down),
                            cleanup-packages.yaml (deletes ghcr packages no app uses anymore,
                            and prunes old untagged versions),
-                           codeql.yaml (static analysis of the Python, the panel script and the workflows),
+                           codeql.yml (static analysis of the Python, the panel script and the workflows),
                            scan-images.yaml (Trivy scan of the published images, weekly and after each publish)
 .github/dependabot.yml     weekly updates for actions, base images and CI tools
 requirements-dev.txt       pinned CI tools and test libraries (pip install -r requirements-dev.txt)
@@ -105,12 +110,14 @@ python -m unittest discover -s storage-optimizer/tests
 **Pull requests:** CI lints the app configs, runs ruff and every app's tests, checks the s6 layout, runs CodeQL, and builds every changed app for aarch64 and amd64. Every GitHub Action is pinned to a commit and the base image to a digest; Dependabot proposes the updates.
 
 **Merges to `main`:**
+
 - CI pushes the images to `ghcr.io/nerowentah/<arch>-<image>` and publishes a multi-arch manifest, tagged with the version and `latest`.
 - Every image and manifest is **signed with Sigstore cosign**, keyless through GitHub OIDC. The workflow then **verifies the signature** before it finishes.
 - If Sigstore is down, `retry-signing.yaml` waits for it to recover and re-runs the failed jobs. Images are never published unsigned.
 - `cleanup-packages.yaml` tidies ghcr: every week (or manually, dry run by default) it deletes packages that no app in this repository uses anymore, and untagged versions of live packages older than 30 days. Tagged versions — releases, `latest` and the cosign `sha256-*` signature tags — are always kept.
 
 **Releasing a change:**
+
 1. Bump `version` in the app's `config.yaml` and add a `CHANGELOG.md` entry.
 2. Home Assistant offers the update once the new image is published.
 

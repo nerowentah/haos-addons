@@ -1,95 +1,57 @@
 name: Builder
 
-env:
-  MONITORED_FILES: "config.json config.yaml config.yml Dockerfile rootfs"
-
+# PRs and PR-queue dispatches build without publishing (`builder`; its
+# "builder / Initialize builds" check is required). A push to main builds and
+# publishes (`publish`). Both grant packages/id-token write because
+# build-app.yaml declares them, but only `publish` passes publish: true; fork PRs
+# get a read-only token from GitHub regardless. retry-signing.yaml and
+# scan-images.yaml follow this workflow by name.
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
+    types: [opened, synchronize, reopened]
   push:
-    branches:
-      - main
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR pushes and PR-branch dispatches are cancelled; a publishing
+  # push to main never is.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}
 
 permissions:
   contents: read
 
 jobs:
-  init:
-    name: Initialize builds
-    runs-on: ubuntu-latest
-    outputs:
-      changed: ${{ steps.filter.outputs.changed }}
-      changed_apps: ${{ steps.filter.outputs.changed_apps }}
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # Full history: the changed files are read from git, not a third-party action.
-          fetch-depth: 0
-          persist-credentials: false
+  queue:
+    if: github.event_name != 'push'
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/shared-pr-queue.yml
+    with:
+      dispatch-workflows: code-quality.yml builder.yaml codeql.yml
 
-      - name: Find app directories
-        id: apps
-        uses: home-assistant/actions/helpers/find-addons@86d4564712fa02543c808e3a693dd04f9d3f8361 # master, 2026-10-26
-
-      - name: Filter changed apps
-        id: filter
-        env:
-          APPS: ${{ steps.apps.outputs.addons }}
-          EVENT_NAME: ${{ github.event_name }}
-          BEFORE: ${{ github.event.before }}
-        run: |
-          # Pull request: HEAD is the merge commit, its first parent is the base branch.
-          # Push: everything since the previous tip of the branch. When that commit is
-          # unknown (first push, force push) the list stays empty and every app is built.
-          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
-            base="HEAD^1"
-          else
-            base="${BEFORE}"
-          fi
-          CHANGED_FILES=""
-          if git cat-file -e "${base}^{commit}" 2>/dev/null; then
-            CHANGED_FILES=$(git diff --name-only "${base}" HEAD | paste -sd " " -)
-          fi
-          echo "Changed files: ${CHANGED_FILES:-(unknown, building every app)}"
-          changed_apps=()
-          if [[ -z "${CHANGED_FILES}" ]]; then
-            # No previous commit to diff against.
-            changed_apps=(${APPS})
-          # If the workflow file itself changed, rebuild all apps
-          elif [[ "${CHANGED_FILES}" =~ .github/workflows/(builder|build-app)\.yaml ]]; then
-            changed_apps=(${APPS})
-          else
-            for app in ${APPS}; do
-              for file in ${MONITORED_FILES}; do
-                if [[ "${CHANGED_FILES}" =~ ${app}/${file} ]]; then
-                  changed_apps+=("${app}")
-                  break
-                fi
-              done
-            done
-          fi
-          if [[ ${#changed_apps[@]} -gt 0 ]]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "changed_apps=$(jq -nc '$ARGS.positional' --args "${changed_apps[@]}")" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  build-app:
-    name: Build ${{ matrix.app }}
-    needs: init
-    if: needs.init.outputs.changed == 'true'
+  builder:
+    needs: queue
+    # Not deferred by the PR queue. Fork PRs build too (hosted runners, read-only
+    # token), as before; the queue never defers them.
+    if: needs.queue.outputs.defer != 'true'
     permissions:
       contents: read
       id-token: write
       packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        app: ${{ fromJSON(needs.init.outputs.changed_apps) }}
-    uses: ./.github/workflows/build-app.yaml
+    uses: ./.github/workflows/builder-jobs.yaml
     with:
-      app: ${{ matrix.app }}
-      publish: ${{ github.event_name == 'push' }}
+      publish: false
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    uses: ./.github/workflows/builder-jobs.yaml
+    with:
+      publish: true

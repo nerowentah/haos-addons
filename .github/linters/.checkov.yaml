@@ -1,0 +1,18 @@
+---
+# Platform default (nerowentah/scripts shared-ci) plus two Dockerfile checks
+# that do not apply to Home Assistant apps:
+#   CKV_DOCKER_2 (HEALTHCHECK): the Supervisor's watchdog (config.yaml) checks
+#     app health; a Docker HEALTHCHECK is ignored by Supervisor.
+#   CKV_DOCKER_3 (USER): s6-overlay's /init must start as root; services drop
+#     privileges where they can.
+compact: true
+skip-framework:
+  - secrets
+skip-check:
+  - CKV_GHA_7
+  - CKV_DOCKER_2
+  - CKV_DOCKER_3
+skip-path:
+  - .venv
+  - node_modules
+  - .terraform

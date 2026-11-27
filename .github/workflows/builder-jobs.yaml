@@ -1,0 +1,109 @@
+name: Builder jobs
+
+# Reusable body of builder.yaml. It lives behind a reusable-workflow caller so
+# the required check surfaces as "builder / Initialize builds": the PR queue
+# defers CI by skipping that caller, which leaves the check unreported. A
+# skipped plain job would count as passed.
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        type: boolean
+        required: false
+        default: false
+        description: Push, sign and publish the images (push to main only).
+
+permissions:
+  contents: read
+
+env:
+  MONITORED_FILES: "config.json config.yaml config.yml Dockerfile rootfs"
+
+jobs:
+  init:
+    name: Initialize builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+      changed_apps: ${{ steps.filter.outputs.changed_apps }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the changed files are read from git, not a third-party action.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Find app directories
+        id: apps
+        uses: home-assistant/actions/helpers/find-addons@86d4564712fa02543c808e3a693dd04f9d3f8361 # master, 2026-10-26
+
+      - name: Filter changed apps
+        id: filter
+        env:
+          APPS: ${{ steps.apps.outputs.addons }}
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          REF: ${{ github.ref }}
+        run: |
+          # Pull request: HEAD is the merge commit, its first parent is the base branch.
+          # Dispatch on a PR branch (the PR queue): the branch's own changes since it
+          # left main. Push: everything since the previous tip of the branch. When no
+          # base is known (first push, force push, dispatch on main) the list stays
+          # empty and every app is built.
+          base=""
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            base="HEAD^1"
+          elif [[ "${EVENT_NAME}" == "workflow_dispatch" && "${REF}" != "refs/heads/main" ]]; then
+            base=$(git merge-base origin/main HEAD 2>/dev/null || true)
+          else
+            base="${BEFORE}"
+          fi
+          CHANGED_FILES=""
+          if [[ -n "${base}" ]] && git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            CHANGED_FILES=$(git diff --name-only "${base}" HEAD | paste -sd " " -)
+          fi
+          echo "Changed files: ${CHANGED_FILES:-(unknown, building every app)}"
+          changed_apps=()
+          if [[ -z "${CHANGED_FILES}" ]]; then
+            # shellcheck disable=SC2206 # APPS is a space-separated list
+            changed_apps=(${APPS})
+          # If the workflow files themselves changed, rebuild all apps
+          elif [[ "${CHANGED_FILES}" =~ .github/workflows/(builder|builder-jobs|build-app)\.yaml ]]; then
+            # shellcheck disable=SC2206
+            changed_apps=(${APPS})
+          else
+            for app in ${APPS}; do
+              for file in ${MONITORED_FILES}; do
+                if [[ "${CHANGED_FILES}" =~ ${app}/${file} ]]; then
+                  changed_apps+=("${app}")
+                  break
+                fi
+              done
+            done
+          fi
+          if [[ ${#changed_apps[@]} -gt 0 ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "changed_apps=$(jq -nc '$ARGS.positional' --args "${changed_apps[@]}")" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-app:
+    name: Build ${{ matrix.app }}
+    needs: init
+    if: needs.init.outputs.changed == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.init.outputs.changed_apps) }}
+    uses: ./.github/workflows/build-app.yaml
+    with:
+      app: ${{ matrix.app }}
+      publish: ${{ inputs.publish }}

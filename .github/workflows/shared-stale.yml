@@ -1,0 +1,76 @@
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.0 (9bf3624e56d8e03a782eb9db55b35d5d184f510a)
+# .github/workflows/shared-stale.yml by .github/ci/vendor-platform.mjs: this repository is
+# public and cannot call the private platform repository. Composite actions
+# are expanded inline (0 step(s)). Re-run the script on a platform release.
+
+
+name: Shared Stale Issue Manager
+
+# Reusable stale/close sweep. The caller supplies the schedule and grants
+# issues: write and pull-requests: write.
+
+on:
+  workflow_call:
+    inputs:
+      days-before-stale:
+        type: number
+        required: false
+        default: 30
+      days-before-close:
+        type: number
+        required: false
+        default: 14
+      exempt-issue-labels:
+        type: string
+        required: false
+        # enhancement issues are a feature backlog, not inactivity: never stale.
+        default: pinned,security,enhancement
+      exempt-pr-labels:
+        type: string
+        required: false
+        default: pinned,dependencies
+      labels-linux:
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  runners:
+    uses: ./.github/workflows/shared-runner-setup.yml
+    with:
+      os: linux
+      labels-linux: ${{ inputs.labels-linux }}
+
+  stale:
+    needs: runners
+    runs-on: ${{ fromJSON(needs.runners.outputs.linux-runner) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+
+      - name: Mark and close stale issues and PRs
+        uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
+        with:
+          stale-issue-message: >
+            This issue has been inactive for ${{ inputs.days-before-stale }} days. Please update or it will be closed in ${{ inputs.days-before-close }} days.
+          stale-pr-message: >
+            This PR has been inactive for ${{ inputs.days-before-stale }} days. Please update or it will be closed in ${{ inputs.days-before-close }} days.
+          close-issue-message: Closing due to inactivity. Please reopen if still relevant.
+          close-pr-message: Closing due to inactivity. Please reopen with updates.
+          days-before-stale: ${{ inputs.days-before-stale }}
+          days-before-close: ${{ inputs.days-before-close }}
+          stale-issue-label: stale
+          stale-pr-label: stale
+          exempt-issue-labels: ${{ inputs.exempt-issue-labels }}
+          exempt-pr-labels: ${{ inputs.exempt-pr-labels }}
+          operations-per-run: 100

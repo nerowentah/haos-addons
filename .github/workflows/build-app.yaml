@@ -10,6 +10,9 @@ on:
         required: true
         type: boolean
 
+# Every job declares its own permissions; nothing inherits a default.
+permissions: {}
+
 jobs:
   prepare:
     name: Prepare

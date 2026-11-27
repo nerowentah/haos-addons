@@ -1,0 +1,140 @@
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.0 (9bf3624e56d8e03a782eb9db55b35d5d184f510a)
+# .github/workflows/shared-auto-approve.yml by .github/ci/vendor-platform.mjs: this repository is
+# public and cannot call the private platform repository. Composite actions
+# are expanded inline (1 step(s)). Re-run the script on a platform release.
+
+
+name: Shared Dependabot Auto-Approval
+
+# Reusable. The caller triggers on pull_request_target (types opened, reopened)
+# and grants contents: write and pull-requests: write. No PR-controlled code is
+# checked out or executed, and every job is gated on the PR author plus a
+# same-repo head, so the write token never reaches a foreign PR.
+#
+# Minor and patch updates are approved and set to squash auto-merge. Major
+# updates are approved too when `major-delay-days` >= 0, and set to auto-merge
+# once the PR is at least that many days old at the time of the event.
+
+on:
+  workflow_call:
+    inputs:
+      major-delay-days:
+        type: number
+        required: false
+        default: -1
+        description: Auto-merge semver-major updates once the PR is this many days old; -1 = never.
+      labels-linux:
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  runners:
+    # Same gate as auto-approve, so PRs from anyone else spend no job at all.
+    if: >- # zizmor: ignore[bot-conditions]
+      github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == github.event.pull_request.head.repo.full_name
+    uses: ./.github/workflows/shared-runner-setup.yml
+    with:
+      os: linux
+      labels-linux: ${{ inputs.labels-linux }}
+
+  auto-approve:
+    # The actor check only narrows the gate (ANDed with PR author + same-repo head):
+    # a spoofed actor can at most skip this job, never run it on a foreign PR.
+    if: >- # zizmor: ignore[bot-conditions]
+      github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == github.event.pull_request.head.repo.full_name
+    needs: runners
+    runs-on: ${{ fromJSON(needs.runners.outputs.linux-runner) }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+      - name: "Validate runner tools: Clean workspace"
+        if: (('true') == 'true' && runner.environment == 'self-hosted')
+        shell: bash
+        run: |
+          # Remove leftover files not owned by the runner user (e.g. root-owned
+          # files left by a cancelled Docker step). Keeps the checked-out tree so
+          # downstream local actions still resolve.
+          if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
+            echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
+            exit 0
+          fi
+          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+      - name: "Validate runner tools: Check required tools"
+        env:
+          REQUIRED_TOOLS: ${{ ('jq gh') }}
+        shell: bash
+        run: |
+          EXTRA_PATHS="/usr/local/bin /snap/bin /opt/microsoft/powershell/7 /opt/runner-tools/bin"
+          MISSING=""
+          for t in $REQUIRED_TOOLS; do
+            found=false
+            if command -v "$t" >/dev/null 2>&1; then
+              found=true
+            else
+              for p in $EXTRA_PATHS; do
+                if [ -x "$p/$t" ]; then
+                  found=true
+                  break
+                fi
+              done
+            fi
+            if [ "$found" = false ]; then
+              MISSING="$MISSING $t"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing required tools on runner:${MISSING}. Install them or ensure they are in PATH."
+            exit 1
+          fi
+          echo "All required tools present: $REQUIRED_TOOLS"
+
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ github.token }}
+
+      - name: Decide
+        id: decide
+        shell: bash
+        env:
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          PR_CREATED: ${{ github.event.pull_request.created_at }}
+          MAJOR_DELAY: ${{ inputs.major-delay-days }}
+        run: |
+          set -euo pipefail
+          approve=false merge=false
+          case "$UPDATE_TYPE" in
+            version-update:semver-minor | version-update:semver-patch)
+              approve=true merge=true ;;
+            version-update:semver-major)
+              if [ "$MAJOR_DELAY" -ge 0 ]; then
+                approve=true
+                age=$(( ($(date +%s) - $(date -d "$PR_CREATED" +%s)) / 86400 ))
+                echo "Major update, PR age ${age}d, delay ${MAJOR_DELAY}d"
+                [ "$age" -ge "$MAJOR_DELAY" ] && merge=true
+              fi ;;
+          esac
+          echo "update=$UPDATE_TYPE approve=$approve merge=$merge"
+          { echo "approve=$approve"; echo "merge=$merge"; } >> "$GITHUB_OUTPUT"
+
+      - name: Approve PR
+        if: steps.decide.outputs.approve == 'true'
+        run: gh pr review --approve "$PR_URL"
+
+      - name: Enable squash auto-merge
+        if: steps.decide.outputs.merge == 'true'
+        run: gh pr merge --auto --squash "$PR_URL"
