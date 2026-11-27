@@ -1,0 +1,116 @@
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.0 (9bf3624e56d8e03a782eb9db55b35d5d184f510a)
+# .github/workflows/shared-codeql.yml by .github/ci/vendor-platform.mjs: this repository is
+# public and cannot call the private platform repository. Composite actions
+# are expanded inline (1 step(s)). Re-run the script on a platform release.
+
+
+name: Shared CodeQL
+
+# Reusable CodeQL analysis. Callers name the calling job `codeql`, so the checks
+# surface as "codeql / analyze (<language>)" and - like shared-ci - can be
+# deferred by the PR queue: a skipped caller leaves them unreported, not passed.
+#
+# build-mode none (no autobuild) keeps the job language-agnostic and fast; it is
+# what CodeQL recommends for interpreted languages and for C#/Java/Kotlin when a
+# build is not needed for extraction.
+
+on:
+  workflow_call:
+    inputs:
+      languages:
+        type: string
+        required: false
+        default: '["javascript-typescript"]'
+        description: JSON array of CodeQL languages.
+      queries:
+        type: string
+        required: false
+        default: security-extended
+      labels-linux:
+        type: string
+        required: false
+        default: ""
+        description: Runner labels (JSON array); empty = shared-runner-setup default.
+      upload-results:
+        type: boolean
+        required: false
+        default: true
+        description: >-
+          Upload SARIF to code scanning. Private repositories without GitHub Advanced Security have no code-scanning backend: set false to analyze locally and fail the job on any finding instead.
+
+permissions:
+  contents: read
+
+jobs:
+  runners:
+    uses: ./.github/workflows/shared-runner-setup.yml
+    with:
+      os: linux
+      labels-linux: ${{ inputs.labels-linux }}
+
+  analyze:
+    name: analyze (${{ matrix.language }})
+    needs: runners
+    runs-on: ${{ fromJSON(needs.runners.outputs.linux-runner) }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(inputs.languages) }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+      - name: "Prepare runner: Clean workspace"
+        if: (('true') == 'true' && runner.environment == 'self-hosted')
+        shell: bash
+        run: |
+          # Remove leftover files not owned by the runner user (e.g. root-owned
+          # files left by a cancelled Docker step). Keeps the checked-out tree so
+          # downstream local actions still resolve.
+          if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
+            echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
+            exit 0
+          fi
+          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: ${{ inputs.queries }}
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: /language:${{ matrix.language }}
+          upload: ${{ inputs.upload-results && 'always' || 'never' }}
+          output: ${{ runner.temp }}/codeql-sarif
+
+      # Without a code-scanning backend nobody would ever see the alerts, so the
+      # findings become the job result.
+      - name: Fail on findings (no code scanning)
+        if: ${{ !inputs.upload-results }}
+        shell: bash
+        env:
+          SARIF_DIR: ${{ runner.temp }}/codeql-sarif
+        run: |
+          set -euo pipefail
+          count=0
+          for f in "$SARIF_DIR"/*.sarif; do
+            [ -f "$f" ] || continue
+            jq -r '.runs[].results[] | "::error file=\(.locations[0].physicalLocation.artifactLocation.uri // "?"),line=\(.locations[0].physicalLocation.region.startLine // 1)::\(.ruleId): \(.message.text)"' "$f"
+            n=$(jq '[.runs[].results[]] | length' "$f")
+            count=$((count + n))
+          done
+          echo "CodeQL findings: $count"
+          [ "$count" -eq 0 ]

@@ -1,0 +1,199 @@
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.0 (9bf3624e56d8e03a782eb9db55b35d5d184f510a)
+# .github/workflows/shared-pr-auto-update.yml by .github/ci/vendor-platform.mjs: this repository is
+# public and cannot call the private platform repository. Composite actions
+# are expanded inline (0 step(s)). Re-run the script on a platform release.
+
+
+name: Shared PR Auto-Update
+
+# Reusable: each repo's pr-auto-update.yml calls this with its triggers
+# (push to the base branch, a */30 schedule, workflow_dispatch), a concurrency
+# group, and the permissions listed on the job below.
+#
+
+# Serial "merge queue" for a personal repo (GitHub's merge queue needs an org).
+# The default-branch ruleset requires strict (up-to-date) status checks, so every
+# merge leaves the remaining PRs BEHIND. This brings exactly one queued PR up to
+# date at a time, so CI is not spent rebuilding every open PR on each push (the
+# reason dependabot.yml sets rebase-strategy: disabled). Queued = open, non-draft,
+# same-repo, and auto-merge enabled or opened by the repository owner.
+#
+# Only GITHUB_TOKEN is used (no GitHub App is available). A push made with it
+# does not trigger pull_request workflows, so after updating the branch the
+# required-check workflows are started with workflow_dispatch (the one event
+# GITHUB_TOKEN may trigger). Their check runs land on the new head SHA under the
+# same names the ruleset requires ("shared-ci / lint", ...), and auto-merge
+# completes. The dispatched workflows are the caller's `dispatch-workflows`;
+# shared-ci scopes its terraform job on a non-base ref to the branch's diff, and
+# the other jobs scan the whole tree as they do on a PR.
+#
+# Those dispatches run PR-branch code on the self-hosted runner. Candidates are
+# limited to same-repo PRs that either have auto-merge enabled - only a user with
+# write access (or auto-approve.yml, for Dependabot) can enable it - or were
+# opened by the repository owner, so that is the same trust decision the
+# pull_request gates make.
+#
+# The update is a merge from main into the PR branch. Auto-merge squashes, so
+# history on main stays linear; a rebase update would rewrite the branch, and
+# Dependabot stops maintaining a PR once someone else has rewritten it.
+#
+# It also runs CI for PRs whose pull_request run was deferred by
+# shared-pr-queue.yml (opened while an older queued PR was open, or pushed while
+# behind the base). The pick is the oldest candidate that is behind the base or
+# whose head has no `sentinel-check` check (default "shared-ci / lint"); "behind" comes from the compare
+# API, since a PR missing required checks reports BLOCKED rather than BEHIND.
+# CI is only ever dispatched once the head contains the latest base.
+#
+# Dependabot PRs are auto-merged with GITHUB_TOKEN, and that merge fires no
+# `push`, so the schedule is the main trigger that picks the next PR; `push`
+# only shortens the wait after a manual merge.
+
+on:
+  workflow_call:
+    inputs:
+      base-branch:
+        type: string
+        required: false
+        default: ""
+        description: Branch the queue serves. Empty = the repository's default branch.
+      dispatch-workflows:
+        type: string
+        required: false
+        default: code-quality.yml
+        description: Space-separated workflow files that report the required checks; each needs workflow_dispatch.
+      sentinel-check:
+        type: string
+        required: false
+        default: shared-ci / lint
+        description: A required check name whose absence on a PR head means its CI never ran (deferred).
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    # Hosted, no checkout: the job only calls gh and jq, and running 48 times a
+    # day it should not hold the self-hosted runner (same as red-run-audit.yml).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # PUT /pulls/{n}/update-branch writes a merge commit to the PR head
+      pull-requests: write
+      actions: write # gh workflow run
+      # statusCheckRollup (the in-flight check) reads check runs and commit
+      # statuses; without these GraphQL fails with "Resource not accessible by
+      # integration".
+      checks: read
+      statuses: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+
+      - name: Bring the next queued PR up to date and run its CI
+        shell: bash
+        env:
+          BASE: ${{ inputs.base-branch || github.event.repository.default_branch || 'main' }}
+          OWNER: ${{ github.repository_owner }}
+          SENTINEL: ${{ inputs.sentinel-check }}
+          DISPATCH_WORKFLOWS: ${{ inputs.dispatch-workflows }}
+        run: |
+          set -euo pipefail
+
+          # Candidates: open, non-draft, same-repo PRs against the base with
+          # auto-merge enabled or opened by the repository owner. QUEUE-RULE: the
+          # select() line must stay identical to shared-pr-queue.yml's.
+          prs=$(gh pr list --repo "$REPO" --base "$BASE" --state open --limit 100 \
+            --json number,headRefName,headRefOid,isDraft,isCrossRepository,autoMergeRequest,author,mergeStateStatus,createdAt,statusCheckRollup |
+            jq -c --arg owner "$OWNER" '[.[]
+              | select((.isDraft | not) and (.isCrossRepository | not) and (.autoMergeRequest != null or .author.login == $owner))]
+              | sort_by(.createdAt)')
+
+          if [ "$(jq 'length' <<<"$prs")" -eq 0 ]; then
+            echo "No open queued PRs."
+            exit 0
+          fi
+
+          # One at a time: an up-to-date candidate with checks still running is in flight.
+          inflight=$(jq -r '[.[] | select(.mergeStateStatus != "BEHIND")
+            | select([.statusCheckRollup[]? | select((.status // "COMPLETED") != "COMPLETED" or .state == "PENDING")] | length > 0)
+            | .number] | first // empty' <<<"$prs")
+          if [ -n "$inflight" ]; then
+            echo "PR #$inflight is up to date with checks running; waiting for it."
+            exit 0
+          fi
+
+          # Commits on main missing from a head. mergeStateStatus alone is not
+          # enough: a PR whose required checks are missing (CI deferred by
+          # shared-pr-queue.yml) reports BLOCKED even when it is also behind.
+          behind_by() {
+            gh api "repos/$REPO/compare/$BASE...$1" --jq '.behind_by'
+          }
+
+          # Next: the oldest candidate without conflicts that is behind main, or
+          # whose head has never run CI (deferred, or its older PR was closed
+          # without merging, so the base never moved to make it BEHIND).
+          next=""
+          while IFS= read -r pr; do
+            n=$(jq -r '.number' <<<"$pr")
+            if [ "$(jq -r '.mergeStateStatus' <<<"$pr")" = "DIRTY" ]; then
+              echo "PR #$n has merge conflicts; skipping."
+              continue
+            fi
+            behind=$(behind_by "$(jq -r '.headRefOid' <<<"$pr")")
+            checked=$(jq --arg s "$SENTINEL" '[.statusCheckRollup[]? | select(.name == $s)] | length > 0' <<<"$pr")
+            if [ "$behind" -gt 0 ] || [ "$checked" != true ]; then
+              next="$pr"
+              break
+            fi
+          done < <(jq -c '.[]' <<<"$prs")
+
+          if [ -z "$next" ]; then
+            echo "Every queued PR is up to date with $BASE and has run CI."
+            exit 0
+          fi
+
+          number=$(jq -r '.number' <<<"$next")
+          branch=$(jq -r '.headRefName' <<<"$next")
+          sha=$(jq -r '.headRefOid' <<<"$next")
+
+          # Never dispatch CI on a stale branch: update until the head contains
+          # main (main can move while we wait), then dispatch.
+          attempt=0
+          while :; do
+            behind=$(behind_by "$sha")
+            [ "$behind" -eq 0 ] && break
+            attempt=$((attempt + 1))
+            if [ "$attempt" -gt 3 ]; then
+              echo "::error::PR #$number is still $behind commit(s) behind $BASE after 3 updates"
+              exit 1
+            fi
+            echo "PR #$number ($branch) is $behind commit(s) behind $BASE; updating from $sha"
+            gh api -X PUT "repos/$REPO/pulls/$number/update-branch" -f expected_head_sha="$sha" >/dev/null
+
+            new_sha="$sha"
+            for _ in $(seq 1 24); do
+              new_sha=$(gh api "repos/$REPO/pulls/$number" --jq '.head.sha')
+              [ "$new_sha" != "$sha" ] && break
+              sleep 5
+            done
+            if [ "$new_sha" = "$sha" ]; then
+              echo "::error::PR #$number head did not change after update-branch"
+              exit 1
+            fi
+            echo "PR #$number head is now $new_sha"
+            sha="$new_sha"
+          done
+          echo "PR #$number head $sha is up to date with $BASE"
+
+          # Pushes by GITHUB_TOKEN don't trigger pull_request CI, and a deferred
+          # PR's own run skipped it; dispatch the workflows that report the
+          # required checks against the PR branch.
+          for wf in $DISPATCH_WORKFLOWS; do
+            gh workflow run "$wf" --repo "$REPO" --ref "$branch"
+            echo "Dispatched $wf on $branch"
+          done

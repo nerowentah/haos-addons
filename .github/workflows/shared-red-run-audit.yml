@@ -1,0 +1,131 @@
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.0 (9bf3624e56d8e03a782eb9db55b35d5d184f510a)
+# .github/workflows/shared-red-run-audit.yml by .github/ci/vendor-platform.mjs: this repository is
+# public and cannot call the private platform repository. Composite actions
+# are expanded inline (0 step(s)). Re-run the script on a platform release.
+
+
+name: Shared Red Run Audit
+
+# Reusable: the caller supplies the schedule and grants actions: read,
+# contents: read and issues: write.
+#
+
+# Weekly: opens (or updates) one issue listing workflow runs from the last 7 days
+# that did not succeed, are older than 24h, and have no explanation. A run is
+# explained - and therefore not reported - when any of these hold:
+#
+#   - a later success of the same workflow on the same branch supersedes it, or
+#   - its branch has been deleted (merged or closed, so there is nothing left to
+#     rerun) and the same workflow has succeeded on the default branch since, or
+#   - it is still inside the 24h grace window.
+#
+# The default-branch rule matters because a merged PR's branch is deleted with it:
+# that last red run can never be followed by a success on the same branch, so
+# reporting it would make every merge look like an unexplained failure forever.
+#
+# Runs on a hosted runner with no secrets and no checkout, so it works even when
+# the self-hosted runner is down. Closes the issue once nothing is left.
+
+on:
+  workflow_call:
+    inputs:
+      label:
+        type: string
+        required: false
+        default: ci-audit
+        description: Label for the audit issue; created when missing.
+      runbook:
+        type: string
+        required: false
+        default: ""
+        description: Optional pointer appended to the issue text (e.g. "the red-run audit runbook in CONTRIBUTING.md").
+
+permissions: {}
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      # Listing branches is a Contents read; the audit needs it to tell a live
+      # branch from one that was deleted with its merged pull request.
+      contents: read
+      issues: write
+    steps:
+      - name: Find unexplained non-success runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          AUDIT_LABEL: ${{ inputs.label }}
+          RUNBOOK: ${{ inputs.runbook }}
+        run: |
+          set -euo pipefail
+          since=$(date -u -d '7 days ago' +%FT%TZ)
+          cutoff=$(date -u -d '24 hours ago' +%FT%TZ)
+          title="Red Run Audit: unexplained non-success runs"
+          label="$AUDIT_LABEL"
+
+          # Full timestamps, passed with -f so they survive URL encoding: a bare
+          # date is compared at day granularity, which silently drops the first day.
+          gh api --method GET --paginate -f per_page=100 -f "created=>$since" \
+            "repos/$REPO/actions/runs" --jq '.workflow_runs[]' | jq -s . > runs.json
+
+          # Candidate: failed or cancelled, older than the grace window, and not
+          # superseded by a later success of the same workflow on the same branch.
+          jq --arg cutoff "$cutoff" '
+            . as $all
+            | map(select(.conclusion != null and .conclusion != "success"
+                         and .conclusion != "skipped" and .created_at < $cutoff))
+            | map(. as $r | select([$all[] | select(.workflow_id == $r.workflow_id
+                  and .head_branch == $r.head_branch and .conclusion == "success"
+                  and .id > $r.id)] | length == 0))
+          ' runs.json > candidates.json
+
+          # Branches still on the remote. Anything else was merged or closed and
+          # deleted, so it can never produce the later same-branch success above.
+          gh api --paginate "repos/$REPO/branches?per_page=100" --jq '.[].name' | sort -u > branches.txt
+
+          # Keep a candidate when its branch is still live, or when the workflow
+          # has not gone green on the default branch since the run.
+          jq -r --slurpfile runs runs.json --rawfile branches branches.txt --arg default "$DEFAULT_BRANCH" '
+            ($runs[0]) as $all
+            | ($branches | split("\n") | map(select(length > 0))) as $live
+            | map(. as $r | select((($live | index($r.head_branch)) != null)
+                or ([$all[] | select(.workflow_id == $r.workflow_id
+                      and .head_branch == $default and .conclusion == "success"
+                      and .id > $r.id)] | length == 0)))
+            | sort_by(.name, .head_branch, .created_at)
+            | group_by([.name, .head_branch])
+            | map("- **\(.[0].name)** (`\(.[0].head_branch)`, \(.[0].event)): " +
+                  "\(length) non-success run(s)\n" +
+                  (map("  - \(.created_at) \(.conclusion) - \(.html_url)") | join("\n")))
+            | .[]
+          ' candidates.json > findings.md
+
+          existing=$(gh issue list --repo "$REPO" --state open --search "in:title \"$title\"" \
+            --json number --jq '.[0].number // empty')
+
+          if [ ! -s findings.md ]; then
+            echo "No unexplained non-success runs." >> "$GITHUB_STEP_SUMMARY"
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --repo "$REPO" \
+                --comment "Audit $(date -u +%F): no unexplained non-success runs in the last 7 days."
+            fi
+            exit 0
+          fi
+
+          {
+            echo "Runs since $since with no later success of the same workflow${RUNBOOK:+ (see $RUNBOOK)}:"
+            echo
+            cat findings.md
+          } > body.md
+          cat body.md >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body-file body.md
+          else
+            gh label create "$label" --repo "$REPO" --color B60205               --description "Unexplained red CI runs" 2>/dev/null || true
+            gh issue create --repo "$REPO" --title "$title" --label "$label" --body-file body.md
+          fi

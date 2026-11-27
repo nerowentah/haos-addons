@@ -1,0 +1,927 @@
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.0 (9bf3624e56d8e03a782eb9db55b35d5d184f510a)
+# .github/workflows/shared-ci.yml by .github/ci/vendor-platform.mjs: this repository is
+# public and cannot call the private platform repository. Composite actions
+# are expanded inline (8 step(s)). Re-run the script on a platform release.
+
+
+name: Shared CI
+
+on:
+  workflow_call:
+    inputs:
+      # Runner selection (see shared/runner-setup.yml)
+      os:
+        type: string
+        required: false
+        default: linux
+      labels-linux:
+        type: string
+        required: false
+        default: ""
+      required-tools-linux:
+        type: string
+        required: false
+        default: jq gh
+      base-branch:
+        type: string
+        required: false
+        default: ""
+        description: Branch PRs merge into. Empty = the repository's default branch (falls back to main).
+      working-directory:
+        type: string
+        required: false
+        default: .
+        description: Directory the ESLint step and test-command run in (e.g. a package subdirectory).
+      # Toolchain
+      node-version:
+        type: string
+        required: false
+        default: "24"
+      python-version:
+        type: string
+        required: false
+        default: "3.15"
+      python-version-fallback:
+        type: string
+        required: false
+        default: "3.14"
+      setup-python:
+        type: boolean
+        required: false
+        default: true
+      install-deps:
+        type: boolean
+        required: false
+        default: true
+        description: Install npm (package.json) and Python (pyproject.toml [dev]) deps in the lint job; turn off for a pyproject that is tool config only and install via setup-extra.
+      # Tests & linting
+      test-command:
+        type: string
+        required: false
+        default: npm run --if-present test
+      lint-path:
+        type: string
+        required: false
+        default: .
+      setup-extra:
+        type: string
+        required: false
+        default: ""
+        description: Shell snippet run after dependency install (e.g. pip install ansible)
+      playwright-browsers:
+        type: string
+        required: false
+        default: ""
+        description: Browsers to install via `npx playwright install --with-deps` (e.g. chromium)
+      # Optional checks
+      enable-actionlint:
+        type: boolean
+        required: false
+        default: true
+      enable-zizmor:
+        type: boolean
+        required: false
+        default: true
+      enable-eslint:
+        type: boolean
+        required: false
+        default: true
+      enable-ruff:
+        type: boolean
+        required: false
+        default: true
+      enable-trufflehog:
+        type: boolean
+        required: false
+        default: true
+      enable-npm-audit:
+        type: boolean
+        required: false
+        default: true
+      enable-pip-audit:
+        type: boolean
+        required: false
+        default: true
+      pip-audit-inputs:
+        type: string
+        required: false
+        default: ""
+        description: Optional pip-audit target (e.g. requirements.txt); empty = auto-detect project.
+      enable-gap-linting:
+        type: boolean
+        required: false
+        default: false
+      enable-terraform:
+        type: boolean
+        required: false
+        default: false
+        description: Run terraform fmt (advisory) and validate (blocking) across changed modules, or every module on schedule/dispatch.
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  runners:
+    uses: ./.github/workflows/shared-runner-setup.yml
+    with:
+      os: ${{ inputs.os }}
+      labels-linux: ${{ inputs.labels-linux }}
+
+  lint:
+    needs: runners
+    runs-on: ${{ fromJSON(needs.runners.outputs.linux-runner) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+      - name: "Prepare runner: Clean workspace"
+        if: (('true') == 'true' && runner.environment == 'self-hosted')
+        shell: bash
+        run: |
+          # Remove leftover files not owned by the runner user (e.g. root-owned
+          # files left by a cancelled Docker step). Keeps the checked-out tree so
+          # downstream local actions still resolve.
+          if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
+            echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
+            exit 0
+          fi
+          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+      - name: "Prepare runner: Check required tools"
+        if: ((format('{0}', inputs.required-tools-linux)) != '')
+        env:
+          REQUIRED_TOOLS: ${{ (format('{0}', inputs.required-tools-linux)) }}
+        shell: bash
+        run: |
+          EXTRA_PATHS="/usr/local/bin /snap/bin /opt/microsoft/powershell/7 /opt/runner-tools/bin"
+          MISSING=""
+          for t in $REQUIRED_TOOLS; do
+            found=false
+            if command -v "$t" >/dev/null 2>&1; then
+              found=true
+            else
+              for p in $EXTRA_PATHS; do
+                if [ -x "$p/$t" ]; then
+                  found=true
+                  break
+                fi
+              done
+            fi
+            if [ "$found" = false ]; then
+              MISSING="$MISSING $t"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing required tools on runner:${MISSING}. Install them or ensure they are in PATH."
+            exit 1
+          fi
+          echo "All required tools present: $REQUIRED_TOOLS"
+      - name: "setup-node-python: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ ('0') }}
+      - name: "setup-node-python: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1"
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ (format('{0}', inputs.node-version)) }}
+          cache: ${{ ('true') == 'true' && hashFiles('package-lock.json') != '' && 'npm' || '' }}
+          cache-dependency-path: package-lock.json
+      - name: "setup-node-python: Setup Python ${{ inputs.python-version }}"
+        id: setup-py
+        if: ((format('{0}', inputs.setup-python)) == 'true')
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: ${{ (format('{0}', inputs.python-version)) }}
+          cache: ${{ ('true') == 'true' && hashFiles('pyproject.toml') != '' && 'pip' || '' }}
+          cache-dependency-path: pyproject.toml
+        continue-on-error: true
+      - name: "setup-node-python: Setup Python ${{ inputs.python-version-fallback }} (fallback)"
+        if: ((format('{0}', inputs.setup-python)) == 'true' && steps.setup-py.outcome != 'success')
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: ${{ (format('{0}', inputs.python-version-fallback)) }}
+          cache: ${{ ('true') == 'true' && hashFiles('pyproject.toml') != '' && 'pip' || '' }}
+          cache-dependency-path: pyproject.toml
+      - name: "setup-node-python: Install npm dependencies"
+        if: ((format('{0}', inputs.install-deps)) == 'true')
+        env:
+          HUSKY: "0"
+        shell: bash
+        run: |
+          if [ ! -f package.json ]; then
+            echo "No package.json found, skipping npm install"
+          elif [ -f package-lock.json ]; then
+            npm ci --legacy-peer-deps
+          elif [ -f yarn.lock ]; then
+            yarn install --frozen-lockfile
+          else
+            npm install --legacy-peer-deps
+          fi
+      - name: "setup-node-python: Install Python dependencies"
+        if: ((format('{0}', inputs.setup-python)) == 'true' && (format('{0}', inputs.install-deps)) == 'true' && hashFiles('pyproject.toml') != '')
+        shell: bash
+        run: pip install -e ".[dev]"
+
+      - name: Extra setup
+        if: inputs.setup-extra != ''
+        shell: bash
+        # eval, not a bare ${VAR}: an unquoted expansion is only word-split, so
+        # newlines, pipes and && in a multi-line snippet would never be parsed.
+        run: eval "$INPUTS_SETUP_EXTRA"
+        env:
+          INPUTS_SETUP_EXTRA: ${{ inputs.setup-extra }}
+
+      - name: Install Playwright browsers
+        if: inputs.playwright-browsers != ''
+        shell: bash
+        run: |
+          # shellcheck disable=SC2086
+          npx playwright install --with-deps ${INPUTS_PLAYWRIGHT_BROWSERS}
+        env:
+          INPUTS_PLAYWRIGHT_BROWSERS: ${{ inputs.playwright-browsers }}
+
+      - name: Actionlint (GitHub Actions syntax)
+        if: inputs.enable-actionlint
+        shell: bash
+        run: |
+          # Native binary, no Docker. Self-hosted runners get it from
+          # setup-selfhosted-runner-linux.sh; a hosted fallback runner downloads the
+          # pinned release outside the workspace so the lint tree stays clean.
+          export PATH="$PATH:/usr/local/bin"
+          if ! command -v actionlint >/dev/null 2>&1; then
+            bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 "$RUNNER_TEMP"
+            export PATH="$RUNNER_TEMP:$PATH"
+          fi
+          actionlint -color
+
+      - name: Zizmor (workflow security analysis)
+        if: inputs.enable-zizmor
+        shell: bash
+        run: |
+          # Self-hosted Debian runners mark system Python externally-managed
+          # (PEP 668), so install into a throwaway venv instead of system-wide.
+          VENV="$RUNNER_TEMP/zizmor-venv"
+          # Pin via the caller's constraints file when it has one.
+          CONSTRAINT=()
+          if [ -f .github/ci/requirements.txt ]; then CONSTRAINT=(-c .github/ci/requirements.txt); fi
+          if python3 -m venv "$VENV" 2>/dev/null; then
+            "$VENV/bin/pip" install --disable-pip-version-check "${CONSTRAINT[@]}" zizmor
+            export PATH="$VENV/bin:$PATH"
+          else
+            # python3-venv missing on the host: per-user install is still isolated
+            # from the distro's packages, unlike a system-wide pip install.
+            python3 -m pip install --user --break-system-packages "${CONSTRAINT[@]}" zizmor
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
+          zizmor . --min-severity=medium
+
+      - name: ESLint with Reviewdog
+        if: inputs.enable-eslint
+        uses: reviewdog/action-eslint@6dad10dc50476699ad1ddbbb19bf55d36f311a39 # v1.37.0
+        # Self-hosted hosts harden /tmp as a noexec tmpfs. The action builds its
+        # TEMP_PATH with mktemp -d, which honors TMPDIR; without this override the
+        # reviewdog binary lands on /tmp and fails with EACCES (exit 126).
+        env:
+          TMPDIR: ${{ runner.temp }}
+        with:
+          reporter: github-pr-review
+          workdir: ${{ inputs.working-directory }}
+          eslint_flags: ${{ inputs.lint-path }}
+
+      # Misspell (reviewdog/action-misspell) was removed: it rebuilds its Docker
+      # image via apt-get every run, intermittently failing with exit 100 under
+      # the step-security DNS agent, and continue-on-error does not apply to
+      # container image build failures. Spelling is covered by gap-linting.
+
+      - name: Ruff Python lint with Reviewdog
+        if: inputs.enable-ruff
+        uses: benny123tw/action-ruff@226d241bdf7205e6e048f1407d21bd69a64b7298 # v1.1.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          reporter: github-pr-review
+          level: error
+
+      - name: Run tests
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        run: eval "$INPUTS_TEST_COMMAND"
+        env:
+          INPUTS_TEST_COMMAND: ${{ inputs.test-command }}
+
+  secrets-scan:
+    if: inputs.enable-trufflehog
+    needs: runners
+    runs-on: ${{ fromJSON(needs.runners.outputs.linux-runner) }}
+    timeout-minutes: 60
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+      - name: "Prepare runner: Clean workspace"
+        if: (('true') == 'true' && runner.environment == 'self-hosted')
+        shell: bash
+        run: |
+          # Remove leftover files not owned by the runner user (e.g. root-owned
+          # files left by a cancelled Docker step). Keeps the checked-out tree so
+          # downstream local actions still resolve.
+          if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
+            echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
+            exit 0
+          fi
+          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+      - name: "Prepare runner: Check required tools"
+        env:
+          REQUIRED_TOOLS: ${{ ('docker') }}
+        shell: bash
+        run: |
+          EXTRA_PATHS="/usr/local/bin /snap/bin /opt/microsoft/powershell/7 /opt/runner-tools/bin"
+          MISSING=""
+          for t in $REQUIRED_TOOLS; do
+            found=false
+            if command -v "$t" >/dev/null 2>&1; then
+              found=true
+            else
+              for p in $EXTRA_PATHS; do
+                if [ -x "$p/$t" ]; then
+                  found=true
+                  break
+                fi
+              done
+            fi
+            if [ "$found" = false ]; then
+              MISSING="$MISSING $t"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing required tools on runner:${MISSING}. Install them or ensure they are in PATH."
+            exit 1
+          fi
+          echo "All required tools present: $REQUIRED_TOOLS"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The exclude list is optional so a repo can adopt shared-ci without one.
+      - name: Resolve TruffleHog arguments
+        id: th
+        shell: bash
+        run: |
+          args="--results=verified,unverified,unknown"
+          if [ -f .github/trufflehog-exclude.txt ]; then args="$args --exclude-paths=.github/trufflehog-exclude.txt"; fi
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+
+      - name: TruffleHog Secrets Scan
+        uses: trufflesecurity/trufflehog@3bd2b5887eb0efb8fa18bfd1d296032924e4ffdc # v3.99.9
+        with:
+          extra_args: ${{ steps.th.outputs.args }}
+      - name: "Clean trufflehog leftovers: Clean workspace"
+        if: (always() && github.event_name != 'pull_request') && (('true') == 'true' && runner.environment == 'self-hosted')
+        shell: bash
+        run: |
+          # Remove leftover files not owned by the runner user (e.g. root-owned
+          # files left by a cancelled Docker step). Keeps the checked-out tree so
+          # downstream local actions still resolve.
+          if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
+            echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
+            exit 0
+          fi
+          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+
+  audit:
+    # Dispatch only on the base branch: the PR queue (shared-pr-auto-update.yml)
+    # dispatches this workflow on PR branches to re-run the required checks, and
+    # the audit is not one of them.
+    if: (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', inputs.base-branch || github.event.repository.default_branch || 'main'))) && (inputs.enable-npm-audit || inputs.enable-pip-audit)
+    needs: runners
+    runs-on: ${{ fromJSON(needs.runners.outputs.linux-runner) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+      - name: "Prepare runner: Clean workspace"
+        if: (('true') == 'true' && runner.environment == 'self-hosted')
+        shell: bash
+        run: |
+          # Remove leftover files not owned by the runner user (e.g. root-owned
+          # files left by a cancelled Docker step). Keeps the checked-out tree so
+          # downstream local actions still resolve.
+          if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
+            echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
+            exit 0
+          fi
+          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+      - name: "Prepare runner: Check required tools"
+        env:
+          REQUIRED_TOOLS: ${{ ('jq gh') }}
+        shell: bash
+        run: |
+          EXTRA_PATHS="/usr/local/bin /snap/bin /opt/microsoft/powershell/7 /opt/runner-tools/bin"
+          MISSING=""
+          for t in $REQUIRED_TOOLS; do
+            found=false
+            if command -v "$t" >/dev/null 2>&1; then
+              found=true
+            else
+              for p in $EXTRA_PATHS; do
+                if [ -x "$p/$t" ]; then
+                  found=true
+                  break
+                fi
+              done
+            fi
+            if [ "$found" = false ]; then
+              MISSING="$MISSING $t"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing required tools on runner:${MISSING}. Install them or ensure they are in PATH."
+            exit 1
+          fi
+          echo "All required tools present: $REQUIRED_TOOLS"
+      - name: "Checkout, Setup Node.js: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ ('0') }}
+      - name: "Checkout, Setup Node.js: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1"
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ (format('{0}', inputs.node-version)) }}
+          cache: ${{ ('false') == 'true' && hashFiles('package-lock.json') != '' && 'npm' || '' }}
+          cache-dependency-path: package-lock.json
+      - name: "Checkout, Setup Node.js: Setup Python ${{ inputs.python-version }}"
+        id: setup-py
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: ${{ ('3.15') }}
+          cache: ${{ ('true') == 'true' && hashFiles('pyproject.toml') != '' && 'pip' || '' }}
+          cache-dependency-path: pyproject.toml
+        continue-on-error: true
+      - name: "Checkout, Setup Node.js: Setup Python ${{ inputs.python-version-fallback }} (fallback)"
+        if: (('true') == 'true' && steps.setup-py.outcome != 'success')
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: ${{ ('3.14') }}
+          cache: ${{ ('true') == 'true' && hashFiles('pyproject.toml') != '' && 'pip' || '' }}
+          cache-dependency-path: pyproject.toml
+      - name: "Checkout, Setup Node.js: Install Python dependencies"
+        if: (('true') == 'true' && ('false') == 'true' && hashFiles('pyproject.toml') != '')
+        shell: bash
+        run: pip install -e ".[dev]"
+
+      - name: npm audit
+        if: inputs.enable-npm-audit
+        id: npm-audit
+        shell: bash
+        run: |
+          echo "Running npm audit..."
+          npm audit --audit-level=high --json > npm-audit.json 2>npm-audit.err || true
+          if ! jq -e '.metadata.vulnerabilities' npm-audit.json >/dev/null 2>&1; then
+            echo "::warning::npm audit did not produce a usable report"
+            cat npm-audit.err
+            echo "audit_ok=false" >> "$GITHUB_OUTPUT"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HIGH=$(jq -r '.metadata.vulnerabilities.high // 0' npm-audit.json)
+          CRIT=$(jq -r '.metadata.vulnerabilities.critical // 0' npm-audit.json)
+          echo "audit_ok=true" >> "$GITHUB_OUTPUT"
+          echo "found=$([ $((HIGH + CRIT)) -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      # pip-audit exits 1 both for findings and for "no supported project file",
+      # so classify by whether it produced a parseable report, not by exit code.
+      # Runs from a throwaway venv: system Python is PEP 668 managed.
+      - name: pip-audit
+        if: inputs.enable-pip-audit
+        id: pip-audit
+        shell: bash
+        env:
+          PIP_AUDIT_INPUTS: ${{ inputs.pip-audit-inputs }}
+        run: |
+          set -uo pipefail
+          VENV="$RUNNER_TEMP/audit-venv"
+          if python3 -m venv "$VENV" 2>/dev/null; then
+            "$VENV/bin/pip" install --disable-pip-version-check -q pip-audit
+            PIP_AUDIT="$VENV/bin/pip-audit"
+          else
+            python3 -m pip install --user --break-system-packages -q pip-audit
+            PIP_AUDIT="python3 -m pip_audit"
+          fi
+          ARGS=()
+          if [ -n "$PIP_AUDIT_INPUTS" ]; then ARGS+=(-r "$PIP_AUDIT_INPUTS"); fi
+          $PIP_AUDIT --progress-spinner=off --format=json "${ARGS[@]}" > pip-audit.json 2>pip-audit.err
+          rc=$?
+          if ! jq -e '.dependencies' pip-audit.json >/dev/null 2>&1; then
+            echo "::warning::pip-audit did not run (exit $rc)"
+            cat pip-audit.err
+            echo "audit_ok=false" >> "$GITHUB_OUTPUT"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "audit_ok=true" >> "$GITHUB_OUTPUT"
+          echo "found=$(jq -r '[.dependencies[].vulns[]?] | length > 0' pip-audit.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Report audit result
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          NPM_RAN: ${{ inputs.enable-npm-audit }}
+          PIP_RAN: ${{ inputs.enable-pip-audit }}
+          NPM_OK: ${{ steps.npm-audit.outputs.audit_ok }}
+          PIP_OK: ${{ steps.pip-audit.outputs.audit_ok }}
+          NPM_FOUND: ${{ steps.npm-audit.outputs.found }}
+          PIP_FOUND: ${{ steps.pip-audit.outputs.found }}
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const MARKER = '<!-- dependency-audit -->';
+            const LEGACY_TITLE = 'Dependency vulnerabilities detected';
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const env = process.env;
+            const npmRan = env.NPM_RAN === 'true';
+            const pipRan = env.PIP_RAN === 'true';
+            const npmOk = !npmRan || env.NPM_OK === 'true';
+            const pipOk = !pipRan || env.PIP_OK === 'true';
+            const found = env.NPM_FOUND === 'true' || env.PIP_FOUND === 'true';
+            const readJson = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
+            const esc = (v) => String(v ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+
+            const summary = core.summary.addHeading('Dependency audit', 2);
+            summary.addList([
+              `npm audit: ${npmRan ? (npmOk ? (env.NPM_FOUND === 'true' ? 'findings' : 'clean') : 'did not run') : 'disabled'}`,
+              `pip-audit: ${pipRan ? (pipOk ? (env.PIP_FOUND === 'true' ? 'findings' : 'clean') : 'did not run') : 'disabled'}`,
+            ]).addLink('Run', runUrl);
+
+            // Open issues carrying our marker, or the legacy title from the old reporter.
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', labels: 'security,dependencies', per_page: 100,
+            });
+            const existing = open.filter((i) => !i.pull_request &&
+              ((i.body || '').includes(MARKER) || i.title === LEGACY_TITLE));
+
+            if (found) {
+              let body = `${MARKER}\nHigh or critical vulnerabilities were found.\n\nRun: ${runUrl}\n`;
+              if (env.NPM_FOUND === 'true') {
+                const d = readJson('npm-audit.json');
+                const rows = Object.values(d.vulnerabilities || {})
+                  .filter((v) => ['high', 'critical'].includes(v.severity))
+                  .map((v) => {
+                    const adv = (v.via || []).filter((x) => typeof x === 'object')
+                      .map((x) => `[${esc(x.title)}](${x.url})`).join('<br>') || 'transitive';
+                    const fix = v.fixAvailable === true ? 'yes'
+                      : v.fixAvailable ? esc(`${v.fixAvailable.name}@${v.fixAvailable.version}`) : 'none';
+                    return `| ${esc(v.name)} | ${esc(v.range)} | ${adv} | ${v.severity} | ${fix} |`;
+                  });
+                body += `\n### npm audit\n\n| package | affected range | advisory | severity | fix |\n|---|---|---|---|---|\n${rows.join('\n')}\n`;
+              }
+              if (env.PIP_FOUND === 'true') {
+                const d = readJson('pip-audit.json');
+                const rows = [];
+                for (const dep of d.dependencies) {
+                  for (const v of dep.vulns || []) {
+                    rows.push(`| ${esc(dep.name)} | ${esc(dep.version)} | ${esc(v.id)} | ${esc((v.fix_versions || []).join(', ') || 'none')} |`);
+                  }
+                }
+                body += `\n### pip-audit\n\n| package | installed | advisory | fixed in |\n|---|---|---|---|\n${rows.join('\n')}\n`;
+              }
+              if (existing.length) {
+                await github.rest.issues.update({ owner, repo, issue_number: existing[0].number, body });
+                core.info(`Updated #${existing[0].number}`);
+              } else {
+                const { data } = await github.rest.issues.create({
+                  owner, repo, title: LEGACY_TITLE, body, labels: ['security', 'dependencies'],
+                });
+                core.info(`Opened #${data.number}`);
+              }
+            } else if (npmOk && pipOk) {
+              for (const i of existing) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: i.number,
+                  body: `Audit is clean as of ${runUrl}; reopening automatically if findings return.`,
+                });
+                await github.rest.issues.update({
+                  owner, repo, issue_number: i.number, state: 'closed', state_reason: 'completed',
+                });
+                core.info(`Closed #${i.number}`);
+              }
+            } else {
+              core.warning('Audit tool did not run; leaving existing issues untouched.');
+            }
+            await summary.write();
+
+      - name: Audit tooling health
+        if: steps.npm-audit.outputs.audit_ok == 'false' || steps.pip-audit.outputs.audit_ok == 'false'
+        shell: bash
+        run: |
+          echo "::error::Dependency audit could not run; see warnings above."
+          exit 1
+
+  gap-linting:
+    if: inputs.enable-gap-linting
+    needs: runners
+    runs-on: ${{ fromJSON(needs.runners.outputs.linux-runner) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+      - name: "Prepare runner: Clean workspace"
+        if: (('true') == 'true' && runner.environment == 'self-hosted')
+        shell: bash
+        run: |
+          # Remove leftover files not owned by the runner user (e.g. root-owned
+          # files left by a cancelled Docker step). Keeps the checked-out tree so
+          # downstream local actions still resolve.
+          if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
+            echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
+            exit 0
+          fi
+          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+      - name: "Prepare runner: Check required tools"
+        env:
+          REQUIRED_TOOLS: ${{ ('jq') }}
+        shell: bash
+        run: |
+          EXTRA_PATHS="/usr/local/bin /snap/bin /opt/microsoft/powershell/7 /opt/runner-tools/bin"
+          MISSING=""
+          for t in $REQUIRED_TOOLS; do
+            found=false
+            if command -v "$t" >/dev/null 2>&1; then
+              found=true
+            else
+              for p in $EXTRA_PATHS; do
+                if [ -x "$p/$t" ]; then
+                  found=true
+                  break
+                fi
+              done
+            fi
+            if [ "$found" = false ]; then
+              MISSING="$MISSING $t"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing required tools on runner:${MISSING}. Install them or ensure they are in PATH."
+            exit 1
+          fi
+          echo "All required tools present: $REQUIRED_TOOLS"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # codespell and checkov below are Python CLIs. The self-hosted runner has no
+      # system-wide `pip`, so setup-python has to run first or both steps die with
+      # `pip: command not found`. Pinned, not ./ for the same reason as the lint job:
+      # this job runs on pull_request.
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+          cache: ""
+
+      # Every linter config is optional. A repo without its own file under
+      # .github/linters/ gets the platform default written below (the same
+      # baseline scripts uses), outside the workspace so the scan stays clean.
+      - name: Resolve linter configs
+        id: cfg
+        shell: bash
+        run: |
+          set -euo pipefail
+          defaults="$RUNNER_TEMP/linter-defaults"
+          mkdir -p "$defaults"
+          cat > "$defaults/.codespellrc" <<'CFG'
+          [codespell]
+          skip = .git,node_modules,package-lock.json,*.lock,.venv,.terraform,dist,.output,.nuxt,**/dist,**/obj,**/terraform.tfstate*,*.min.js,*.svg
+          quiet-level = 2
+          CFG
+          cat > "$defaults/.markdownlint.json" <<'CFG'
+          { "default": true, "MD013": false, "MD024": { "siblings_only": true }, "MD033": false, "MD041": false }
+          CFG
+          cat > "$defaults/.jscpd.json" <<'CFG'
+          { "threshold": 50, "minLines": 10, "minTokens": 50, "ignoreCase": true, "gitignore": true, "reporters": ["console"],
+            "ignore": ["node_modules/**", ".git/**", "**/*.md", "**/*.json", "**/*.lock", "**/package-lock.json", "**/dist/**", "**/.output/**", "**/.nuxt/**"] }
+          CFG
+          cat > "$defaults/.checkov.yaml" <<'CFG'
+          compact: true
+          skip-framework:
+            - secrets
+          # CKV_GHA_7: workflow_dispatch inputs (release bump choices) are intended.
+          skip-check:
+            - CKV_GHA_7
+          skip-path:
+            - .venv
+            - node_modules
+            - .terraform
+          CFG
+          pick() { if [ -f "$2" ]; then echo "$1=$2"; else echo "$1=$defaults/$(basename "$2")"; fi; }
+          opt() { if [ -f "$2" ]; then echo "$1=$2"; else echo "$1="; fi; }
+          {
+            opt constraints .github/ci/requirements.txt
+            pick codespell .github/linters/.codespellrc
+            pick markdownlint .github/linters/.markdownlint.json
+            opt nvmrc .nvmrc
+            pick jscpd .github/linters/.jscpd.json
+            pick checkov .github/linters/.checkov.yaml
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Codespell
+        shell: bash
+        env:
+          CONSTRAINTS: ${{ steps.cfg.outputs.constraints }}
+          CODESPELL_CFG: ${{ steps.cfg.outputs.codespell }}
+        run: |
+          python -m pip install ${CONSTRAINTS:+-c "$CONSTRAINTS"} codespell
+          codespell ${CODESPELL_CFG:+--config "$CODESPELL_CFG"} .
+
+      - name: markdownlint
+        uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0
+        with:
+          config: ${{ steps.cfg.outputs.markdownlint }}
+          globs: |
+            *.md
+            .github/**/*.md
+
+      - name: Setup Node.js
+        if: always()
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ${{ steps.cfg.outputs.nvmrc }}
+          node-version: ${{ steps.cfg.outputs.nvmrc == '' && inputs.node-version || '' }}
+
+      - name: jscpd (copy/paste detection)
+        if: always()
+        shell: bash
+        env:
+          JSCPD_CFG: ${{ steps.cfg.outputs.jscpd }}
+        run: npx --yes jscpd@5.4.2 ${JSCPD_CFG:+--config "$JSCPD_CFG"} .
+
+      - name: Checkov (IaC security)
+        if: always()
+        shell: bash
+        env:
+          CONSTRAINTS: ${{ steps.cfg.outputs.constraints }}
+          CHECKOV_CFG: ${{ steps.cfg.outputs.checkov }}
+        run: |
+          python -m pip install ${CONSTRAINTS:+-c "$CONSTRAINTS"} checkov
+          checkov -d . ${CHECKOV_CFG:+--config-file "$CHECKOV_CFG"}
+      - name: "Clean gap-linting leftovers: Clean workspace"
+        if: (always() && github.event_name != 'pull_request') && (('true') == 'true' && runner.environment == 'self-hosted')
+        shell: bash
+        run: |
+          # Remove leftover files not owned by the runner user (e.g. root-owned
+          # files left by a cancelled Docker step). Keeps the checked-out tree so
+          # downstream local actions still resolve.
+          if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
+            echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
+            exit 0
+          fi
+          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+
+  terraform:
+    if: inputs.enable-terraform
+    needs: runners
+    runs-on: ${{ fromJSON(needs.runners.outputs.linux-runner) }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read Terraform version
+        id: tf-version
+        shell: bash
+        run: |
+          # Optional: without .terraform-version, setup-terraform installs the latest.
+          version=""
+          if [ -f .terraform-version ]; then version=$(tr -d '[:space:]' < .terraform-version); fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ steps.tf-version.outputs.version }}
+
+      # Formatting is advisory and trivially auto-fixable, so it must not stop the
+      # validate pass below from reporting real breakage.
+      - name: Terraform fmt
+        continue-on-error: true
+        shell: bash
+        run: terraform fmt -check -recursive .
+
+      # -lockfile=readonly is the whole point: init resolves the providers a module
+      # declares and fails if .terraform.lock.hcl does not already satisfy those
+      # constraints, without writing anything back. That surfaces stale locks as
+      # failures instead of silently repairing them, so `terraform plan` output a
+      # developer sees locally matches what CI saw.
+      #
+      # A GitHub-hosted runner only has ~14 GB of disk and this loop visits all 35
+      # modules, so the footprint has to be bounded: TF_PLUGIN_CACHE_DIR makes each
+      # unique provider package download once per run instead of once per module,
+      # and dropping .terraform/ after every module keeps peak usage at a single
+      # module's extracted providers. Without both, the AWS provider alone (~1.7 GB
+      # extracted) filled the disk after a handful of modules and the leftover
+      # half-written packages surfaced as bogus "cached package does not match any
+      # of the checksums" errors.
+      - name: Terraform validate
+        shell: bash
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          REF: ${{ github.ref }}
+          QUEUE_BASE: ${{ inputs.base-branch || github.event.repository.default_branch || 'main' }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+          # PR, or a PR branch dispatched by the PR queue: modules changed vs the
+          # base branch. Push: vs the previous tip. Schedule, dispatch on the base
+          # branch (or an unusable base, e.g. a new branch): every module.
+          range=""
+          if [ "$EVENT_NAME" = "pull_request" ] && git rev-parse -q --verify "origin/${BASE_REF}" >/dev/null; then
+            range="origin/${BASE_REF}...HEAD"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/$QUEUE_BASE" ] \
+            && git rev-parse -q --verify "origin/$QUEUE_BASE" >/dev/null; then
+            range="origin/$QUEUE_BASE...HEAD"
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "${BEFORE_SHA//0/}" != "" ] \
+            && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            range="${BEFORE_SHA}...HEAD"
+          fi
+
+          all_modules=$(find . -name versions.tf -not -path '*/.terraform/*' -exec dirname {} \; | sed 's#^\./##' | sort)
+          if [ -z "$range" ]; then
+            modules="$all_modules"
+            echo "scope: all modules"
+          else
+            modules=$(git diff --name-only "$range" -- '*.tf' '*.tf.json' '*.terraform.lock.hcl' '.terraform-version' |
+              while IFS= read -r file; do
+                [ "$file" = ".terraform-version" ] && { printf '%s\n' "$all_modules"; continue; }
+                dir=$(dirname "$file")
+                # nearest ancestor that is a module root
+                while [ "$dir" != "." ] && ! printf '%s\n' "$all_modules" | grep -qxF "$dir"; do dir=$(dirname "$dir"); done
+                printf '%s\n' "$all_modules" | grep -xF "$dir" || true
+              done | sort -u)
+            echo "scope: modules changed in $range"
+          fi
+
+          # Registry downloads fail transiently; retry init before calling it a failure.
+          init_module() {
+            local module=$1 attempt delay
+            for attempt in 1 2 3; do
+              terraform -chdir="$module" init -backend=false -input=false -lockfile=readonly >/dev/null && return 0
+              [ "$attempt" -lt 3 ] || break
+              delay=$([ "$attempt" -eq 1 ] && echo 5 || echo 15)
+              echo "init failed for $module (attempt $attempt/3), retrying in ${delay}s"
+              sleep "$delay"
+            done
+            return 1
+          }
+
+          failures=0
+          total=0
+          while IFS= read -r module; do
+            [ -n "$module" ] && [ -d "$module" ] || continue
+            total=$((total + 1))
+            if ! init_module "$module"; then
+              printf '::warning file=%s::lock file does not satisfy required_providers\n' "$module/versions.tf"
+              terraform -chdir="$module" init -backend=false -input=false -lockfile=readonly || true
+              failures=$((failures + 1))
+              rm -rf "$module/.terraform"
+              continue
+            fi
+            terraform -chdir="$module" validate || failures=$((failures + 1))
+            rm -rf "$module/.terraform"
+          done <<< "$modules"
+          printf 'checked %s module(s), %s failing\n' "$total" "$failures"
+          exit "$failures"

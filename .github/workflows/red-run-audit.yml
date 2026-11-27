@@ -19,4 +19,4 @@ jobs:
       actions: read
       contents: read
       issues: write
-    uses: nerowentah/scripts/.github/workflows/shared-red-run-audit.yml@9bf3624e56d8e03a782eb9db55b35d5d184f510a # v1.0.0
+    uses: ./.github/workflows/shared-red-run-audit.yml

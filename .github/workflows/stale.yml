@@ -14,7 +14,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    uses: nerowentah/scripts/.github/workflows/shared-stale.yml@9bf3624e56d8e03a782eb9db55b35d5d184f510a # v1.0.0
+    uses: ./.github/workflows/shared-stale.yml
     with:
       labels-linux: '["ubuntu-latest"]'
       days-before-stale: 60

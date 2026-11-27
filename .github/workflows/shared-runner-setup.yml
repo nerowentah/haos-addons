@@ -1,0 +1,77 @@
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.0 (9bf3624e56d8e03a782eb9db55b35d5d184f510a)
+# .github/workflows/shared-runner-setup.yml by .github/ci/vendor-platform.mjs: this repository is
+# public and cannot call the private platform repository. Composite actions
+# are expanded inline (0 step(s)). Re-run the script on a platform release.
+
+
+name: Shared Runner Setup
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        type: string
+        required: false
+        default: linux
+        description: OSes to resolve runner labels for (linux, windows, both)
+      labels-linux:
+        type: string
+        required: false
+        default: ""
+        description: JSON array of self-hosted Linux runner labels (e.g. ["self-hosted","Linux"])
+      labels-windows:
+        type: string
+        required: false
+        default: ""
+        description: JSON array of self-hosted Windows runner labels
+    outputs:
+      # Pure label resolution, no API calls and no secrets. Every output is always a
+      # valid JSON array, so callers can use fromJSON() unconditionally.
+      #
+      # Trusted events get the self-hosted labels; everything else gets the hosted
+      # label so untrusted code never reaches the persistent runner. push/schedule/
+      # dispatch/release are trusted; pull_request only when the head is same-repo AND
+      # the author is an OWNER/MEMBER/COLLABORATOR, or when a maintainer has applied
+      # the safe-to-test label, or the author is dependabot[bot] or renovate[bot] on a
+      # same-repo branch (dependabot also via pull_request_target for the auto-approve
+      # job, which runs no PR-controlled code). Fork PRs are never trusted. Both bots
+      # open PRs as apps, so their author_association is always NONE and they would
+      # otherwise never reach a runner at all. safe-to-test is the same opt-in
+      # code-quality.yml honours for running the job; the label has to be on the PR
+      # when the commit is pushed, since workflows no longer trigger on `labeled`. pull_request_target is
+      # deliberately excluded even though it checks out the base branch, because it
+      # carries a write token. An unset label input/var falls through to
+      # ["self-hosted", "<OS>"].
+      linux-runner:
+        description: Selected Linux runner labels (JSON array)
+        value: ${{ jobs.resolve.outputs.linux-runner }}
+      windows-runner:
+        description: Selected Windows runner labels (JSON array)
+        value: ${{ jobs.resolve.outputs.windows-runner }}
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    # A reusable workflow must contain a job, so this one only reports the resolution
+    # in the step summary. It lands on the same label the caller's Linux jobs use, so
+    # an untrusted event is routed to the hosted label rather than the persistent runner.
+    runs-on: ${{ fromJSON((contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) || contains(github.event.pull_request.labels.*.name, 'safe-to-test') || contains(fromJSON('["dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login))) || (github.event_name == 'pull_request_target' && github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)) && (inputs.labels-linux != '' && inputs.labels-linux || vars.SELF_HOSTED || '["self-hosted", "Linux"]') || '["ubuntu-latest"]') }}
+    timeout-minutes: 5
+    outputs:
+      linux-runner: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) || contains(github.event.pull_request.labels.*.name, 'safe-to-test') || contains(fromJSON('["dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login))) || (github.event_name == 'pull_request_target' && github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)) && (inputs.labels-linux != '' && inputs.labels-linux || vars.SELF_HOSTED || '["self-hosted", "Linux"]') || '["ubuntu-latest"]' }}
+      windows-runner: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) || contains(github.event.pull_request.labels.*.name, 'safe-to-test') || contains(fromJSON('["dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login))) || (github.event_name == 'pull_request_target' && github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)) && (inputs.labels-windows != '' && inputs.labels-windows || vars.SELF_HOSTED_WIN || '["self-hosted", "Windows"]') || '["windows-latest"]' }}
+    steps:
+      - name: Report resolved runners
+        env:
+          LINUX_RUNNER: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) || contains(github.event.pull_request.labels.*.name, 'safe-to-test') || contains(fromJSON('["dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login))) || (github.event_name == 'pull_request_target' && github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)) && (inputs.labels-linux != '' && inputs.labels-linux || vars.SELF_HOSTED || '["self-hosted", "Linux"]') || '["ubuntu-latest"]' }}
+          WINDOWS_RUNNER: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) || contains(github.event.pull_request.labels.*.name, 'safe-to-test') || contains(fromJSON('["dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login))) || (github.event_name == 'pull_request_target' && github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)) && (inputs.labels-windows != '' && inputs.labels-windows || vars.SELF_HOSTED_WIN || '["self-hosted", "Windows"]') || '["windows-latest"]' }}
+        run: |
+          {
+            echo "### Runner selection"
+            echo "| OS | Labels |"
+            echo "| --- | --- |"
+            echo "| Linux | \`$LINUX_RUNNER\` |"
+            echo "| Windows | \`$WINDOWS_RUNNER\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,161 @@
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.0 (9bf3624e56d8e03a782eb9db55b35d5d184f510a)
+# .github/workflows/shared-pr-queue.yml by .github/ci/vendor-platform.mjs: this repository is
+# public and cannot call the private platform repository. Composite actions
+# are expanded inline (0 step(s)). Re-run the script on a platform release.
+
+
+name: Shared PR Queue Gate
+
+# Decides whether a pull_request run should defer its CI to the PR queue
+# (shared-pr-auto-update.yml, called from each repo's pr-auto-update.yml).
+#
+# The default-branch ruleset requires strict (up-to-date) checks, so a PR's CI
+# only counts if it ran on a branch that already contains the latest base. A PR
+# opened behind an older queued PR (e.g. #400..#402 while #399 is open) will be
+# BEHIND as soon as #399 merges, and its first run is thrown away: the serial
+# queue updates the branch and dispatches CI again. This gate skips that first
+# run.
+#
+# A PR is "queued" when it is open, non-draft, same-repo and either has
+# auto-merge enabled or was opened by the repository owner (who merges by hand).
+# This is the same candidate set shared-pr-auto-update.yml serves - the rule is
+# kept identical in both files and checked by check-workflows.mjs - so every
+# deferred PR is one the queue will later update and run CI for. Only PRs into
+# the queue's base branch are deferred: the queue serves no other branch.
+#
+# defer=true when the event is pull_request, this PR is queued, and either
+#   - an older queued PR against the same base exists (it merges first), or
+#   - this PR is behind the base (the run could never satisfy the strict rule;
+#     the queue merges the base into it first, then runs CI once).
+# Non-queued PRs (drafts, forks, Dependabot majors without auto-merge) always run.
+#
+# Callers skip the job that produces the required checks on defer=true. A
+# skipped *reusable-workflow caller* job never creates the nested check names
+# ("shared-ci / lint", ...), so the PR shows them as expected and cannot merge
+# until the queue dispatches the real run. Never defer by skipping a plain job
+# that carries a required check name: a skipped check counts as passed.
+#
+# Fails open: any API error yields defer=false. A wrong "run" only costs a CI
+# run; a wrong "defer" would leave a PR without checks.
+
+on:
+  workflow_call:
+    inputs:
+      base-branch:
+        type: string
+        required: false
+        default: ""
+        description: Branch the queue serves. Empty = the repository's default branch.
+      dispatch-workflows:
+        type: string
+        required: false
+        default: code-quality.yml
+        description: Space-separated workflows the queue dispatches; listed in the step summary.
+    outputs:
+      defer:
+        description: "'true' when this run's CI should be left to the PR queue"
+        value: ${{ jobs.gate.outputs.defer }}
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    # Hosted, no checkout: gh and jq only, and it must not wait for (or hold)
+    # the self-hosted runner it is trying to save.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # compare API (behind_by)
+      pull-requests: read # gh pr list
+    outputs:
+      defer: ${{ steps.gate.outputs.defer }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
+        with:
+          egress-policy: audit
+
+      - name: Check the PR queue
+        id: gate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          QUEUE_BASE: ${{ inputs.base-branch || github.event.repository.default_branch || 'main' }}
+          DISPATCH_WORKFLOWS: ${{ inputs.dispatch-workflows }}
+        run: |
+          set -euo pipefail
+          defer=false
+          reason=""
+
+          finish() {
+            echo "defer=$defer" >> "$GITHUB_OUTPUT"
+            if [ "$defer" = true ]; then
+              echo "Deferred: $reason"
+              {
+                echo "### CI deferred"
+                echo
+                echo "$reason. The PR queue (pr-auto-update.yml) brings this branch up to"
+                echo "date with \`$BASE_REF\` and dispatches CI when it reaches the front."
+                echo
+                echo "To run now, on the PR branch:"
+                for wf in $DISPATCH_WORKFLOWS; do echo "- \`gh workflow run $wf --ref <branch>\`"; done
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "Not deferred${reason:+: $reason}."
+            fi
+            exit 0
+          }
+
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            reason="$EVENT_NAME runs are never deferred"
+            finish
+          fi
+
+          if [ "$BASE_REF" != "$QUEUE_BASE" ]; then
+            reason="PR targets $BASE_REF; the queue only serves $QUEUE_BASE"
+            finish
+          fi
+
+          if ! prs=$(gh pr list --repo "$REPO" --base "$BASE_REF" --state open --limit 100 \
+            --json number,isDraft,isCrossRepository,autoMergeRequest,author); then
+            echo "::warning::Could not list open PRs; running CI."
+            finish
+          fi
+
+          # Queued PR numbers, oldest first. QUEUE-RULE: this select() line must stay
+          # identical to the one in shared-pr-auto-update.yml (check-workflows.mjs).
+          queued=$(jq -c --arg owner "$OWNER" '[.[]
+            | select((.isDraft | not) and (.isCrossRepository | not) and (.autoMergeRequest != null or .author.login == $owner))
+            | .number] | sort' <<<"$prs")
+
+          if [ "$(jq --argjson n "$PR_NUMBER" 'index($n) == null' <<<"$queued")" = true ]; then
+            reason="PR #$PR_NUMBER is not in the queue (draft, fork, or neither auto-merge nor owner-authored)"
+            finish
+          fi
+
+          older=$(jq -r --argjson n "$PR_NUMBER" 'map(select(. < $n)) | first // empty' <<<"$queued")
+          if [ -n "$older" ]; then
+            defer=true
+            reason="PR #$older is ahead of #$PR_NUMBER in the PR queue"
+            finish
+          fi
+
+          if ! behind=$(gh api "repos/$REPO/compare/$BASE_REF...$HEAD_SHA" --jq '.behind_by'); then
+            echo "::warning::Could not compare $HEAD_SHA with $BASE_REF; running CI."
+            finish
+          fi
+          if [ "$behind" -gt 0 ]; then
+            defer=true
+            reason="PR #$PR_NUMBER is $behind commit(s) behind $BASE_REF"
+            finish
+          fi
+
+          reason="PR #$PR_NUMBER is first in the queue and up to date with $BASE_REF"
+          finish

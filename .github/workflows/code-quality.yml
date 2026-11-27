@@ -32,7 +32,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    uses: nerowentah/scripts/.github/workflows/shared-pr-queue.yml@9bf3624e56d8e03a782eb9db55b35d5d184f510a # v1.0.0
+    uses: ./.github/workflows/shared-pr-queue.yml
     with:
       dispatch-workflows: code-quality.yml builder.yaml codeql.yml
 
@@ -54,7 +54,7 @@ jobs:
       actions: read
       pull-requests: write
       issues: write
-    uses: nerowentah/scripts/.github/workflows/shared-ci.yml@9bf3624e56d8e03a782eb9db55b35d5d184f510a # v1.0.0
+    uses: ./.github/workflows/shared-ci.yml
     with:
       labels-linux: '["ubuntu-latest"]'
       python-version: 3.14

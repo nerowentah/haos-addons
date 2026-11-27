@@ -25,6 +25,6 @@ jobs:
       actions: write
       checks: read
       statuses: read
-    uses: nerowentah/scripts/.github/workflows/shared-pr-auto-update.yml@9bf3624e56d8e03a782eb9db55b35d5d184f510a # v1.0.0
+    uses: ./.github/workflows/shared-pr-auto-update.yml
     with:
       dispatch-workflows: code-quality.yml builder.yaml codeql.yml

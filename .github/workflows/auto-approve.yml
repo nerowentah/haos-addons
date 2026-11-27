@@ -14,7 +14,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: nerowentah/scripts/.github/workflows/shared-auto-approve.yml@9bf3624e56d8e03a782eb9db55b35d5d184f510a # v1.0.0
+    uses: ./.github/workflows/shared-auto-approve.yml
     with:
       labels-linux: '["ubuntu-latest"]'
       major-delay-days: -1
