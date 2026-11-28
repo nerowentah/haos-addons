@@ -1,4 +1,4 @@
-# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.2 (957516d64b73951bdbe694a458dd2a9075f63aaa)
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.1.0 (8cfae0383d788042e23700e3195522cb2c69db05)
 # .github/workflows/shared-codeql.yml by .github/ci/vendor-platform.mjs: this repository is
 # public and cannot call the private platform repository. Composite actions
 # are expanded inline (1 step(s)). Re-run the script on a platform release.
@@ -64,38 +64,44 @@ jobs:
         language: ${{ fromJSON(inputs.languages) }}
     steps:
       - name: Harden Runner
+        if: ${{ !github.event.repository.private }}
         uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
       - name: "Prepare runner: Clean workspace"
-        if: (('true') == 'true' && runner.environment == 'self-hosted')
+        if: (runner.environment == 'self-hosted' && runner.os == 'Linux')
         shell: bash
         run: |
           # Remove leftover files not owned by the runner user (e.g. root-owned
           # files left by a cancelled Docker step). Keeps the checked-out tree so
-          # downstream local actions still resolve.
+          # downstream local actions still resolve. sudo -n: never wait for a password.
           if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
             echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
             exit 0
           fi
-          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+          sudo -n find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + ||
+            echo "::warning::Workspace cleanup failed (passwordless sudo missing?); a later checkout may hit root-owned files."
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           languages: ${{ matrix.language }}
           build-mode: none
           queries: ${{ inputs.queries }}
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           category: /language:${{ matrix.language }}
           upload: ${{ inputs.upload-results && 'always' || 'never' }}
+          # The database upload is separate from `upload` and on by default. Without
+          # code scanning it fails after four retries ("Code scanning is not enabled")
+          # and annotates every run as a failure, so it follows upload-results.
+          upload-database: ${{ inputs.upload-results }}
           output: ${{ runner.temp }}/codeql-sarif
 
       # Without a code-scanning backend nobody would ever see the alerts, so the

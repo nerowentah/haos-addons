@@ -1,4 +1,4 @@
-# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.2 (957516d64b73951bdbe694a458dd2a9075f63aaa)
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.1.0 (8cfae0383d788042e23700e3195522cb2c69db05)
 # .github/workflows/shared-runner-setup.yml by .github/ci/vendor-platform.mjs: this repository is
 # public and cannot call the private platform repository. Composite actions
 # are expanded inline (0 step(s)). Re-run the script on a platform release.
@@ -48,6 +48,10 @@ on:
       windows-runner:
         description: Selected Windows runner labels (JSON array)
         value: ${{ jobs.resolve.outputs.windows-runner }}
+      dependabot:
+        description: >-
+          The Dependabot ecosystem (npm_and_yarn, pip, github_actions, ...) when this run tests a Dependabot update, else empty. Set for a pull_request authored by dependabot[bot], or the PR queue's GITHUB_TOKEN dispatch on a dependabot/ branch; a person's own dependabot/* branch is not one, so it still runs in full.
+        value: ${{ jobs.resolve.outputs.dependabot }}
 
 permissions:
   contents: read
@@ -60,9 +64,36 @@ jobs:
     runs-on: ${{ fromJSON((contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) || contains(github.event.pull_request.labels.*.name, 'safe-to-test') || contains(fromJSON('["dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login))) || (github.event_name == 'pull_request_target' && github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)) && (inputs.labels-linux != '' && inputs.labels-linux || vars.SELF_HOSTED || '["self-hosted", "Linux"]') || '["ubuntu-latest"]') }}
     timeout-minutes: 5
     outputs:
+      dependabot: ${{ steps.dependabot.outputs.ecosystem }}
       linux-runner: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) || contains(github.event.pull_request.labels.*.name, 'safe-to-test') || contains(fromJSON('["dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login))) || (github.event_name == 'pull_request_target' && github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)) && (inputs.labels-linux != '' && inputs.labels-linux || vars.SELF_HOSTED || '["self-hosted", "Linux"]') || '["ubuntu-latest"]' }}
       windows-runner: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) || contains(github.event.pull_request.labels.*.name, 'safe-to-test') || contains(fromJSON('["dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login))) || (github.event_name == 'pull_request_target' && github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)) && (inputs.labels-windows != '' && inputs.labels-windows || vars.SELF_HOSTED_WIN || '["self-hosted", "Windows"]') || '["windows-latest"]' }}
     steps:
+      - name: Detect a Dependabot update
+        id: dependabot
+        shell: bash
+        env:
+          REF: ${{ github.head_ref || github.ref_name }}
+          PR_USER: ${{ github.event.pull_request.user.login }}
+          EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          ecosystem=""
+          # dependabot/<ecosystem>/<dir...>/<name>: the second segment names it.
+          # Known gap, accepted: the queue's dispatch carries no PR author, so a
+          # person's same-repo PR on a branch they named dependabot/x/y would get
+          # the reduced checks on that dispatch (its pull_request runs do not).
+          # Closing it needs a PR lookup, i.e. pull-requests: read here, which
+          # every caller of this no-API workflow would then have to grant. Only
+          # people with write access can push such a branch.
+          if [[ "$REF" == dependabot/*/* ]] && { [ "$PR_USER" = "dependabot[bot]" ] ||
+            { [ "$EVENT" = workflow_dispatch ] && [ "$ACTOR" = "github-actions[bot]" ]; }; }; then
+            ecosystem=${REF#dependabot/}
+            ecosystem=${ecosystem%%/*}
+          fi
+          echo "dependabot update: ${ecosystem:-no}"
+          echo "ecosystem=$ecosystem" >> "$GITHUB_OUTPUT"
+
       - name: Report resolved runners
         env:
           LINUX_RUNNER: ${{ (contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) || contains(github.event.pull_request.labels.*.name, 'safe-to-test') || contains(fromJSON('["dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login))) || (github.event_name == 'pull_request_target' && github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)) && (inputs.labels-linux != '' && inputs.labels-linux || vars.SELF_HOSTED || '["self-hosted", "Linux"]') || '["ubuntu-latest"]' }}

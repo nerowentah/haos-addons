@@ -1,4 +1,4 @@
-# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.2 (957516d64b73951bdbe694a458dd2a9075f63aaa)
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.1.0 (8cfae0383d788042e23700e3195522cb2c69db05)
 # .github/workflows/shared-pr-auto-update.yml by .github/ci/vendor-platform.mjs: this repository is
 # public and cannot call the private platform repository. Composite actions
 # are expanded inline (0 step(s)). Re-run the script on a platform release.
@@ -18,12 +18,19 @@ name: Shared PR Auto-Update
 # reason dependabot.yml sets rebase-strategy: disabled). Queued = open, non-draft,
 # same-repo, and auto-merge enabled or opened by the repository owner.
 #
-# Only GITHUB_TOKEN is used (no GitHub App is available). A push made with it
-# does not trigger pull_request workflows, so after updating the branch the
-# required-check workflows are started with workflow_dispatch (the one event
-# GITHUB_TOKEN may trigger). Their check runs land on the new head SHA under the
-# same names the ruleset requires ("shared-ci / lint", ...), and auto-merge
-# completes. The dispatched workflows are the caller's `dispatch-workflows`;
+# Only GITHUB_TOKEN is used (no GitHub App is available). Despite the general
+# rule that GITHUB_TOKEN events start no workflows, an update-branch merge DOES
+# fire pull_request `synchronize` (observed: the run's actor is
+# github-actions[bot], its triggering actor the PR author). So after an update
+# the queue waits for those pull_request runs and dispatches (workflow_dispatch,
+# which GITHUB_TOKEN may always trigger) only the workflows that did not start;
+# dispatching all of them ran CI twice on the one self-hosted runner. A run
+# GitHub holds for approval (`action_required`, seen in the consumer repos)
+# does not count as started: it is left alone and the workflow is dispatched,
+# so approving it by hand would only duplicate CI. A PR that
+# needs no update (its CI was deferred) is dispatched directly. Either way the
+# check runs land on the head SHA under the names the ruleset requires
+# ("shared-ci / lint", ...), and auto-merge completes. The dispatched workflows are the caller's `dispatch-workflows`;
 # shared-ci scopes its terraform job on a non-base ref to the branch's diff, and
 # the other jobs scan the whole tree as they do on a PR.
 #
@@ -33,29 +40,44 @@ name: Shared PR Auto-Update
 # opened by the repository owner, so that is the same trust decision the
 # pull_request gates make.
 #
+# Someone else (a session using the owner's token, the "Update branch" button)
+# may update the same PR in the same second; update-branch then answers 422
+# ("expected head sha didn't match"). That is treated as "updated": the queue
+# re-reads the head and carries on instead of failing.
+#
 # The update is a merge from main into the PR branch. Auto-merge squashes, so
 # history on main stays linear; a rebase update would rewrite the branch, and
 # Dependabot stops maintaining a PR once someone else has rewritten it.
 #
 # It also runs CI for PRs whose pull_request run was deferred by
 # shared-pr-queue.yml (opened while an older queued PR was open, or pushed while
-# behind the base). The pick is the oldest candidate that is behind the base or
-# whose head has no `sentinel-check` check (default "shared-ci / lint"); "behind" comes from the compare
+# behind the base). Order is strict: only the OLDEST queued PR is served. It is
+# updated when behind the base and dispatched when its head has no
+# `sentinel-check` check (default "shared-ci / lint", i.e. its CI was deferred);
+# otherwise the queue waits - for its running checks or its merge - and never
+# skips a healthy PR. A front PR that cannot merge as it stands is taken out of
+# the line instead of holding up every newer PR, as GitHub's merge queue drops a
+# failing PR: it is labeled queue-blocked (with a comment saying why) when it has
+# merge conflicts, a failed "<caller> / <job>" check on an up-to-date head, or
+# changes workflow files that GITHUB_TOKEN may not update (a Dependabot PR is
+# first asked to rebase itself, which it can, and given an hour). It rejoins in
+# number order when its head changes or the reason clears; removing the label
+# by hand also works. "Behind" comes from the compare
 # API, since a PR missing required checks reports BLOCKED rather than BEHIND.
-# CI is only ever dispatched once the head contains the latest base.
+# CI is only ever dispatched once the head contains the latest base. QUEUE-FRONT:
+# shared-pr-queue.yml defers pull_request runs and hand-made dispatches with the
+# same pick, so CI only ever runs for the PR this job would choose.
 #
 # Dependabot PRs are auto-merged with GITHUB_TOKEN, and that merge fires no
-# `push`, so the schedule is the main trigger that picks the next PR; `push`
-# only shortens the wait after a manual merge.
+# `push` and no pull_request `closed` (checked 2026-11-28 on toolbox #208/#209,
+# keyvault #84). So callers also trigger on `workflow_run` of the CI workflows:
+# when the front PR's CI completes green, this job waits up to 2 min for the
+# auto-merge and then serves the next PR in the same run. The schedule remains
+# the fallback; `push` shortens the wait after a manual merge.
 
 on:
   workflow_call:
     inputs:
-      base-branch:
-        type: string
-        required: false
-        default: ""
-        description: Branch the queue serves. Empty = the repository's default branch.
       dispatch-workflows:
         type: string
         required: false
@@ -90,6 +112,7 @@ jobs:
       REPO: ${{ github.repository }}
     steps:
       - name: Harden Runner
+        if: ${{ !github.event.repository.private }}
         uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
@@ -97,35 +120,22 @@ jobs:
       - name: Bring the next queued PR up to date and run its CI
         shell: bash
         env:
-          BASE: ${{ inputs.base-branch || github.event.repository.default_branch || 'main' }}
+          BASE: ${{ github.event.repository.default_branch || 'main' }}
           OWNER: ${{ github.repository_owner }}
           SENTINEL: ${{ inputs.sentinel-check }}
           DISPATCH_WORKFLOWS: ${{ inputs.dispatch-workflows }}
+          BLOCK_LABEL: queue-blocked
         run: |
           set -euo pipefail
 
-          # Candidates: open, non-draft, same-repo PRs against the base with
-          # auto-merge enabled or opened by the repository owner. QUEUE-RULE: the
-          # select() line must stay identical to shared-pr-queue.yml's.
-          prs=$(gh pr list --repo "$REPO" --base "$BASE" --state open --limit 100 \
-            --json number,headRefName,headRefOid,isDraft,isCrossRepository,autoMergeRequest,author,mergeStateStatus,createdAt,statusCheckRollup |
+          # Every open, non-draft, same-repo PR against the base with auto-merge
+          # enabled or opened by the repository owner - including the ones the
+          # queue took out of the line, which are re-checked below.
+          open=$(gh pr list --repo "$REPO" --base "$BASE" --state open --limit 100 \
+            --json number,headRefName,headRefOid,isDraft,isCrossRepository,autoMergeRequest,author,mergeStateStatus,statusCheckRollup,labels |
             jq -c --arg owner "$OWNER" '[.[]
-              | select((.isDraft | not) and (.isCrossRepository | not) and (.autoMergeRequest != null or .author.login == $owner))]
-              | sort_by(.createdAt)')
-
-          if [ "$(jq 'length' <<<"$prs")" -eq 0 ]; then
-            echo "No open queued PRs."
-            exit 0
-          fi
-
-          # One at a time: an up-to-date candidate with checks still running is in flight.
-          inflight=$(jq -r '[.[] | select(.mergeStateStatus != "BEHIND")
-            | select([.statusCheckRollup[]? | select((.status // "COMPLETED") != "COMPLETED" or .state == "PENDING")] | length > 0)
-            | .number] | first // empty' <<<"$prs")
-          if [ -n "$inflight" ]; then
-            echo "PR #$inflight is up to date with checks running; waiting for it."
-            exit 0
-          fi
+              | select((.isCrossRepository | not) and (.isDraft | not) and (.autoMergeRequest != null or .author.login == $owner))]
+              | sort_by(.number)')
 
           # Commits on main missing from a head. mergeStateStatus alone is not
           # enough: a PR whose required checks are missing (CI deferred by
@@ -134,66 +144,239 @@ jobs:
             gh api "repos/$REPO/compare/$BASE...$1" --jq '.behind_by'
           }
 
-          # Next: the oldest candidate without conflicts that is behind main, or
-          # whose head has never run CI (deferred, or its older PR was closed
-          # without merging, so the base never moved to make it BEHIND).
-          next=""
-          while IFS= read -r pr; do
+          # Failed reusable-workflow checks ("<caller> / <job>", the shape every
+          # required check has) on the PR's head. Latest run per name only: a
+          # green re-run or dispatch supersedes an earlier failure.
+          red_checks() {
+            jq -r '[.statusCheckRollup[]?
+              | select((.name // "") | contains(" / "))]
+              | group_by(.name) | map(max_by(.completedAt // .startedAt // ""))
+              | map(select(.conclusion == "FAILURE" or .conclusion == "TIMED_OUT" or .conclusion == "STARTUP_FAILURE") | .name)
+              | join(", ")' <<<"$1"
+          }
+
+          # The queue's own notes on a PR, newest last: hidden markers in its
+          # comments ("<!-- pr-queue:<kind> sha=<head> -->").
+          marker() { # <pr> <kind> -> "<sha> <created_at>" of the newest marker, or empty
+            gh api "repos/$REPO/issues/$1/comments?per_page=100" \
+              --jq "[.[] | select(.user.login == \"github-actions[bot]\")
+                | select(.body | test(\"<!-- pr-queue:$2 sha=[0-9a-f]+ -->\"))
+                | {sha: (.body | capture(\"<!-- pr-queue:$2 sha=(?<s>[0-9a-f]+) -->\").s), at: .created_at}]
+                | last | if . == null then empty else \"\(.sha) \(.at)\" end"
+          }
+
+          # Runs of the dispatched workflows on <sha> that have not finished
+          # (any event). A dispatched run sits queued for minutes before it
+          # creates a single check run, so statusCheckRollup alone missed it: on
+          # 2026-11-28 two overlapping queue runs (push + workflow_run) both
+          # dispatched #434's CI 20 s apart.
+          active_runs() { # <sha> -> space-separated workflow files with an unfinished run
+            gh api "repos/$REPO/actions/runs?head_sha=$1&per_page=100" \
+              --jq '[.workflow_runs[]
+                | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "requested" or .status == "pending")
+                | .path | split("/") | last | sub("@.*$"; "")] | unique | join(" ")'
+          }
+          running_ci() { # <sha> -> the DISPATCH_WORKFLOWS with an unfinished run, or empty
+            local active wf hit=""
+            active=" $(active_runs "$1") "
+            for wf in $DISPATCH_WORKFLOWS; do
+              case "$active" in *" $wf "*) hit="$hit $wf" ;; esac
+            done
+            echo "${hit# }"
+          }
+
+          # Out of the line: like GitHub's merge queue removing a failing PR, a
+          # front PR that cannot merge as it stands is labeled $BLOCK_LABEL and
+          # skipped, so it no longer holds up every newer PR. The QUEUE-RULE
+          # excludes the label, in the gate as well. It rejoins (in number order)
+          # when its head changes or the reason clears; see the loop below.
+          block() { # <pr> <reason-kind> <head-sha> <human reason>
+            gh api -X POST "repos/$REPO/labels" -f name="$BLOCK_LABEL" -f color=B60205 \
+              -f description="Out of the PR queue until fixed; the queue re-checks it every run" >/dev/null 2>&1 || true
+            gh api -X POST "repos/$REPO/issues/$1/labels" -f "labels[]=$BLOCK_LABEL" >/dev/null
+            gh pr comment "$1" --repo "$REPO" --body "$(printf '%s\n\n%s\n\n%s' \
+              "**Taken out of the PR queue:** $4." \
+              "Newer PRs go ahead of it. It rejoins the queue on its own, in number order, once it is fixed: push a commit (or let Dependabot rebase it), or re-run the failed checks. Removing the \`$BLOCK_LABEL\` label puts it back at once." \
+              "<!-- pr-queue:blocked-$2 sha=$3 -->")" >/dev/null
+            echo "::warning::PR #$1 left the queue: $4"
+          }
+          unblock() { # <pr> <why>
+            gh api -X DELETE "repos/$REPO/issues/$1/labels/$BLOCK_LABEL" >/dev/null 2>&1 || true
+            echo "PR #$1 rejoins the queue: $2"
+          }
+
+          # Re-admit blocked PRs whose reason has cleared.
+          for row in $(jq -r --arg l "$BLOCK_LABEL" '.[] | select([.labels[].name] | index($l)) | @base64' <<<"$open"); do
+            pr=$(base64 -d <<<"$row")
             n=$(jq -r '.number' <<<"$pr")
-            if [ "$(jq -r '.mergeStateStatus' <<<"$pr")" = "DIRTY" ]; then
-              echo "PR #$n has merge conflicts; skipping."
+            head=$(jq -r '.headRefOid' <<<"$pr")
+            kind="" since=""
+            for k in dirty red workflows; do
+              m=$(marker "$n" "blocked-$k")
+              if [ -n "$m" ] && { [ -z "$since" ] || [[ "${m#* }" > "$since" ]]; }; then kind=$k; since=${m#* }; bsha=${m%% *}; fi
+            done
+            if [ -z "$kind" ]; then
+              echo "PR #$n carries $BLOCK_LABEL with no queue note (set by hand); leaving it."
               continue
             fi
-            behind=$(behind_by "$(jq -r '.headRefOid' <<<"$pr")")
-            checked=$(jq --arg s "$SENTINEL" '[.statusCheckRollup[]? | select(.name == $s)] | length > 0' <<<"$pr")
-            if [ "$behind" -gt 0 ] || [ "$checked" != true ]; then
-              next="$pr"
-              break
+            if [ "$head" != "$bsha" ]; then unblock "$n" "its head changed"; continue; fi
+            case "$kind" in
+              dirty) [ "$(jq -r '.mergeStateStatus' <<<"$pr")" != DIRTY ] && unblock "$n" "no more merge conflicts" ;;
+              red) [ -z "$(red_checks "$pr")" ] && unblock "$n" "its failed checks were re-run green" ;;
+              workflows) [ "$(behind_by "$head")" -eq 0 ] && unblock "$n" "it is up to date with $BASE" ;;
+            esac
+          done
+
+          # Queued PRs, oldest first. QUEUE-RULE: the select() line must stay
+          # identical to shared-pr-queue.yml's (check-workflows.mjs). Re-read so
+          # PRs unblocked above count.
+          prs=$(gh pr list --repo "$REPO" --base "$BASE" --state open --limit 100 \
+            --json number,headRefName,headRefOid,isDraft,isCrossRepository,autoMergeRequest,author,mergeStateStatus,statusCheckRollup,labels |
+            jq -c --arg owner "$OWNER" --arg l "$BLOCK_LABEL" '[.[]
+              | select((.isDraft | not) and (.isCrossRepository | not) and ([.labels[].name] | index($l) | not) and (.autoMergeRequest != null or .author.login == $owner))]
+              | sort_by(.number)')
+
+          # QUEUE-FRONT: strict order. Only the OLDEST queued PR is served and the
+          # queue never skips a healthy one: a newer PR moves up only when the
+          # front one merges, closes, turns draft, or is blocked here (merge
+          # conflicts, failed checks, or an update the token may not make).
+          for row in $(jq -r '.[] | @base64' <<<"$prs"); do
+            next=$(base64 -d <<<"$row")
+            number=$(jq -r '.number' <<<"$next")
+            branch=$(jq -r '.headRefName' <<<"$next")
+            sha=$(jq -r '.headRefOid' <<<"$next")
+            author=$(jq -r '.author.login' <<<"$next")
+
+            if [ "$(jq -r '.mergeStateStatus' <<<"$next")" = "DIRTY" ]; then
+              block "$number" dirty "$sha" "it has merge conflicts with \`$BASE\`"
+              continue
             fi
-          done < <(jq -c '.[]' <<<"$prs")
 
-          if [ -z "$next" ]; then
-            echo "Every queued PR is up to date with $BASE and has run CI."
-            exit 0
-          fi
-
-          number=$(jq -r '.number' <<<"$next")
-          branch=$(jq -r '.headRefName' <<<"$next")
-          sha=$(jq -r '.headRefOid' <<<"$next")
-
-          # Never dispatch CI on a stale branch: update until the head contains
-          # main (main can move while we wait), then dispatch.
-          attempt=0
-          while :; do
             behind=$(behind_by "$sha")
-            [ "$behind" -eq 0 ] && break
-            attempt=$((attempt + 1))
-            if [ "$attempt" -gt 3 ]; then
-              echo "::error::PR #$number is still $behind commit(s) behind $BASE after 3 updates"
-              exit 1
+            if [ "$behind" -eq 0 ]; then
+              if [ "$(jq '[.statusCheckRollup[]? | select((.status // "COMPLETED") != "COMPLETED" or .state == "PENDING")] | length > 0' <<<"$next")" = true ]; then
+                echo "PR #$number is up to date with checks running; waiting for it."
+                exit 0
+              fi
+              running=$(running_ci "$sha")
+              if [ -n "$running" ]; then
+                echo "PR #$number is up to date and its CI is queued or running ($running); waiting for it."
+                exit 0
+              fi
+              red=$(red_checks "$next")
+              if [ -n "$red" ]; then
+                block "$number" red "$sha" "these checks failed on its up-to-date head: $red"
+                continue
+              fi
+              if [ "$(jq --arg s "$SENTINEL" '[.statusCheckRollup[]? | select(.name == $s)] | length > 0' <<<"$next")" = true ]; then
+                # Green and waiting to merge. On a workflow_run trigger the merge
+                # usually lands seconds after CI completes; wait briefly so the
+                # next PR is served in this run instead of the next schedule.
+                if [ "$(jq '.autoMergeRequest != null' <<<"$next")" = true ]; then
+                  for _ in $(seq 1 12); do
+                    [ "$(gh pr view "$number" --repo "$REPO" --json state --jq .state)" = MERGED ] && break
+                    sleep 10
+                  done
+                  if [ "$(gh pr view "$number" --repo "$REPO" --json state --jq .state)" = MERGED ]; then
+                    echo "PR #$number merged; serving the next PR."
+                    continue
+                  fi
+                fi
+                echo "PR #$number is up to date and has run CI; newer PRs wait until it is merged or closed."
+                exit 0
+              fi
             fi
-            echo "PR #$number ($branch) is $behind commit(s) behind $BASE; updating from $sha"
-            gh api -X PUT "repos/$REPO/pulls/$number/update-branch" -f expected_head_sha="$sha" >/dev/null
 
-            new_sha="$sha"
-            for _ in $(seq 1 24); do
-              new_sha=$(gh api "repos/$REPO/pulls/$number" --jq '.head.sha')
-              [ "$new_sha" != "$sha" ] && break
-              sleep 5
+            # Never dispatch CI on a stale branch: update until the head contains
+            # main (main can move while we wait), then dispatch.
+            head_of() { gh api "repos/$REPO/pulls/$number" --jq '.head.sha'; }
+            updated=false
+            attempt=0
+            while :; do
+              behind=$(behind_by "$sha")
+              [ "$behind" -eq 0 ] && break
+              attempt=$((attempt + 1))
+              if [ "$attempt" -gt 3 ]; then
+                echo "::error::PR #$number is still $behind commit(s) behind $BASE after 3 updates"
+                exit 1
+              fi
+              echo "PR #$number ($branch) is $behind commit(s) behind $BASE; updating from $sha"
+              if ! out=$(gh api -X PUT "repos/$REPO/pulls/$number/update-branch" -f expected_head_sha="$sha" 2>&1); then
+                if grep -q 'workflows. permission\|without .workflows' <<<"$out"; then
+                  # GITHUB_TOKEN may not write .github/workflows, so it cannot
+                  # merge main into a PR that changes workflow files. Dependabot
+                  # can: ask it to rebase once per head, then give it an hour.
+                  if [ "$author" = "app/dependabot" ] || [ "$author" = "dependabot[bot]" ]; then
+                    asked=$(marker "$number" rebase)
+                    if [ "${asked%% *}" != "$sha" ]; then
+                      gh pr comment "$number" --repo "$REPO" --body "$(printf '@dependabot rebase\n\n<!-- pr-queue:rebase sha=%s -->' "$sha")" >/dev/null
+                      echo "PR #$number changes workflow files, which GITHUB_TOKEN may not update; asked Dependabot to rebase it."
+                      exit 0
+                    fi
+                    if [ $(( $(date +%s) - $(date -d "${asked#* }" +%s) )) -lt 3600 ]; then
+                      echo "PR #$number: waiting for the Dependabot rebase requested at ${asked#* }."
+                      exit 0
+                    fi
+                    block "$number" workflows "$sha" "it changes workflow files, which the queue's token may not update, and Dependabot did not rebase it within an hour. Comment \`@dependabot rebase\` or update the branch by hand"
+                  else
+                    block "$number" workflows "$sha" "it changes workflow files, which the queue's token may not update. Update the branch from \`$BASE\` yourself (\"Update branch\" or a merge/rebase push)"
+                  fi
+                  continue 2
+                fi
+                if grep -q 'head ref does not exist' <<<"$out"; then
+                  # Merged or closed (and its branch deleted) after the list was
+                  # read; seen 2026-11-28. Nothing to update: serve the next PR.
+                  echo "PR #$number's branch is gone (merged or closed meanwhile); moving on."
+                  continue 2
+                fi
+                if ! grep -q 'expected head sha' <<<"$out"; then
+                  echo "::error::update-branch failed for PR #$number: $out"
+                  exit 1
+                fi
+                echo "PR #$number was updated by someone else meanwhile; re-reading its head."
+              fi
+              updated=true
+
+              new_sha="$sha"
+              for _ in $(seq 1 24); do
+                new_sha=$(head_of)
+                [ "$new_sha" != "$sha" ] && break
+                sleep 5
+              done
+              if [ "$new_sha" = "$sha" ]; then
+                echo "::error::PR #$number head did not change after update-branch"
+                exit 1
+              fi
+              echo "PR #$number head is now $new_sha"
+              sha="$new_sha"
             done
-            if [ "$new_sha" = "$sha" ]; then
-              echo "::error::PR #$number head did not change after update-branch"
-              exit 1
-            fi
-            echo "PR #$number head is now $new_sha"
-            sha="$new_sha"
-          done
-          echo "PR #$number head $sha is up to date with $BASE"
+            echo "PR #$number head $sha is up to date with $BASE"
 
-          # Pushes by GITHUB_TOKEN don't trigger pull_request CI, and a deferred
-          # PR's own run skipped it; dispatch the workflows that report the
-          # required checks against the PR branch.
-          for wf in $DISPATCH_WORKFLOWS; do
-            gh workflow run "$wf" --repo "$REPO" --ref "$branch"
-            echo "Dispatched $wf on $branch"
+            # After an update, the new head normally gets its own pull_request runs
+            # (see the header). Give them up to 90 s to appear; dispatch only what
+            # did not start. Without an update the PR's pull_request runs were
+            # deferred, so dispatch everything.
+            pending="$DISPATCH_WORKFLOWS"
+            if [ "$updated" = true ]; then
+              for _ in $(seq 1 18); do
+                started=$(gh api "repos/$REPO/actions/runs?head_sha=$sha&event=pull_request&per_page=100" \
+                  --jq '[.workflow_runs[]
+                    | select(.status != "action_required" and .conclusion != "action_required")
+                    | .path | split("/") | last | sub("@.*$"; "")] | join(" ")')
+                rest=""
+                for wf in $pending; do
+                  case " $started " in *" $wf "*) echo "pull_request run of $wf started on $sha" ;; *) rest="$rest $wf" ;; esac
+                done
+                pending="${rest# }"
+                [ -z "$pending" ] && break
+                sleep 5
+              done
+            fi
+
+            for wf in $pending; do
+              gh workflow run "$wf" --repo "$REPO" --ref "$branch"
+              echo "Dispatched $wf on $branch"
+            done
+            exit 0
           done
+          echo "No open queued PRs."
