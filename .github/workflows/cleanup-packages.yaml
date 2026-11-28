@@ -4,10 +4,14 @@ name: Cleanup ghcr packages
 #
 # - deletes container packages that are linked to this repository but no
 #   longer belong to any app here (its folder, image or an arch is gone);
-# - prunes versions of live packages that carry no tags at all (superseded
-#   re-pushes of the same tag) once they are older than 30 days. Tagged
-#   versions - releases, latest and the cosign sha256-* signature tags - are
-#   always kept, so pinned installs and signature verification keep working.
+# - keeps only the newest releases of each live package (latest plus the two
+#   releases before it by default) and deletes every other version: older
+#   releases, superseded re-pushes of a tag and their leftover parts. What a
+#   kept release needs is worked out from the registry itself - its index,
+#   the platform and attestation manifests that index lists, and the cosign
+#   signature under its sha256-<digest> tag - so kept releases stay pullable
+#   and keep verifying. Untagged parts are judged by what refers to them,
+#   never by age.
 #
 # How packages are found: the packages REST API cannot list packages for the
 # GITHUB_TOKEN this workflow runs with (GitHub App installation tokens are
@@ -32,10 +36,14 @@ on:
         description: Only log what would be deleted
         type: boolean
         default: true
-      prune-untagged:
-        description: Also delete untagged versions of live packages older than 30 days
+      prune-old-releases:
+        description: Also delete every version of a live package outside its newest releases
         type: boolean
         default: true
+      keep-releases:
+        description: How many of the newest releases to keep per package (the newest is latest)
+        type: number
+        default: 3
   schedule:
     # Weekly, off the hour to stay clear of GitHub's busiest minutes.
     - cron: "23 3 * * 1"
@@ -59,14 +67,16 @@ env:
   REPO: ${{ github.repository }}
   # The scheduled run deletes for real and prunes; manual runs follow the inputs.
   DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
-  PRUNE_UNTAGGED: ${{ github.event_name == 'schedule' || inputs.prune-untagged }}
+  PRUNE_OLD_RELEASES: ${{ github.event_name == 'schedule' || inputs.prune-old-releases }}
+  KEEP_RELEASES: ${{ inputs.keep-releases || 3 }}
+  DRY_RUN_WORD: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry-run) && 'that would be deleted' || 'deleted' }}
 
 jobs:
   cleanup:
     name: Cleanup packages
     if: github.repository == 'nerowentah/haos-addons'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Check out the repository
         # Full history: the candidate package names are read from it.
@@ -238,45 +248,82 @@ jobs:
             jq -r '.[] | "- \(.name)"' orphans.json
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Prune old untagged versions of the live packages
+      - name: Keep only the newest releases of the live packages
         run: |
-          if [[ "${PRUNE_UNTAGGED}" != "true" ]]; then
-            echo "Pruning untagged versions is switched off."
+          if [[ "${PRUNE_OLD_RELEASES}" != "true" ]]; then
+            echo "Pruning old releases is switched off."
             exit 0
           fi
-          # Untagged = superseded re-pushes: every release tag, latest and the
-          # cosign sha256-* signature tags carry tags and are always kept.
-          cutoff=$(date -u -d "30 days ago" +%s)
-          : > untagged.tsv
+          if ! [[ "${KEEP_RELEASES}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::keep-releases must be a positive whole number, got '${KEEP_RELEASES}'."
+            exit 1
+          fi
+          accept="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json"
+          owner=${REPO%%/*}
+          total_deleted=0
+          {
+            echo
+            echo "#### Release retention (newest ${KEEP_RELEASES} releases per package)"
+            echo
+            echo "| Package | Releases kept | Versions kept | Versions ${DRY_RUN_WORD} |"
+            echo "| --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
           while read -r name; do
             encoded=$(jq -rn --arg n "${name}" '$n | @uri')
             gh api --paginate --slurp "/user/packages/container/${encoded}/versions?per_page=100" \
-              | jq -r --arg name "${name}" \
-                  '.[][] | select((.metadata.container.tags // []) | length == 0) | [$name, (.id | tostring), (.created_at | fromdateiso8601 | tostring)] | @tsv' >> untagged.tsv
-          done < live.txt
-          candidates=$(wc -l < untagged.tsv)
-          if [[ "${candidates}" == "0" ]]; then
-            echo "No untagged versions in the live packages."
-            exit 0
-          fi
-          pruned=0
-          skipped=0
-          while IFS=$'\t' read -r name id created; do
-            if (( created < cutoff )); then
-              if [[ "${DRY_RUN}" == "true" ]]; then
-                echo "Dry run: would delete untagged version ${id} of ${name} (created $(date -u -d "@${created}" +%Y-%m-%d))"
-              else
-                encoded=$(jq -rn --arg n "${name}" '$n | @uri')
-                gh api --silent --method DELETE "/user/packages/container/${encoded}/versions/${id}"
-                echo "Deleted untagged version ${id} of ${name} (created $(date -u -d "@${created}" +%Y-%m-%d))"
-              fi
-              pruned=$((pruned + 1))
-            else
-              skipped=$((skipped + 1))
+              | jq '[.[][] | {id, digest: .name, tags: (.metadata.container.tags // [])}]' > versions.json
+            # Newest releases first; latest must be one of them, otherwise the
+            # tags are in a state this step does not understand and it stops.
+            mapfile -t releases < <(jq -r '[.[].tags[] | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))] | unique
+              | sort_by(split(".") | map(tonumber)) | reverse | .[]' versions.json)
+            if [[ ${#releases[@]} -eq 0 ]]; then
+              echo "::warning::${name}: no release tags; leaving it alone."
+              continue
             fi
-          done < untagged.tsv
-          if [[ "${DRY_RUN}" == "true" ]]; then word="would be deleted"; else word="deleted"; fi
+            kept=("${releases[@]:0:${KEEP_RELEASES}}")
+            roots=$(jq -c --args '[.[] | select(.tags | any(. as $t | $ARGS.positional | index($t))) | .digest] | unique' \
+              "${kept[@]}" < versions.json)
+            latest=$(jq -r '[.[] | select(.tags | index("latest")) | .digest][0] // empty' versions.json)
+            if [[ -n "${latest}" ]] && ! jq -e --arg d "${latest}" 'index($d)' <<< "${roots}" > /dev/null; then
+              echo "::error::${name}: latest is not one of the newest ${KEEP_RELEASES} releases (${kept[*]}); leaving it alone."
+              exit 1
+            fi
+            token=$(curl -fsS --retry 5 -u "${owner}:${GH_TOKEN}" \
+              "https://ghcr.io/token?service=ghcr.io&scope=repository:${owner}/${name}:pull" | jq -r .token)
+            # Everything a kept release needs: its index, the platform and
+            # attestation manifests it lists, and the cosign signature stored
+            # under the sha256-<digest> tag (plus whatever that lists).
+            # A manifest that cannot be read stops the run: deleting on a
+            # partial picture could break a kept release.
+            : > keep.txt
+            mapfile -t queue < <(jq -r '.[]' <<< "${roots}")
+            while [[ ${#queue[@]} -gt 0 ]]; do
+              digest=${queue[0]}
+              queue=("${queue[@]:1}")
+              grep -qx "${digest}" keep.txt && continue
+              echo "${digest}" >> keep.txt
+              manifest=$(curl -fsS --retry 5 -H "Authorization: Bearer ${token}" -H "Accept: ${accept}" \
+                "https://ghcr.io/v2/${owner}/${name}/manifests/${digest}")
+              mapfile -t -O "${#queue[@]}" queue < <(jq -r '.manifests[]?.digest' <<< "${manifest}")
+              sig="sha256-${digest#sha256:}"
+              mapfile -t -O "${#queue[@]}" queue < <(jq -r --arg s "${sig}" \
+                '.[] | select(.tags | any(. == $s or . == ($s + ".sig") or . == ($s + ".att"))) | .digest' versions.json)
+            done
+            jq -r --rawfile keep keep.txt '($keep | split("\n")) as $k
+              | .[] | select(.digest as $d | $k | index($d) | not) | "\(.id)\t\(.tags | join(","))"' versions.json > drop.tsv
+            dropped=$(wc -l < drop.tsv)
+            while IFS=$'\t' read -r id tags; do
+              if [[ "${DRY_RUN}" == "true" ]]; then
+                echo "Dry run: would delete ${name} version ${id} ${tags:+(${tags})}"
+              else
+                gh api --silent --method DELETE "/user/packages/container/${encoded}/versions/${id}"
+                echo "Deleted ${name} version ${id} ${tags:+(${tags})}"
+              fi
+            done < drop.tsv
+            total_deleted=$((total_deleted + dropped))
+            echo "| ${name} | ${kept[*]} | $(wc -l < keep.txt) | ${dropped} |" >> "$GITHUB_STEP_SUMMARY"
+          done < live.txt
           {
             echo
-            echo "Untagged versions older than $(date -u -d "@${cutoff}" +%Y-%m-%d): ${pruned} ${word}, ${skipped} kept (younger than 30 days)."
+            echo "Versions ${DRY_RUN_WORD}: ${total_deleted}."
           } >> "$GITHUB_STEP_SUMMARY"
