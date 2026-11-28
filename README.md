@@ -76,7 +76,7 @@ tools/sync_shared.py       copies shared/app/ into the apps (--check: fail when 
                            pr-auto-update.yml (serial PR queue: one PR brought up to date and tested at a time),
                            retry-signing.yaml (re-runs builds that failed only because Sigstore was down),
                            cleanup-packages.yaml (deletes ghcr packages no app uses anymore,
-                           and prunes old untagged versions),
+                           and keeps only the newest 3 releases),
                            codeql.yml (static analysis of the Python, the panel script and the workflows),
                            scan-images.yaml (Trivy scan of the published images, weekly and after each publish)
 .github/dependabot.yml     weekly updates for actions, base images and CI tools
@@ -114,7 +114,7 @@ python -m unittest discover -s storage-optimizer/tests
 - CI pushes the images to `ghcr.io/nerowentah/<arch>-<image>` and publishes a multi-arch manifest, tagged with the version and `latest`.
 - Every image and manifest is **signed with Sigstore cosign**, keyless through GitHub OIDC. The workflow then **verifies the signature** before it finishes.
 - If Sigstore is down, `retry-signing.yaml` waits for it to recover and re-runs the failed jobs. Images are never published unsigned.
-- `cleanup-packages.yaml` tidies ghcr: every week (or manually, dry run by default) it deletes packages that no app in this repository uses anymore, and untagged versions of live packages older than 30 days. Tagged versions — releases, `latest` and the cosign `sha256-*` signature tags — are always kept.
+- `cleanup-packages.yaml` tidies ghcr: every week (or manually, dry run by default) it deletes packages that no app in this repository uses anymore, and keeps only the newest 3 releases of each live package (`latest` plus the two before it; `keep-releases` changes the count on a manual run). Everything a kept release needs — its platform and attestation manifests and its cosign `sha256-*` signature — is read from the registry and kept; every other version is deleted (restorable for 30 days).
 
 **Releasing a change:**
 
