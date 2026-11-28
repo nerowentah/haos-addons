@@ -1,4 +1,4 @@
-# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.2 (957516d64b73951bdbe694a458dd2a9075f63aaa)
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.1.0 (8cfae0383d788042e23700e3195522cb2c69db05)
 # .github/workflows/shared-auto-approve.yml by .github/ci/vendor-platform.mjs: this repository is
 # public and cannot call the private platform repository. Composite actions
 # are expanded inline (1 step(s)). Re-run the script on a platform release.
@@ -57,21 +57,23 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Harden Runner
+        if: ${{ !github.event.repository.private }}
         uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
       - name: "Validate runner tools: Clean workspace"
-        if: (('true') == 'true' && runner.environment == 'self-hosted')
+        if: (runner.environment == 'self-hosted' && runner.os == 'Linux')
         shell: bash
         run: |
           # Remove leftover files not owned by the runner user (e.g. root-owned
           # files left by a cancelled Docker step). Keeps the checked-out tree so
-          # downstream local actions still resolve.
+          # downstream local actions still resolve. sudo -n: never wait for a password.
           if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
             echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
             exit 0
           fi
-          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+          sudo -n find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + ||
+            echo "::warning::Workspace cleanup failed (passwordless sudo missing?); a later checkout may hit root-owned files."
       - name: "Validate runner tools: Check required tools"
         env:
           REQUIRED_TOOLS: ${{ ('jq gh') }}
@@ -80,20 +82,11 @@ jobs:
           EXTRA_PATHS="/usr/local/bin /snap/bin /opt/microsoft/powershell/7 /opt/runner-tools/bin"
           MISSING=""
           for t in $REQUIRED_TOOLS; do
-            found=false
-            if command -v "$t" >/dev/null 2>&1; then
-              found=true
-            else
-              for p in $EXTRA_PATHS; do
-                if [ -x "$p/$t" ]; then
-                  found=true
-                  break
-                fi
-              done
-            fi
-            if [ "$found" = false ]; then
-              MISSING="$MISSING $t"
-            fi
+            command -v "$t" >/dev/null 2>&1 && continue
+            for p in $EXTRA_PATHS; do
+              [ -x "$p/$t" ] && continue 2
+            done
+            MISSING="$MISSING $t"
           done
           if [ -n "$MISSING" ]; then
             echo "::error::Missing required tools on runner:${MISSING}. Install them or ensure they are in PATH."

@@ -1,4 +1,4 @@
-# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.2 (957516d64b73951bdbe694a458dd2a9075f63aaa)
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.1.0 (8cfae0383d788042e23700e3195522cb2c69db05)
 # .github/workflows/shared-stale.yml by .github/ci/vendor-platform.mjs: this repository is
 # public and cannot call the private platform repository. Composite actions
 # are expanded inline (0 step(s)). Re-run the script on a platform release.
@@ -54,6 +54,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Harden Runner
+        if: ${{ !github.event.repository.private }}
         uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit

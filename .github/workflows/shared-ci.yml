@@ -1,4 +1,4 @@
-# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.0.2 (957516d64b73951bdbe694a458dd2a9075f63aaa)
+# GENERATED - DO NOT EDIT. Vendored from nerowentah/scripts v1.1.0 (8cfae0383d788042e23700e3195522cb2c69db05)
 # .github/workflows/shared-ci.yml by .github/ci/vendor-platform.mjs: this repository is
 # public and cannot call the private platform repository. Composite actions
 # are expanded inline (8 step(s)). Re-run the script on a platform release.
@@ -18,15 +18,6 @@ on:
         type: string
         required: false
         default: ""
-      required-tools-linux:
-        type: string
-        required: false
-        default: jq gh
-      base-branch:
-        type: string
-        required: false
-        default: ""
-        description: Branch PRs merge into. Empty = the repository's default branch (falls back to main).
       working-directory:
         type: string
         required: false
@@ -59,10 +50,6 @@ on:
         type: string
         required: false
         default: npm run --if-present test
-      lint-path:
-        type: string
-        required: false
-        default: .
       setup-extra:
         type: string
         required: false
@@ -74,23 +61,11 @@ on:
         default: ""
         description: Browsers to install via `npx playwright install --with-deps` (e.g. chromium)
       # Optional checks
-      enable-actionlint:
-        type: boolean
-        required: false
-        default: true
-      enable-zizmor:
-        type: boolean
-        required: false
-        default: true
       enable-eslint:
         type: boolean
         required: false
         default: true
       enable-ruff:
-        type: boolean
-        required: false
-        default: true
-      enable-trufflehog:
         type: boolean
         required: false
         default: true
@@ -116,6 +91,11 @@ on:
         required: false
         default: false
         description: Run terraform fmt (advisory) and validate (blocking) across changed modules, or every module on schedule/dispatch.
+      hosted-aux-jobs:
+        type: boolean
+        required: false
+        default: false
+        description: Run secrets-scan and gap-linting on ubuntu-latest instead of the resolved runner, so they run in parallel with lint (costs hosted minutes on a private repository).
 
 permissions:
   contents: read
@@ -137,44 +117,36 @@ jobs:
       pull-requests: write
     steps:
       - name: Harden Runner
+        if: ${{ !github.event.repository.private }}
         uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
       - name: "Prepare runner: Clean workspace"
-        if: (('true') == 'true' && runner.environment == 'self-hosted')
+        if: (runner.environment == 'self-hosted' && runner.os == 'Linux')
         shell: bash
         run: |
           # Remove leftover files not owned by the runner user (e.g. root-owned
           # files left by a cancelled Docker step). Keeps the checked-out tree so
-          # downstream local actions still resolve.
+          # downstream local actions still resolve. sudo -n: never wait for a password.
           if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
             echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
             exit 0
           fi
-          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+          sudo -n find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + ||
+            echo "::warning::Workspace cleanup failed (passwordless sudo missing?); a later checkout may hit root-owned files."
       - name: "Prepare runner: Check required tools"
-        if: ((format('{0}', inputs.required-tools-linux)) != '')
         env:
-          REQUIRED_TOOLS: ${{ (format('{0}', inputs.required-tools-linux)) }}
+          REQUIRED_TOOLS: ${{ ('jq gh') }}
         shell: bash
         run: |
           EXTRA_PATHS="/usr/local/bin /snap/bin /opt/microsoft/powershell/7 /opt/runner-tools/bin"
           MISSING=""
           for t in $REQUIRED_TOOLS; do
-            found=false
-            if command -v "$t" >/dev/null 2>&1; then
-              found=true
-            else
-              for p in $EXTRA_PATHS; do
-                if [ -x "$p/$t" ]; then
-                  found=true
-                  break
-                fi
-              done
-            fi
-            if [ "$found" = false ]; then
-              MISSING="$MISSING $t"
-            fi
+            command -v "$t" >/dev/null 2>&1 && continue
+            for p in $EXTRA_PATHS; do
+              [ -x "$p/$t" ] && continue 2
+            done
+            MISSING="$MISSING $t"
           done
           if [ -n "$MISSING" ]; then
             echo "::error::Missing required tools on runner:${MISSING}. Install them or ensure they are in PATH."
@@ -186,11 +158,22 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: ${{ ('0') }}
+      - name: "setup-node-python: Resolve caches"
+        id: snp-cfg
+        env:
+          NODE_CACHE: ${{ (format('{0}', runner.environment != 'self-hosted')) }}
+          PYTHON_CACHE: ${{ (format('{0}', runner.environment != 'self-hosted')) }}
+        shell: bash
+        run: |
+          npm=""; pip=""
+          if [ "$NODE_CACHE" = true ] && [ -f package-lock.json ]; then npm=npm; fi
+          if [ "$PYTHON_CACHE" = true ] && [ -f pyproject.toml ]; then pip=pip; fi
+          { echo "npm=$npm"; echo "pip=$pip"; } >> "$GITHUB_OUTPUT"
       - name: "setup-node-python: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1"
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ (format('{0}', inputs.node-version)) }}
-          cache: ${{ ('true') == 'true' && hashFiles('package-lock.json') != '' && 'npm' || '' }}
+          cache: ${{ steps.snp-cfg.outputs.npm }}
           cache-dependency-path: package-lock.json
       - name: "setup-node-python: Setup Python ${{ inputs.python-version }}"
         id: setup-py
@@ -198,7 +181,7 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: ${{ (format('{0}', inputs.python-version)) }}
-          cache: ${{ ('true') == 'true' && hashFiles('pyproject.toml') != '' && 'pip' || '' }}
+          cache: ${{ steps.snp-cfg.outputs.pip }}
           cache-dependency-path: pyproject.toml
         continue-on-error: true
       - name: "setup-node-python: Setup Python ${{ inputs.python-version-fallback }} (fallback)"
@@ -206,7 +189,7 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: ${{ (format('{0}', inputs.python-version-fallback)) }}
-          cache: ${{ ('true') == 'true' && hashFiles('pyproject.toml') != '' && 'pip' || '' }}
+          cache: ${{ steps.snp-cfg.outputs.pip }}
           cache-dependency-path: pyproject.toml
       - name: "setup-node-python: Install npm dependencies"
         if: ((format('{0}', inputs.install-deps)) == 'true')
@@ -226,7 +209,7 @@ jobs:
       - name: "setup-node-python: Install Python dependencies"
         if: ((format('{0}', inputs.setup-python)) == 'true' && (format('{0}', inputs.install-deps)) == 'true' && hashFiles('pyproject.toml') != '')
         shell: bash
-        run: pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev]"
 
       - name: Extra setup
         if: inputs.setup-extra != ''
@@ -246,8 +229,13 @@ jobs:
         env:
           INPUTS_PLAYWRIGHT_BROWSERS: ${{ inputs.playwright-browsers }}
 
+      # A Dependabot update runs only what tests the update: dependency install,
+      # tests, terraform and the C# build, plus actionlint and zizmor for a
+      # github_actions bump. Language linters, secrets-scan and gap-linting are
+      # skipped; a skipped job here reports "skipped", which satisfies a required
+      # check (skipping the caller job instead would leave it unreported).
       - name: Actionlint (GitHub Actions syntax)
-        if: inputs.enable-actionlint
+        if: needs.runners.outputs.dependabot == '' || needs.runners.outputs.dependabot == 'github_actions'
         shell: bash
         run: |
           # Native binary, no Docker. Self-hosted runners get it from
@@ -255,13 +243,13 @@ jobs:
           # pinned release outside the workspace so the lint tree stays clean.
           export PATH="$PATH:/usr/local/bin"
           if ! command -v actionlint >/dev/null 2>&1; then
-            bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 "$RUNNER_TEMP"
+            bash <(curl -sSfL --retry 5 --retry-all-errors --retry-delay 5 https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 "$RUNNER_TEMP"
             export PATH="$RUNNER_TEMP:$PATH"
           fi
           actionlint -color
 
       - name: Zizmor (workflow security analysis)
-        if: inputs.enable-zizmor
+        if: needs.runners.outputs.dependabot == '' || needs.runners.outputs.dependabot == 'github_actions'
         shell: bash
         run: |
           # Self-hosted Debian runners mark system Python externally-managed
@@ -287,10 +275,10 @@ jobs:
       # retries and a checksum, ahead of them on PATH; their own failed download
       # then lands in an empty dir and this copy is used.
       - name: Install reviewdog
-        if: inputs.enable-eslint || inputs.enable-ruff
+        if: (inputs.enable-eslint || inputs.enable-ruff) && needs.runners.outputs.dependabot == ''
         shell: bash
         env:
-          RD_VERSION: '0.21.3'
+          RD_VERSION: "0.21.3"
         run: |
           case "$(uname -m)" in
             x86_64|amd64) ARCH=x86_64; SHA=7029c2faf54e1237454cae8f1adf876c965b3d13d054f1a392206459091af4a1 ;;
@@ -309,7 +297,7 @@ jobs:
           echo "$DIR" >> "$GITHUB_PATH"
 
       - name: ESLint with Reviewdog
-        if: inputs.enable-eslint
+        if: inputs.enable-eslint && needs.runners.outputs.dependabot == ''
         uses: reviewdog/action-eslint@6dad10dc50476699ad1ddbbb19bf55d36f311a39 # v1.37.0
         # Self-hosted hosts harden /tmp as a noexec tmpfs. The action builds its
         # TEMP_PATH with mktemp -d, which honors TMPDIR; without this override the
@@ -319,7 +307,7 @@ jobs:
         with:
           reporter: github-pr-review
           workdir: ${{ inputs.working-directory }}
-          eslint_flags: ${{ inputs.lint-path }}
+          eslint_flags: .
 
       # Misspell (reviewdog/action-misspell) was removed: it rebuilds its Docker
       # image via apt-get every run, intermittently failing with exit 100 under
@@ -327,12 +315,48 @@ jobs:
       # container image build failures. Spelling is covered by gap-linting.
 
       - name: Ruff Python lint with Reviewdog
-        if: inputs.enable-ruff
+        if: inputs.enable-ruff && needs.runners.outputs.dependabot == ''
         uses: benny123tw/action-ruff@226d241bdf7205e6e048f1407d21bd69a64b7298 # v1.1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           reporter: github-pr-review
           level: error
+          # Skip the action's own "Get changed files" step: it runs
+          # tj-actions/changed-files@v44 by mutable tag (compromised in March
+          # 2025) on Node 20, which warns on every run. Ruff then checks the
+          # whole workdir, and reviewdog's default filter_mode=added still
+          # reports only lines the PR adds, so the review comments are unchanged.
+          changed_files: "false"
+
+      # Lists the files a PR (or a PR branch dispatched by the PR queue) changes
+      # vs the base branch, so test-command can scope itself (this repository's
+      # Run-Tests.ps1 maps them to test categories). Unset on schedule and on a
+      # dispatch on the base branch, meaning "test everything". A test-command
+      # that ignores CI_CHANGED_FILES still runs in full.
+      - name: List changed files
+        id: changed
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          REF: ${{ github.ref }}
+          QUEUE_BASE: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          set -uo pipefail
+          range=""
+          if [ "$EVENT_NAME" = "pull_request" ] && git rev-parse -q --verify "origin/${BASE_REF}" >/dev/null; then
+            range="origin/${BASE_REF}...HEAD"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/$QUEUE_BASE" ] \
+            && git rev-parse -q --verify "origin/$QUEUE_BASE" >/dev/null; then
+            range="origin/$QUEUE_BASE...HEAD"
+          fi
+          list="$RUNNER_TEMP/changed-files.txt"
+          if [ -n "$range" ] && git diff --name-only "$range" > "$list"; then
+            echo "changed in $range: $(wc -l < "$list") file(s)"
+            echo "path=$list" >> "$GITHUB_OUTPUT"
+          else
+            echo "no comparable base: tests run in full"
+          fi
 
       - name: Run tests
         shell: bash
@@ -340,29 +364,33 @@ jobs:
         run: eval "$INPUTS_TEST_COMMAND"
         env:
           INPUTS_TEST_COMMAND: ${{ inputs.test-command }}
+          CI_CHANGED_FILES: ${{ steps.changed.outputs.path }}
 
   secrets-scan:
-    if: inputs.enable-trufflehog
+    # Skipped for a Dependabot update (see the lint job): it changes manifests only.
+    if: needs.runners.outputs.dependabot == ''
     needs: runners
-    runs-on: ${{ fromJSON(needs.runners.outputs.linux-runner) }}
+    runs-on: ${{ fromJSON(inputs.hosted-aux-jobs && '["ubuntu-latest"]' || needs.runners.outputs.linux-runner) }}
     timeout-minutes: 60
     steps:
       - name: Harden Runner
+        if: ${{ !github.event.repository.private }}
         uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
       - name: "Prepare runner: Clean workspace"
-        if: (('true') == 'true' && runner.environment == 'self-hosted')
+        if: (runner.environment == 'self-hosted' && runner.os == 'Linux')
         shell: bash
         run: |
           # Remove leftover files not owned by the runner user (e.g. root-owned
           # files left by a cancelled Docker step). Keeps the checked-out tree so
-          # downstream local actions still resolve.
+          # downstream local actions still resolve. sudo -n: never wait for a password.
           if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
             echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
             exit 0
           fi
-          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+          sudo -n find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + ||
+            echo "::warning::Workspace cleanup failed (passwordless sudo missing?); a later checkout may hit root-owned files."
       - name: "Prepare runner: Check required tools"
         env:
           REQUIRED_TOOLS: ${{ ('docker') }}
@@ -371,20 +399,11 @@ jobs:
           EXTRA_PATHS="/usr/local/bin /snap/bin /opt/microsoft/powershell/7 /opt/runner-tools/bin"
           MISSING=""
           for t in $REQUIRED_TOOLS; do
-            found=false
-            if command -v "$t" >/dev/null 2>&1; then
-              found=true
-            else
-              for p in $EXTRA_PATHS; do
-                if [ -x "$p/$t" ]; then
-                  found=true
-                  break
-                fi
-              done
-            fi
-            if [ "$found" = false ]; then
-              MISSING="$MISSING $t"
-            fi
+            command -v "$t" >/dev/null 2>&1 && continue
+            for p in $EXTRA_PATHS; do
+              [ -x "$p/$t" ] && continue 2
+            done
+            MISSING="$MISSING $t"
           done
           if [ -n "$MISSING" ]; then
             echo "::error::Missing required tools on runner:${MISSING}. Install them or ensure they are in PATH."
@@ -402,33 +421,57 @@ jobs:
       - name: Resolve TruffleHog arguments
         id: th
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           args="--results=verified,unverified,unknown"
           if [ -f .github/trufflehog-exclude.txt ]; then args="$args --exclude-paths=.github/trufflehog-exclude.txt"; fi
           echo "args=$args" >> "$GITHUB_OUTPUT"
 
+          # The action scans the whole history on workflow_dispatch (it has no
+          # PR to diff against), so the PR queue's dispatched run on a PR branch
+          # re-reported every old commit: on 2026-11-28 a url-unshortener
+          # Dependabot PR showed 2025 findings from files deleted long ago. Scope
+          # a dispatch on a PR branch to that branch's own commits, as a
+          # pull_request run is; a dispatch on the default branch and the
+          # schedule keep the full-history scan.
+          base="" head=""
+          if [ "$EVENT_NAME" = workflow_dispatch ] && [ -n "$DEFAULT_BRANCH" ] && [ "$REF_NAME" != "$DEFAULT_BRANCH" ] \
+            && git rev-parse -q --verify "origin/$DEFAULT_BRANCH" >/dev/null \
+            && [ "$(git rev-parse HEAD)" != "$(git merge-base HEAD "origin/$DEFAULT_BRANCH")" ]; then
+            base="origin/$DEFAULT_BRANCH" head="HEAD"
+            echo "scanning $REF_NAME's own commits ($base..$head)"
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+
       - name: TruffleHog Secrets Scan
-        uses: trufflesecurity/trufflehog@3bd2b5887eb0efb8fa18bfd1d296032924e4ffdc # v3.99.9
+        uses: trufflesecurity/trufflehog@4ef51f69ca6347aaa76a5e64a87eac9c0c909f71 # v3.100.1
         with:
           extra_args: ${{ steps.th.outputs.args }}
+          base: ${{ steps.th.outputs.base }}
+          head: ${{ steps.th.outputs.head }}
       - name: "Clean trufflehog leftovers: Clean workspace"
-        if: (always() && github.event_name != 'pull_request') && (('true') == 'true' && runner.environment == 'self-hosted')
+        if: (always() && github.event_name != 'pull_request') && (runner.environment == 'self-hosted' && runner.os == 'Linux')
         shell: bash
         run: |
           # Remove leftover files not owned by the runner user (e.g. root-owned
           # files left by a cancelled Docker step). Keeps the checked-out tree so
-          # downstream local actions still resolve.
+          # downstream local actions still resolve. sudo -n: never wait for a password.
           if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
             echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
             exit 0
           fi
-          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+          sudo -n find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + ||
+            echo "::warning::Workspace cleanup failed (passwordless sudo missing?); a later checkout may hit root-owned files."
 
   audit:
     # Dispatch only on the base branch: the PR queue (shared-pr-auto-update.yml)
     # dispatches this workflow on PR branches to re-run the required checks, and
     # the audit is not one of them.
-    if: (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', inputs.base-branch || github.event.repository.default_branch || 'main'))) && (inputs.enable-npm-audit || inputs.enable-pip-audit)
+    if: (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch || 'main'))) && (inputs.enable-npm-audit || inputs.enable-pip-audit)
     needs: runners
     runs-on: ${{ fromJSON(needs.runners.outputs.linux-runner) }}
     timeout-minutes: 60
@@ -437,21 +480,23 @@ jobs:
       issues: write
     steps:
       - name: Harden Runner
+        if: ${{ !github.event.repository.private }}
         uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
       - name: "Prepare runner: Clean workspace"
-        if: (('true') == 'true' && runner.environment == 'self-hosted')
+        if: (runner.environment == 'self-hosted' && runner.os == 'Linux')
         shell: bash
         run: |
           # Remove leftover files not owned by the runner user (e.g. root-owned
           # files left by a cancelled Docker step). Keeps the checked-out tree so
-          # downstream local actions still resolve.
+          # downstream local actions still resolve. sudo -n: never wait for a password.
           if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
             echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
             exit 0
           fi
-          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+          sudo -n find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + ||
+            echo "::warning::Workspace cleanup failed (passwordless sudo missing?); a later checkout may hit root-owned files."
       - name: "Prepare runner: Check required tools"
         env:
           REQUIRED_TOOLS: ${{ ('jq gh') }}
@@ -460,20 +505,11 @@ jobs:
           EXTRA_PATHS="/usr/local/bin /snap/bin /opt/microsoft/powershell/7 /opt/runner-tools/bin"
           MISSING=""
           for t in $REQUIRED_TOOLS; do
-            found=false
-            if command -v "$t" >/dev/null 2>&1; then
-              found=true
-            else
-              for p in $EXTRA_PATHS; do
-                if [ -x "$p/$t" ]; then
-                  found=true
-                  break
-                fi
-              done
-            fi
-            if [ "$found" = false ]; then
-              MISSING="$MISSING $t"
-            fi
+            command -v "$t" >/dev/null 2>&1 && continue
+            for p in $EXTRA_PATHS; do
+              [ -x "$p/$t" ] && continue 2
+            done
+            MISSING="$MISSING $t"
           done
           if [ -n "$MISSING" ]; then
             echo "::error::Missing required tools on runner:${MISSING}. Install them or ensure they are in PATH."
@@ -485,18 +521,29 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: ${{ ('0') }}
+      - name: "Checkout, Setup Node.js: Resolve caches"
+        id: snp-cfg
+        env:
+          NODE_CACHE: ${{ ('false') }}
+          PYTHON_CACHE: ${{ (format('{0}', runner.environment != 'self-hosted')) }}
+        shell: bash
+        run: |
+          npm=""; pip=""
+          if [ "$NODE_CACHE" = true ] && [ -f package-lock.json ]; then npm=npm; fi
+          if [ "$PYTHON_CACHE" = true ] && [ -f pyproject.toml ]; then pip=pip; fi
+          { echo "npm=$npm"; echo "pip=$pip"; } >> "$GITHUB_OUTPUT"
       - name: "Checkout, Setup Node.js: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1"
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ (format('{0}', inputs.node-version)) }}
-          cache: ${{ ('false') == 'true' && hashFiles('package-lock.json') != '' && 'npm' || '' }}
+          cache: ${{ steps.snp-cfg.outputs.npm }}
           cache-dependency-path: package-lock.json
       - name: "Checkout, Setup Node.js: Setup Python ${{ inputs.python-version }}"
         id: setup-py
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: ${{ ('3.15') }}
-          cache: ${{ ('true') == 'true' && hashFiles('pyproject.toml') != '' && 'pip' || '' }}
+          cache: ${{ steps.snp-cfg.outputs.pip }}
           cache-dependency-path: pyproject.toml
         continue-on-error: true
       - name: "Checkout, Setup Node.js: Setup Python ${{ inputs.python-version-fallback }} (fallback)"
@@ -504,12 +551,12 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: ${{ ('3.14') }}
-          cache: ${{ ('true') == 'true' && hashFiles('pyproject.toml') != '' && 'pip' || '' }}
+          cache: ${{ steps.snp-cfg.outputs.pip }}
           cache-dependency-path: pyproject.toml
       - name: "Checkout, Setup Node.js: Install Python dependencies"
         if: (('true') == 'true' && ('false') == 'true' && hashFiles('pyproject.toml') != '')
         shell: bash
-        run: pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev]"
 
       - name: npm audit
         if: inputs.enable-npm-audit
@@ -659,29 +706,31 @@ jobs:
           exit 1
 
   gap-linting:
-    if: inputs.enable-gap-linting
+    if: inputs.enable-gap-linting && needs.runners.outputs.dependabot == ''
     needs: runners
-    runs-on: ${{ fromJSON(needs.runners.outputs.linux-runner) }}
+    runs-on: ${{ fromJSON(inputs.hosted-aux-jobs && '["ubuntu-latest"]' || needs.runners.outputs.linux-runner) }}
     timeout-minutes: 60
     permissions:
       contents: read
     steps:
       - name: Harden Runner
+        if: ${{ !github.event.repository.private }}
         uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
       - name: "Prepare runner: Clean workspace"
-        if: (('true') == 'true' && runner.environment == 'self-hosted')
+        if: (runner.environment == 'self-hosted' && runner.os == 'Linux')
         shell: bash
         run: |
           # Remove leftover files not owned by the runner user (e.g. root-owned
           # files left by a cancelled Docker step). Keeps the checked-out tree so
-          # downstream local actions still resolve.
+          # downstream local actions still resolve. sudo -n: never wait for a password.
           if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
             echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
             exit 0
           fi
-          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+          sudo -n find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + ||
+            echo "::warning::Workspace cleanup failed (passwordless sudo missing?); a later checkout may hit root-owned files."
       - name: "Prepare runner: Check required tools"
         env:
           REQUIRED_TOOLS: ${{ ('jq') }}
@@ -690,20 +739,11 @@ jobs:
           EXTRA_PATHS="/usr/local/bin /snap/bin /opt/microsoft/powershell/7 /opt/runner-tools/bin"
           MISSING=""
           for t in $REQUIRED_TOOLS; do
-            found=false
-            if command -v "$t" >/dev/null 2>&1; then
-              found=true
-            else
-              for p in $EXTRA_PATHS; do
-                if [ -x "$p/$t" ]; then
-                  found=true
-                  break
-                fi
-              done
-            fi
-            if [ "$found" = false ]; then
-              MISSING="$MISSING $t"
-            fi
+            command -v "$t" >/dev/null 2>&1 && continue
+            for p in $EXTRA_PATHS; do
+              [ -x "$p/$t" ] && continue 2
+            done
+            MISSING="$MISSING $t"
           done
           if [ -n "$MISSING" ]; then
             echo "::error::Missing required tools on runner:${MISSING}. Install them or ensure they are in PATH."
@@ -772,14 +812,59 @@ jobs:
             pick checkov .github/linters/.checkov.yaml
           } >> "$GITHUB_OUTPUT"
 
+      # Same scope rule as the lint job's test scoping: on a PR (or a PR branch
+      # the queue dispatches) codespell reads only the changed files and Checkov
+      # runs only when an IaC-shaped file changed. Schedule and dispatch on the
+      # base branch scan the whole tree.
+      - name: Scope to changed files
+        id: scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          REF: ${{ github.ref }}
+          QUEUE_BASE: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          set -uo pipefail
+          range=""
+          if [ "$EVENT_NAME" = "pull_request" ] && git rev-parse -q --verify "origin/${BASE_REF}" >/dev/null; then
+            range="origin/${BASE_REF}...HEAD"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/$QUEUE_BASE" ] \
+            && git rev-parse -q --verify "origin/$QUEUE_BASE" >/dev/null; then
+            range="origin/$QUEUE_BASE...HEAD"
+          fi
+          list="$RUNNER_TEMP/gap-changed-files.txt"
+          if [ -z "$range" ] || ! git diff --name-only --diff-filter=d "$range" > "$list"; then
+            echo "full scan: no comparable base"
+            { echo "files="; echo "checkov=true"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "files=$list" >> "$GITHUB_OUTPUT"
+          # Checkov frameworks here: terraform, github_actions, kubernetes, ansible,
+          # cloudformation/arm/bicep (yaml/json), dockerfile; plus its own config.
+          if grep -qiE '\.(tf|tf\.json|hcl|ya?ml|json|bicep)$|(^|/)(Docker|Container)file|^\.github/linters/\.checkov' "$list"; then
+            echo "checkov=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "checkov=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "$(wc -l < "$list") changed file(s) in $range"
+
       - name: Codespell
         shell: bash
         env:
           CONSTRAINTS: ${{ steps.cfg.outputs.constraints }}
           CODESPELL_CFG: ${{ steps.cfg.outputs.codespell }}
+          CHANGED: ${{ steps.scope.outputs.files }}
         run: |
           python -m pip install ${CONSTRAINTS:+-c "$CONSTRAINTS"} codespell
-          codespell ${CODESPELL_CFG:+--config "$CODESPELL_CFG"} .
+          if [ -z "$CHANGED" ]; then
+            codespell ${CODESPELL_CFG:+--config "$CODESPELL_CFG"} .
+          elif [ -s "$CHANGED" ]; then
+            # codespell still applies the config's skip globs to named files.
+            tr '\n' '\0' < "$CHANGED" | xargs -0 codespell ${CODESPELL_CFG:+--config "$CODESPELL_CFG"} --
+          else
+            echo "no changed files to spell-check"
+          fi
 
       - name: markdownlint
         uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0
@@ -804,7 +889,7 @@ jobs:
         run: npx --yes jscpd@5.4.2 ${JSCPD_CFG:+--config "$JSCPD_CFG"} .
 
       - name: Checkov (IaC security)
-        if: always()
+        if: always() && steps.scope.outputs.checkov != 'false'
         shell: bash
         env:
           CONSTRAINTS: ${{ steps.cfg.outputs.constraints }}
@@ -813,17 +898,18 @@ jobs:
           python -m pip install ${CONSTRAINTS:+-c "$CONSTRAINTS"} checkov
           checkov -d . ${CHECKOV_CFG:+--config-file "$CHECKOV_CFG"}
       - name: "Clean gap-linting leftovers: Clean workspace"
-        if: (always() && github.event_name != 'pull_request') && (('true') == 'true' && runner.environment == 'self-hosted')
+        if: (always() && github.event_name != 'pull_request') && (runner.environment == 'self-hosted' && runner.os == 'Linux')
         shell: bash
         run: |
           # Remove leftover files not owned by the runner user (e.g. root-owned
           # files left by a cancelled Docker step). Keeps the checked-out tree so
-          # downstream local actions still resolve.
+          # downstream local actions still resolve. sudo -n: never wait for a password.
           if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
             echo "::warning::GITHUB_WORKSPACE is unset or '/', skipping workspace cleanup."
             exit 0
           fi
-          { sudo find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + 2>/dev/null; } || true
+          sudo -n find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 3 ! -user "$(id -u -n)" -ignore_readdir_race -exec rm -rf -- {} + ||
+            echo "::warning::Workspace cleanup failed (passwordless sudo missing?); a later checkout may hit root-owned files."
 
   terraform:
     if: inputs.enable-terraform
@@ -834,6 +920,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
+        if: ${{ !github.event.repository.private }}
         uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0
         with:
           egress-policy: audit
@@ -887,7 +974,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           BEFORE_SHA: ${{ github.event.before }}
           REF: ${{ github.ref }}
-          QUEUE_BASE: ${{ inputs.base-branch || github.event.repository.default_branch || 'main' }}
+          QUEUE_BASE: ${{ github.event.repository.default_branch || 'main' }}
         run: |
           set -uo pipefail
           mkdir -p "$TF_PLUGIN_CACHE_DIR"

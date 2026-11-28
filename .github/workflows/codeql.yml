@@ -3,6 +3,10 @@ name: CodeQL
 # Thin caller of nerowentah/scripts shared-codeql.yml. Checks surface as
 # "codeql / analyze (<language>)" and are deferred by the PR queue like shared-ci.
 on:
+  # Default-branch scans give code scanning its baseline; without a push
+  # trigger CodeQL warns "Please specify an on.push hook" on every PR run.
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]

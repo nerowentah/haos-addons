@@ -9,6 +9,13 @@ on:
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch:
+  # GITHUB_TOKEN auto-merges fire no push and no PR `closed`, so serve the next
+  # PR when the front PR's CI completes (the queue waits briefly for the merge).
+  # zizmor: ignore[dangerous-triggers] - runs default-branch code only, checks
+  # out nothing and reads no artifacts: it only calls gh with this repo's token.
+  workflow_run:
+    workflows: [Code Quality, Builder, CodeQL]
+    types: [completed]
 
 concurrency:
   group: ${{ github.workflow }}
